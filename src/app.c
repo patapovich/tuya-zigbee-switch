@@ -5,6 +5,8 @@
 #include "hal/nvm.h"
 #include "hal/printf_selector.h"
 #include "hal/system.h"
+#include "hal/tasks.h"
+#include "hal/timer.h"
 #include "hal/zigbee.h"
 #include "hal/zigbee_ota.h"
 #include "zigbee/tuya_secondary_mcu.h"
@@ -69,6 +71,39 @@ void process_device_type_change() {
 /* Set once we have asked the MCU for a full datapoint dump. */
 static uint8_t dp_query_sent = 0;
 
+/* The first time we know the MCU is listening: apply the IT-declared values
+ * and ask for a full datapoint dump. Triggered by the MCU's first network
+ * status query, or by a timer shortly after boot: the ZDMS16-2 MCU never
+ * sends that query on its own (seen on the bench, 2026-11-16), so without
+ * the timer min/max/switch type were never read back. */
+#define MCU_FIRST_CONTACT_DELAY_MS    2000
+static hal_task_t mcu_first_contact_task;
+
+static void mcu_first_contact(void) {
+    if (dp_query_sent) {
+        return;
+    }
+    dp_query_sent = 1;
+
+    /* Apply the IT-declared datapoint values here, not from
+     * app_init(). Writing the config string reboots only the
+     * Telink; the MCU keeps running mid conversation and drops
+     * whatever we send before it is back in sync. That is why
+     * changing a setting used to need a power cycle to stick. */
+    tuya_dp_apply_inits();
+
+    /* Dimmers keep min/max/switch type/power-on in the MCU: the
+     * dump is the only way to learn them after a reboot. */
+    if (dp_attrs_cnt > 0 || dimmer_clusters_cnt > 0) {
+        dp_attr_query_all();
+    }
+}
+
+static void mcu_first_contact_timer(void *arg) {
+    (void)arg;
+    mcu_first_contact();
+}
+
 static void tuya_secondary_mcu_on_command(uint8_t cmd, uint16_t seq,
                                           const uint8_t *data,
                                           uint16_t data_len) {
@@ -105,25 +140,7 @@ static void tuya_secondary_mcu_on_command(uint8_t cmd, uint16_t seq,
                 : TUYA_NET_STATUS_NOT_CONNECTED;
         tuya_secondary_mcu_send_cmd(cmd, seq, &status, 1);
 
-        /* First contact from the MCU is the earliest point we know it is
-         * listening, so this is where we ask it to dump every datapoint.
-         * Doing it from app_init() would race the MCU's own boot. */
-        if (!dp_query_sent) {
-            dp_query_sent = 1;
-
-            /* Apply the IT-declared datapoint values here, not from
-             * app_init(). Writing the config string reboots only the
-             * Telink; the MCU keeps running mid conversation and drops
-             * whatever we send before it is back in sync. That is why
-             * changing a setting used to need a power cycle to stick. */
-            tuya_dp_apply_inits();
-
-            /* Dimmers keep min/max/switch type/power-on in the MCU: the
-             * dump is the only way to learn them after a reboot. */
-            if (dp_attrs_cnt > 0 || dimmer_clusters_cnt > 0) {
-                dp_attr_query_all();
-            }
-        }
+        mcu_first_contact();
         return;
     }
 
@@ -174,6 +191,10 @@ void app_init(void) {
         // report callback chain and forwards what it does not own.
         dp_attr_init();
         tuya_secondary_mcu_register_command_callback(tuya_secondary_mcu_on_command);
+        mcu_first_contact_task.handler = mcu_first_contact_timer;
+        mcu_first_contact_task.arg     = NULL;
+        hal_tasks_init(&mcu_first_contact_task);
+        hal_tasks_schedule(&mcu_first_contact_task, MCU_FIRST_CONTACT_DELAY_MS);
     }
 
     hal_zigbee_init_ota();

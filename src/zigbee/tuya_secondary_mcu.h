@@ -148,7 +148,8 @@ void tuya_secondary_mcu_poll(void);
  *   0xff40  counters   octet string, see tuya_mcu_diag_counters_t (LE)
  *   0xff41..0xff45     event log pages, octet strings of 8 byte entries,
  *                      oldest first across the pages (6 entries per page)
- *   0xff4f  control    uint8, write 1 to clear counters and log
+ *   0xff4f  control    uint8, write 1 to clear counters and log,
+ *                      2 to ask the MCU for a full datapoint dump
  *
  * Log entry: t_ms (u16 LE, hal_millis() low bits), kind (u8), id (u8, DP id or
  * command), value (u32 LE). Decoder: helper_scripts/decode_mcu_diag.py
@@ -177,8 +178,13 @@ typedef enum {
 uint8_t tuya_secondary_mcu_diag_register(hal_zigbee_attribute *table,
                                          uint8_t start_index);
 
-/** Basic cluster attribute write hook (handles the control attribute). */
-void tuya_secondary_mcu_diag_on_write(uint16_t attribute_id);
+/** Basic cluster attribute write hook (handles the control attribute).
+ *  Returns the control command written (0 if the write was something else):
+ *  1 = clear (done here), 2 = ask the MCU for a full DP dump (the caller
+ *  does that, the link layer does not know the query). */
+#define TUYA_MCU_DIAG_CONTROL_CLEAR        1
+#define TUYA_MCU_DIAG_CONTROL_QUERY_ALL    2
+uint8_t tuya_secondary_mcu_diag_on_write(uint16_t attribute_id);
 
 /**
  * Initialize the secondary MCU UART path.

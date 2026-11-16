@@ -144,3 +144,40 @@ def test_control_write_clears():
         assert int(device.read_zigbee_attr(1, BASIC, ATTR_CONTROL)) == 0
     finally:
         proc.stop()
+
+
+TUYA_CMD_QUERY_ALL = 0x28
+
+
+def _sent_cmds(proc: StubProc) -> list[int]:
+    from test_dimmer_mcu import parse_frames
+    return [cmd for cmd, _ in parse_frames(take_tx(proc))]
+
+
+def test_query_all_sent_after_boot_without_mcu_contact():
+    """The ZDMS16-2 MCU never asks for the network status on its own, so the
+    module has to start the conversation: query-all ~2 s after boot."""
+    with StubProc(device_config=ZDMS16_2) as proc:
+        device = Device(proc)
+        pump(proc)
+        assert TUYA_CMD_QUERY_ALL not in _sent_cmds(proc)
+        device.step_time(2100)
+        pump(proc)
+        assert TUYA_CMD_QUERY_ALL in _sent_cmds(proc)
+        device.step_time(10000)
+        pump(proc)
+        assert TUYA_CMD_QUERY_ALL not in _sent_cmds(proc)  # once only
+
+
+def test_control_2_sends_query_all():
+    proc, device = start()
+    try:
+        device.step_time(2100)  # first-contact dump out of the way
+        pump(proc)
+        take_tx(proc)
+        device.write_zigbee_attr(1, BASIC, ATTR_CONTROL, 2)
+        pump(proc)
+        assert TUYA_CMD_QUERY_ALL in _sent_cmds(proc)
+        assert int(device.read_zigbee_attr(1, BASIC, ATTR_CONTROL)) == 0
+    finally:
+        proc.stop()
