@@ -123,7 +123,12 @@ static void tuya_secondary_mcu_on_command(uint8_t cmd, uint16_t seq,
                whatever we send before it is back in sync. That is why
                changing a setting used to need a power cycle to stick. */
             tuya_dp_apply_inits();
-            dp_attr_query_all();
+            /* Dimmers keep min/max/switch type/power-on in the MCU: the
+               dump is the only way to learn them after a reboot. */
+            if (dp_attrs_cnt > 0 || dimmer_clusters_cnt > 0)
+            {
+                dp_attr_query_all();
+            }
         }
         return;
     }

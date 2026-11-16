@@ -29,7 +29,9 @@
 /* DMA receive buffer used by drv_uart. The first 4 bytes hold the received
  * length (big-endian), the payload follows at +4, so the usable payload
  * capacity is (size - 4). Must be 4-byte aligned. */
-#define UART_RX_DMA_BUF_SIZE 64
+/* 256: a full status dump of a two channel dimmer is ~100 bytes and can
+ * arrive as one burst; 64 (60 usable) dropped it. */
+#define UART_RX_DMA_BUF_SIZE 256
 static uint8_t g_uart_rx_dma_buf[UART_RX_DMA_BUF_SIZE] __attribute__((aligned(4)));
 
 /* Software ring buffer holding bytes drained from the DMA buffer in the ISR. */

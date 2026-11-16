@@ -22,10 +22,22 @@ typedef struct {
     uint8_t              max_level;
     uint8_t              switch_type;
     uint8_t              on;
-    /* Wall-switch dimming (ZCL Move/Stop): periodic ramp state. */
+    /* Level changed while off (MoveToLevel/Step without OnOff): written to
+     * the MCU just before the next "on". */
+    uint8_t              level_dirty;
+    /* Level ramp (ZCL Move / MoveWithOnOff). */
     hal_task_t           ramp_task;
     uint8_t              move_direction; /* 0 = down, 1 = up */
     uint8_t              move_active;
+    uint8_t              move_with_onoff;
+    /* The MCU fades towards a written level and reports where it is on the
+     * way. While a fade we started is running, those reports are kept aside
+     * instead of overwriting current_level. */
+    hal_task_t           holdoff_task;
+    uint8_t              level_holdoff;
+    uint8_t              has_held_report;
+    uint32_t             held_report_value;
+    uint32_t             last_written_value;
 } zigbee_dimmer_cluster;
 
 void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
