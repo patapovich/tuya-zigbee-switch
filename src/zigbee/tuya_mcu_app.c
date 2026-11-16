@@ -1,6 +1,7 @@
 #include "zigbee/tuya_mcu_app.h"
 #include "device_config/config_parser.h"
 #include "hal/printf_selector.h"
+#include "hal/system.h"
 #include "hal/tasks.h"
 #include "hal/uart.h"
 #include "hal/zigbee.h"
@@ -85,6 +86,14 @@ static void first_contact_timer(void *arg) {
     first_contact(CONTACT_TIMER);
 }
 
+/* Relays and DP attributes driven by the MCU mean its keys are the switch's
+ * user interface (touch panels). A dimmer module has no keys on the MCU: the
+ * wall switch input dims and toggles, only the module's button asks for a
+ * reset. */
+static bool mcu_keys_are_the_ui(void) {
+    return tuya_dp_relay_count() > 0 || dp_attrs_cnt > 0;
+}
+
 static uint8_t network_status(void) {
     return hal_zigbee_get_network_status() == HAL_ZIGBEE_NETWORK_JOINED
            ? TUYA_MCU_NETWORK_CONNECTED
@@ -98,13 +107,23 @@ static void on_mcu_command(uint8_t cmd, uint16_t seq, const uint8_t *data, uint1
             return;
         }
         if (hal_zigbee_get_network_status() == HAL_ZIGBEE_NETWORK_JOINED) {
-            /* A held key makes the MCU ask us to leave and re-pair. An
-             * accidental long press is the most common way a switch drops off
-             * a working network, so we refuse and tell the MCU we are
-             * connected, which also stops its pairing blink. */
-            uint8_t status = TUYA_MCU_NETWORK_CONNECTED;
-            printf("Ignoring MCU leave request: already joined\r\n");
-            tuya_secondary_mcu_queue_cmd(TUYA_MCU_CMD_NETWORK_STATUS, &status, 1);
+            if (mcu_keys_are_the_ui()) {
+                /* On a touch switch a held key makes the MCU ask us to leave
+                 * and re-pair. Those keys are what people touch every day,
+                 * and an accidental long press is the most common way a
+                 * switch drops off a working network, so we refuse and tell
+                 * the MCU we are connected, which also stops its pairing
+                 * blink. */
+                uint8_t status = TUYA_MCU_NETWORK_CONNECTED;
+                printf("Ignoring MCU leave request: already joined\r\n");
+                tuya_secondary_mcu_queue_cmd(TUYA_MCU_CMD_NETWORK_STATUS, &status, 1);
+            } else {
+                /* Without MCU keys (a dimmer module) the request can only
+                 * come from the module's own reset button: do what a reset
+                 * button does on every other device. */
+                printf("MCU reset button: factory reset\r\n");
+                hal_factory_reset();
+            }
         } else {
             printf("MCU leave request while unjoined: restarting steering\r\n");
             hal_zigbee_start_network_steering();
