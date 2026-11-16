@@ -7,6 +7,7 @@ const {
     text,
     binary,
     windowCovering,
+    deviceAddCustomCluster,
 } = require("zigbee-herdsman-converters/lib/modernExtend");
 const {assertString} = require("zigbee-herdsman-converters/lib/utils");
 const reporting = require("zigbee-herdsman-converters/lib/reporting");
