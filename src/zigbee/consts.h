@@ -101,6 +101,7 @@
 
 // Level Control cluster
 #define ZCL_ATTR_LEVEL_CURRENT_LEVEL                                 0x0000
+#define ZCL_ATTR_LEVEL_ON_LEVEL                                      0x0011
 
 // WindowCovering cluster
 #define ZCL_ATTR_WINDOW_COVERING_TYPE                                0x0000

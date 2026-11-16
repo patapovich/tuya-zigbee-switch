@@ -54,6 +54,8 @@ from zcl_consts import (
     ZCL_CMD_LEVEL_STOP_WITH_ON_OFF,
     ZCL_LEVEL_MOVE_DOWN,
     ZCL_LEVEL_MOVE_UP,
+    ZCL_CMD_ONOFF_ON,
+    ZCL_CMD_ONOFF_TOGGLE,
 )
 
 ZDMS16_2 = "jtbgusdc;TS0601;DM2;M;"
@@ -715,5 +717,122 @@ def test_module_button_reset_leaves_the_network():
         proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_RESET_NETWORK, bytes([0x01]))}")
         pump(proc)
         assert not device.is_joined(), "the module button must reset the device"
+    finally:
+        proc.stop()
+
+
+# ---- OnLevel (Level Control 0x0011) ---------------------------------------
+
+ZCL_ATTR_ON_LEVEL = 0x0011
+
+
+def known_off(proc: StubProc) -> None:
+    """The MCU has reported channel 1 off, as it does at boot."""
+    mcu_report(proc, bool_dp(DP_ON_L1, 0))
+    take_tx(proc)
+
+
+def set_on_level(device: Device, lvl: int) -> None:
+    device.write_zigbee_attr(1, ZCL_CLUSTER_LEVEL_CONTROL, ZCL_ATTR_ON_LEVEL, lvl)
+
+
+def test_on_level_defaults_to_undefined():
+    proc, device = start()
+    try:
+        assert int(device.read_zigbee_attr(1, ZCL_CLUSTER_LEVEL_CONTROL, ZCL_ATTR_ON_LEVEL)) == 0xFF
+    finally:
+        proc.stop()
+
+
+def test_wall_switch_on_without_on_level_leaves_the_level_to_the_mcu():
+    proc, device = start()
+    try:
+        known_off(proc)
+        mcu_report(proc, bool_dp(DP_ON_L1, 1))  # wall switch
+        assert ack_writes(proc, device) == []
+        assert onoff(device) == 1
+    finally:
+        proc.stop()
+
+
+def test_wall_switch_on_goes_straight_to_on_level():
+    """The point of OnLevel here: no round trip through the network. The
+    level is written as soon as the MCU reports the switch, and only the
+    level (the MCU is already on)."""
+    proc, device = start()
+    try:
+        dump_range(proc, 276, 591)
+        set_on_level(device, 100)
+        known_off(proc)
+        mcu_report(proc, bool_dp(DP_ON_L1, 1))
+        writes = ack_writes(proc, device)
+        assert writes == [(DP_LEVEL_L1, scaled_to_tuya(100, 276, 591))]
+        assert level(device) == 100
+        assert onoff(device) == 1
+    finally:
+        proc.stop()
+
+
+def test_first_report_after_boot_is_not_a_switch_press():
+    """After a reboot of the Zigbee side the light may simply be on already;
+    that must not be taken for someone switching it on."""
+    proc, device = start()
+    try:
+        set_on_level(device, 100)
+        mcu_report(proc, bool_dp(DP_ON_L1, 1))
+        assert ack_writes(proc, device) == []
+    finally:
+        proc.stop()
+
+
+def test_answer_to_our_query_is_not_a_switch_press():
+    proc, device = start()
+    try:
+        set_on_level(device, 100)
+        known_off(proc)
+        mcu_report(proc, bool_dp(DP_ON_L1, 1), cmd=TUYA_CMD_REPORT_PASSIVE)
+        assert ack_writes(proc, device) == []
+    finally:
+        proc.stop()
+
+
+def test_own_level_command_is_not_overridden_by_on_level():
+    """Our own on is echoed back by the MCU; that echo must not pull the
+    light to OnLevel when the command asked for another level."""
+    proc, device = start()
+    try:
+        dump_range(proc, 276, 591)
+        set_on_level(device, 100)
+        known_off(proc)
+        device.call_zigbee_cmd(
+            1, ZCL_CLUSTER_LEVEL_CONTROL, ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF,
+            bytes([200, 0, 0]),
+        )
+        writes = ack_writes(proc, device)
+        assert writes == [(DP_ON_L1, 1), (DP_LEVEL_L1, scaled_to_tuya(200, 276, 591))]
+        assert level(device) == 200
+    finally:
+        proc.stop()
+
+
+def test_on_command_uses_on_level():
+    proc, device = start()
+    try:
+        dump_range(proc, 276, 591)
+        set_on_level(device, 60)
+        known_off(proc)
+        device.call_zigbee_cmd(1, ZCL_CLUSTER_ON_OFF, ZCL_CMD_ONOFF_ON)
+        writes = ack_writes(proc, device)
+        assert writes == [(DP_ON_L1, 1), (DP_LEVEL_L1, scaled_to_tuya(60, 276, 591))]
+    finally:
+        proc.stop()
+
+
+def test_on_and_toggle_without_on_level_only_switch_on():
+    proc, device = start()
+    try:
+        known_off(proc)
+        device.call_zigbee_cmd(1, ZCL_CLUSTER_ON_OFF, ZCL_CMD_ONOFF_TOGGLE)
+        assert ack_writes(proc, device) == [(DP_ON_L1, 1)]
     finally:
         proc.stop()
