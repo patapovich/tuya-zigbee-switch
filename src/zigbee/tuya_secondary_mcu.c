@@ -147,14 +147,16 @@ uint8_t tuya_secondary_mcu_diag_register(hal_zigbee_attribute *table,
     return (uint8_t)(i - start_index);
 }
 
-void tuya_secondary_mcu_diag_on_write(uint16_t attribute_id) {
+uint8_t tuya_secondary_mcu_diag_on_write(uint16_t attribute_id) {
     if (attribute_id != ZCL_ATTR_BASIC_MCU_DIAG_CONTROL) {
-        return;
+        return 0;
     }
-    if (g_diag_control == 1) {
+    uint8_t command = g_diag_control;
+    if (command == TUYA_MCU_DIAG_CONTROL_CLEAR) {
         diag_clear();
     }
     g_diag_control = 0;
+    return command;
 }
 
 static hal_uart_config_t g_uart_config       = { 0 };

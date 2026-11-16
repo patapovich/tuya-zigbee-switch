@@ -60,7 +60,9 @@ void basic_cluster_callback_attr_write_trampoline(uint16_t attribute_id) {
         schedule_reboot(0);
     }
     dp_attr_on_write(attribute_id);
-    tuya_secondary_mcu_diag_on_write(attribute_id);
+    if (tuya_secondary_mcu_diag_on_write(attribute_id) == TUYA_MCU_DIAG_CONTROL_QUERY_ALL) {
+        dp_attr_query_all();
+    }
 }
 
 void basic_cluster_add_to_endpoint(zigbee_basic_cluster *cluster,
