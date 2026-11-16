@@ -560,3 +560,42 @@ def test_nv_item_ids_are_unique():
     ids = _nv_ids()
     flat = [v for values in ids.values() for v in values]
     assert len(flat) == len(set(flat)), sorted(flat)
+
+
+# --------------------------------------------------------------------------
+# parser / endpoint layout
+
+
+ZCL_CLUSTER_GROUPS = 0x0004
+ZCL_CLUSTER_WINDOW_COVERING = 0x0102
+ZCL_ATTR_COVER_FIRST = 0x0000  # WindowCoveringType
+
+
+def test_dimmer_endpoints_have_groups():
+    proc, device = start()
+    try:
+        for ep in (1, 2):
+            assert device.read_zigbee_attr(ep, ZCL_CLUSTER_GROUPS, 0x0000) is not None
+    finally:
+        proc.stop()
+
+
+def test_dimmer_count_is_capped_in_total():
+    """Two DM tokens must not run past the four dimmer slots."""
+    with StubProc(device_config="A;B;DM3;DM3;") as proc:
+        device = Device(proc)
+        for ep in (1, 2, 3, 4):
+            assert device.read_zigbee_attr(ep, ZCL_CLUSTER_LEVEL_CONTROL, ZCL_ATTR_CURRENT_LEVEL) is not None
+        res = proc.exec(f"zcl_read 5 0x{ZCL_CLUSTER_LEVEL_CONTROL:04X} 0x0000")
+        assert not res.ok
+
+
+def test_cover_endpoint_comes_after_dimmers():
+    """C<open><close> is a cover; it must get its own endpoint after the dimmer,
+    not be laid over endpoint 1."""
+    with StubProc(device_config="A;B;DM1;CC0C1;") as proc:
+        device = Device(proc)
+        assert device.read_zigbee_attr(1, ZCL_CLUSTER_LEVEL_CONTROL, ZCL_ATTR_CURRENT_LEVEL) is not None
+        assert device.read_zigbee_attr(2, ZCL_CLUSTER_WINDOW_COVERING, ZCL_ATTR_COVER_FIRST) is not None
+        res = proc.exec(f"zcl_read 1 0x{ZCL_CLUSTER_WINDOW_COVERING:04X} 0x{ZCL_ATTR_COVER_FIRST:04X}")
+        assert not res.ok
