@@ -37,6 +37,7 @@ static void dp_echo_arm(uint8_t dpid)
     }
     g_echo_dp[slot] = dpid;
     g_echo_until[slot] = now + DP_ECHO_WINDOW_MS;
+    if (g_echo_until[slot] == 0) { g_echo_until[slot] = 1; } /* 0 = free */
 }
 
 static uint8_t dp_echo_consume(uint8_t dpid)
@@ -44,7 +45,9 @@ static uint8_t dp_echo_consume(uint8_t dpid)
     uint32_t now = hal_millis();
     for (uint8_t i = 0; i < DP_ECHO_SLOTS; i++)
     {
-        if (g_echo_dp[i] == dpid && g_echo_until[i] > now)
+        /* Signed difference: stays right when hal_millis() wraps. */
+        if (g_echo_dp[i] == dpid && g_echo_until[i] != 0 &&
+            (int32_t)(g_echo_until[i] - now) > 0)
         {
             g_echo_until[i] = 0;   // one echo per write
             return 1;
