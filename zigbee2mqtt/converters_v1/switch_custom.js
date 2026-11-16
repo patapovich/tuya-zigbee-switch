@@ -7,7 +7,6 @@ const {
     text,
     binary,
     windowCovering,
-    deviceAddCustomCluster,
 } = require("zigbee-herdsman-converters/lib/modernExtend");
 const {assertString} = require("zigbee-herdsman-converters/lib/utils");
 const reporting = require("zigbee-herdsman-converters/lib/reporting");
@@ -525,16 +524,34 @@ const romasku = {
             valueMax: 254,
             entityCategory: "config",
         }),
-    dimmerSwitchType: (name, endpointName) =>
-        enumLookup({
+    dimmerSwitchType: (name, endpointName) => {
+        const lookup = { toggle: 0, state: 1, momentary: 2 };
+        const extend = enumLookup({
             name,
             endpointName,
-            lookup: { toggle: 0, state: 1, momentary: 2 },
+            lookup,
             cluster: "genOnOffSwitchCfg",
             attribute: "switchType",
             description: "Type of physical dimmer/switch",
             entityCategory: "config",
-        }),
+        });
+        // ZCL marks switchType read-only and zigbee-herdsman refuses to write it
+        // by name; the firmware accepts the write, so write it by attribute id.
+        // (Overriding genOnOffSwitchCfg with a custom cluster instead left the
+        // cluster nameless in z2m, which crashed the frontend's Bind page.)
+        extend.toZigbee = extend.toZigbee.map((converter) => ({
+            ...converter,
+            convertSet: async (entity, key, value, meta) => {
+                const raw = lookup[value];
+                if (raw === undefined) {
+                    throw new Error(`${key}: invalid value '${value}'`);
+                }
+                await entity.write("genOnOffSwitchCfg", {0x0000: {value: raw, type: Zcl.DataType.ENUM8}});
+                return {state: {[key]: value}};
+            },
+        }));
+        return extend;
+    },
     dimmerPowerOnBehavior: (name, endpointName) =>
         enumLookup({
             name,
@@ -1930,17 +1947,6 @@ const definitions = [
             romasku.deviceConfig("device_config", "dimmer_left"),
             romasku.deviceConfigExt("device_config_ext", "dimmer_left"),
             romasku.multiPressResetCount("multi_press_reset_count", "dimmer_left"),
-            // genOnOffSwitchCfg.switchType is read-only per ZCL spec; override it
-            // as writable so Z2M accepts writing the dimmer switch type
-            // (same pattern as Slacky-DIY / custom_devices_diy.ts).
-            deviceAddCustomCluster("genOnOffSwitchCfg", {
-                ID: 0x0007,
-                attributes: {
-                    switchType: {ID: 0x0000, type: Zcl.DataType.ENUM8, write: true},
-                },
-                commands: {},
-                commandsResponse: {},
-            }),
             light({ endpointNames: ["dimmer_left"], effect: false, powerOnBehavior: false }),
             romasku.dimmerMinLevel("min_level", "dimmer_left"),
             romasku.dimmerMaxLevel("max_level", "dimmer_left"),
