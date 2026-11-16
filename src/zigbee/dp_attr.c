@@ -221,9 +221,7 @@ void dp_attr_init(void) {
 }
 
 void dp_attr_query_all(void) {
-    if (dp_attrs_cnt == 0) {
-        return;
-    }
+    /* Callers decide whether a dump is useful (dp attributes, dimmers). */
     g_bulk_dump_armed      = 1;
     g_bulk_dump_started_ms = hal_millis();
     tuya_secondary_mcu_send_cmd(TUYA_MCU_QUERY_ALL_DP,

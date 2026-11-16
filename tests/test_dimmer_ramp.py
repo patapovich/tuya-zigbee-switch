@@ -21,7 +21,8 @@ def test_move_up_ramps_by_step_and_stop_freezes():
         for _ in range(5):
             dev.step_time(RAMP_PERIOD_MS + 10)
         lvl1 = int(dev.read_zigbee_attr(1, ZCL_CLUSTER_LEVEL_CONTROL, 0x0000))
-        expected = 5 * RAMP_STEP
+        # Off + MoveWithOnOff up: ZCL starts the move at the minimum level (1).
+        expected = 1 + 5 * RAMP_STEP
         expect = expected if expected <= 254 else 254
         assert lvl1 == expect, f"expected ~{expect} after 5 steps, got {lvl1}"
 
