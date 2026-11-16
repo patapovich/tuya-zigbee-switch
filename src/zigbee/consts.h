@@ -51,6 +51,7 @@
 #define ZCL_ATTR_BASIC_MCU_DIAG_COUNTERS          0xff40
 #define ZCL_ATTR_BASIC_MCU_DIAG_LOG_FIRST         0xff41
 #define TUYA_MCU_DIAG_LOG_PAGES                   5 // 0xff41..0xff45
+#define ZCL_ATTR_BASIC_MCU_DIAG_RAW_CMD           0xff4e
 #define ZCL_ATTR_BASIC_MCU_DIAG_CONTROL           0xff4f
 #define ZCL_ATTR_BASIC_STATUS_LED_STATE           0xff01
 #define ZCL_ATTR_BASIC_MULTI_PRESS_RESET_COUNT    0xff02

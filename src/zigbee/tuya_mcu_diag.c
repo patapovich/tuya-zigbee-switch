@@ -1,6 +1,7 @@
 #include "zigbee/tuya_mcu_diag.h"
 #include "zigbee/consts.h"
 #include "hal/timer.h"
+#include "zigbee/tuya_secondary_mcu.h"
 
 #include <string.h>
 
@@ -19,6 +20,12 @@ static tuya_mcu_diag_page_t g_pages[TUYA_MCU_DIAG_LOG_PAGES];
 static uint8_t g_log[DIAG_LOG_ENTRIES * DIAG_ENTRY_SIZE];
 static uint8_t g_log_count = 0;
 static uint8_t g_control   = 0;
+
+#define DIAG_RAW_MAX    20
+static struct {
+    uint8_t len;
+    uint8_t data[DIAG_RAW_MAX];
+} g_raw;
 
 void tuya_mcu_diag_clear(void) {
     memset(&tuya_mcu_diag, 0, sizeof(tuya_mcu_diag));
@@ -98,12 +105,23 @@ uint8_t tuya_mcu_diag_register(hal_zigbee_attribute *table, uint8_t start_index)
                   ZCL_DATA_TYPE_OCTET_STR, ATTR_READONLY, &g_pages[k],
                   (uint8_t)sizeof(g_pages[k]));
     }
+    diag_attr(&table[i++], ZCL_ATTR_BASIC_MCU_DIAG_RAW_CMD, ZCL_DATA_TYPE_OCTET_STR,
+              ATTR_WRITABLE, &g_raw, (uint8_t)sizeof(g_raw));
     diag_attr(&table[i++], ZCL_ATTR_BASIC_MCU_DIAG_CONTROL, ZCL_DATA_TYPE_UINT8,
               ATTR_WRITABLE, &g_control, (uint8_t)sizeof(g_control));
     return (uint8_t)(i - start_index);
 }
 
 uint8_t tuya_mcu_diag_on_write(uint16_t attribute_id) {
+    if (attribute_id == ZCL_ATTR_BASIC_MCU_DIAG_RAW_CMD) {
+        uint8_t len = g_raw.len < DIAG_RAW_MAX ? g_raw.len : DIAG_RAW_MAX;
+        if (len >= 1) {
+            tuya_secondary_mcu_queue_cmd(g_raw.data[0], len > 1 ? &g_raw.data[1] : NULL,
+                                         (uint16_t)(len - 1));
+        }
+        g_raw.len = 0;
+        return 0;
+    }
     if (attribute_id != ZCL_ATTR_BASIC_MCU_DIAG_CONTROL) {
         return 0;
     }

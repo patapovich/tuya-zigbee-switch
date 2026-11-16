@@ -15,7 +15,9 @@
  *               t_ms (u16, hal_millis() low bits), kind (u8), id (u8, DP id
  *               or command), value (u32)
  *   control     uint8: 1 clears counters and log, 2 asks the MCU for a full
- *               DP dump
+ *               DP dump, 0x80 + cmd sends cmd with no data
+ *   raw command octet string <cmd> <data...>, written: that frame goes to
+ *               the MCU (protocol probe); the answer lands in the log
  *
  * Decoder: helper_scripts/decode_mcu_diag.py
  */

@@ -209,3 +209,31 @@ def test_control_0x80_plus_cmd_sends_bare_command_and_logs_answer():
         assert int(device.read_zigbee_attr(1, BASIC, ATTR_CONTROL)) == 0
     finally:
         proc.stop()
+
+
+ATTR_RAW_CMD = 0xFF4E
+TUYA_CMD_MCU_OTA_NOTIFY = 0x0C
+
+
+def test_raw_command_attribute_sends_frame_with_data():
+    """Protocol probe with data: an MCU OTA notify (0x0C, 17 bytes) written as
+    <cmd> <data> goes to the MCU unchanged."""
+    proc, device = start()
+    try:
+        device.step_time(2100)
+        pump(proc)
+        take_tx(proc)
+        data = b"xxxxxxxx" + bytes([0x48]) + (1024).to_bytes(4, "big") + bytes(4)
+        raw = bytes([1 + len(data), TUYA_CMD_MCU_OTA_NOTIFY]) + data
+        device.write_zigbee_attr(1, BASIC, ATTR_RAW_CMD, raw.hex())
+        device.step_time(200)
+        pump(proc)
+        from test_dimmer_mcu import parse_frames
+        assert (TUYA_CMD_MCU_OTA_NOTIFY, data) in parse_frames(take_tx(proc))
+        proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_MCU_OTA_NOTIFY, bytes([0x01]))}")
+        pump(proc)
+        rx = [e for e in log(device)
+              if e["kind"] == "RX_CMD" and e["id"] == TUYA_CMD_MCU_OTA_NOTIFY]
+        assert rx and rx[-1]["value"] == 0x01
+    finally:
+        proc.stop()

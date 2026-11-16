@@ -130,7 +130,7 @@ typedef struct {
     uint8_t dpid;    /* DP writes only */
     uint8_t dp_type;
     uint8_t len;
-    uint8_t value[16];
+    uint8_t value[20]; /* 17 for an MCU OTA notify (0x0C) */
 } tx_item_t;
 
 static tx_item_t  g_txq[TX_QUEUE_LEN];
