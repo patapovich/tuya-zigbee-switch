@@ -9,6 +9,11 @@ void hal_uart_deinit(void)
 {
 }
 
+uint16_t hal_uart_rx_dropped(void)
+{
+  return 0;
+}
+
 uint16_t hal_uart_rx_available(void)
 {
   return 0;

@@ -198,6 +198,21 @@ const char *stub_app_attribute_value_to_string(hal_zigbee_attribute *attr,
             buf[0] = '\0';
         }
         break;
+    case ZCL_DATA_TYPE_OCTET_STR: {
+        size_t pos = 0;
+        buf[0] = '\0';
+        if (attr->size >= 1) {
+            uint8_t len = attr->value[0];
+            if (len > attr->size - 1)
+                len = attr->size - 1;
+            for (uint8_t i = 0; i < len && pos + 3 <= bufsize; i++)
+                pos += (size_t)snprintf(buf + pos, bufsize - pos, "%02X",
+                                        attr->value[1 + i]);
+        }
+        if (pos == 0)
+            snprintf(buf, bufsize, "-"); /* empty: keep the field non-blank */
+        break;
+    }
     case ZCL_DATA_TYPE_CHAR_STR: {
         if (attr->size >= 1) {
             uint8_t len = attr->value[0];

@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "hal/uart.h"
+#include "hal/zigbee.h"
 
 /*
  * Tuya Zigbee module / secondary MCU framing as seen in issue #387
@@ -136,6 +137,47 @@ void tuya_secondary_mcu_register_command_callback(
  * called periodically (e.g. from the main app tick) to receive DP reports.
  */
 void tuya_secondary_mcu_poll(void);
+
+/* ---- link diagnostics over Zigbee ----------------------------------------
+ *
+ * Manufacturer specific attributes on the Basic cluster of the first endpoint,
+ * registered only on devices that use a secondary MCU. Meant for bench work:
+ * they show what the MCU actually does without a wire on the UART.
+ *
+ *   0xff40  counters   octet string, see tuya_mcu_diag_counters_t (LE)
+ *   0xff41..0xff45     event log pages, octet strings of 8 byte entries,
+ *                      oldest first across the pages (6 entries per page)
+ *   0xff4f  control    uint8, write 1 to clear counters and log
+ *
+ * Log entry: t_ms (u16 LE, hal_millis() low bits), kind (u8), id (u8, DP id or
+ * command), value (u32 LE). Decoder: helper_scripts/decode_mcu_diag.py
+ */
+#define ZCL_ATTR_BASIC_MCU_DIAG_COUNTERS    0xff40
+#define ZCL_ATTR_BASIC_MCU_DIAG_LOG_FIRST   0xff41
+#define ZCL_ATTR_BASIC_MCU_DIAG_CONTROL     0xff4f
+#define TUYA_MCU_DIAG_LOG_PAGES             5
+
+typedef enum {
+    TUYA_MCU_DIAG_TX_DP        = 1, /* id = dpid, value = DP value */
+    TUYA_MCU_DIAG_TX_CMD       = 2, /* id = cmd, value = first payload bytes */
+    TUYA_MCU_DIAG_RX_DP        = 3, /* 0x06 report, id = dpid, value */
+    TUYA_MCU_DIAG_RX_DP_PASSIVE = 4, /* 0x05 report, id = dpid, value */
+    TUYA_MCU_DIAG_RX_CMD       = 5, /* id = cmd, value = first payload bytes */
+    TUYA_MCU_DIAG_ACK          = 6, /* id = dpid, value = latency in ms */
+    TUYA_MCU_DIAG_ACK_TIMEOUT  = 7, /* id = dpid */
+    TUYA_MCU_DIAG_RX_BAD       = 8, /* id = cmd, value = frame length */
+    TUYA_MCU_DIAG_TX_DROP      = 9, /* queue full, id = dpid */
+    TUYA_MCU_DIAG_TX_FAIL      = 10, /* UART write failed, id = dpid or cmd */
+    TUYA_MCU_DIAG_UART_REINIT  = 11,
+} tuya_mcu_diag_kind_t;
+
+/** Append the diagnostics attributes to a Basic cluster attribute table.
+ *  Returns how many entries were written. */
+uint8_t tuya_secondary_mcu_diag_register(hal_zigbee_attribute *table,
+                                         uint8_t start_index);
+
+/** Basic cluster attribute write hook (handles the control attribute). */
+void tuya_secondary_mcu_diag_on_write(uint16_t attribute_id);
 
 /**
  * Initialize the secondary MCU UART path.

@@ -41,6 +41,10 @@ void hal_uart_deinit(void);
 /** Return the number of bytes that can be drained from the UART RX queue. */
 uint16_t hal_uart_rx_available(void);
 
+/** Bytes received but thrown away by the platform (buffer full / oversized
+ *  DMA chunk) since boot. Diagnostics only; wraps at 65535. */
+uint16_t hal_uart_rx_dropped(void);
+
 /** Empty the RX and TX queues for a UART instance. */
 void hal_uart_flush(void);
 

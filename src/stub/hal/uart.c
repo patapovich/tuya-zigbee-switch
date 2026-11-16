@@ -93,6 +93,13 @@ void hal_uart_deinit(void)
   io_log("UART", "deinit");
 }
 
+static uint16_t g_hal_uart_stub_rx_dropped = 0;
+
+uint16_t hal_uart_rx_dropped(void)
+{
+  return g_hal_uart_stub_rx_dropped;
+}
+
 uint16_t hal_uart_rx_available(void)
 {
   if (!g_hal_uart_stub.initialized)
@@ -228,6 +235,7 @@ void stub_uart_inject_rx(const uint8_t *data, uint16_t len)
     if (ring_room(&g_hal_uart_stub, g_hal_uart_stub.rx_head,
                   g_hal_uart_stub.rx_tail) == 0)
     {
+      g_hal_uart_stub_rx_dropped += (uint16_t)(len - i);
       break;
     }
     ring_push_byte(g_hal_uart_stub.rx_buf, &g_hal_uart_stub.rx_head,

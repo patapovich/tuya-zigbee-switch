@@ -9,7 +9,7 @@ typedef struct {
     uint8_t              deviceEnable;
     char                 manuName[32];
     char                 modelId[32];
-    hal_zigbee_attribute attr_infos[32];
+    hal_zigbee_attribute attr_infos[40]; // 13 fixed + led + 2 config + 12 dp attrs + 7 MCU diag
 } zigbee_basic_cluster;
 
 void basic_cluster_add_to_endpoint(zigbee_basic_cluster *cluster,
