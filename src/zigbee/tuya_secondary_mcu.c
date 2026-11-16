@@ -363,9 +363,9 @@ int tuya_secondary_mcu_init(const hal_uart_config_t *cfg) {
     return 0;
 }
 
-int tuya_secondary_mcu_send_cmd(uint8_t cmd, uint16_t seq,
+static int tuya_write_cmd_frame(uint8_t cmd, uint16_t seq,
                                 const uint8_t *payload, uint16_t len) {
-    if (!tuya_secondary_mcu_is_enabled() || len > 32) {
+    if (len > 32 || (len > 0 && payload == NULL)) {
         return -1;
     }
 
@@ -397,6 +397,17 @@ int tuya_secondary_mcu_send_cmd(uint8_t cmd, uint16_t seq,
     return ok ? 0 : -1;
 }
 
+/* Immediate: for answers to something the MCU asked (they echo its seq and
+ * the MCU is waiting for them). Commands we start go through the queue, see
+ * tuya_secondary_mcu_queue_cmd(). */
+int tuya_secondary_mcu_send_cmd(uint8_t cmd, uint16_t seq,
+                                const uint8_t *payload, uint16_t len) {
+    if (!tuya_secondary_mcu_is_enabled()) {
+        return -1;
+    }
+    return tuya_write_cmd_frame(cmd, seq, payload, len);
+}
+
 /* ---- TX queue ------------------------------------------------------------
  *
  * The MCU answers every DP write with a report of that DP. Writing the next
@@ -412,8 +423,12 @@ int tuya_secondary_mcu_send_cmd(uint8_t cmd, uint16_t seq,
 #define TUYA_TX_QUEUE_LEN         8
 #define TUYA_TX_ACK_TIMEOUT_MS    150
 
+#define TUYA_TX_KIND_DP           0
+#define TUYA_TX_KIND_CMD          1
+
 typedef struct {
-    uint8_t dpid;
+    uint8_t kind;    /* TUYA_TX_KIND_* */
+    uint8_t id;      /* DP id or command */
     uint8_t dp_type;
     uint8_t len;
     uint8_t value[16];
@@ -422,19 +437,29 @@ typedef struct {
 static tuya_tx_item_t g_txq[TUYA_TX_QUEUE_LEN];
 static uint8_t        g_txq_head          = 0;
 static uint8_t        g_txq_count         = 0;
-static uint8_t        g_tx_in_flight_dpid = 0; /* 0 = nothing in flight */
+static uint8_t        g_tx_busy           = 0; /* a frame is in flight */
+static uint8_t        g_tx_in_flight_kind = 0;
+static uint8_t        g_tx_in_flight_id   = 0;
+static uint32_t       g_tx_sent_ms        = 0;
 static hal_task_t     g_tx_timeout_task;
 static uint8_t        g_tx_task_ready = 0;
+static tuya_secondary_mcu_tx_callback_t g_tx_callback = NULL;
 
 static void tuya_tx_kick(void);
 
-static uint32_t g_tx_sent_ms = 0;
+static void tuya_tx_arm_timer(void) {
+    hal_tasks_unschedule(&g_tx_timeout_task);
+    hal_tasks_schedule(&g_tx_timeout_task, TUYA_TX_ACK_TIMEOUT_MS);
+}
 
+/* Ack timeout for the frame in flight, or the retry after a failed write. */
 static void tuya_tx_timeout(void *arg) {
     (void)arg;
-    g_diag.tx_timeout++;
-    diag_log(TUYA_MCU_DIAG_ACK_TIMEOUT, g_tx_in_flight_dpid, 0);
-    g_tx_in_flight_dpid = 0;
+    if (g_tx_busy) {
+        g_diag.tx_timeout++;
+        diag_log(TUYA_MCU_DIAG_ACK_TIMEOUT, g_tx_in_flight_id, 0);
+        g_tx_busy = 0;
+    }
     tuya_tx_kick();
 }
 
@@ -448,65 +473,85 @@ static void tuya_tx_task_init(void) {
     g_tx_task_ready = 1;
 }
 
-static int tuya_tx_send_now(uint8_t dpid, uint8_t dp_type,
-                            const void *value, uint16_t value_len) {
-    uint8_t  buffer[64];
-    uint16_t written = 0;
-    int      status  = tuya_secondary_mcu_send_dp(dpid, dp_type, value, value_len,
-                                                  buffer, sizeof(buffer), &written);
+static int tuya_tx_send_now(const tuya_tx_item_t *item) {
+    int ok;
 
-    if (status != 0) {
-        return status;
+    tuya_tx_task_init();
+    if (item->kind == TUYA_TX_KIND_CMD) {
+        ok = tuya_write_cmd_frame(item->id, tuya_secondary_mcu_next_tx_seq(),
+                                  item->value, item->len) == 0;
+    } else {
+        uint8_t  buffer[64];
+        uint16_t written = 0;
+        if (tuya_secondary_mcu_send_dp(item->id, item->dp_type, item->value, item->len,
+                                       buffer, sizeof(buffer), &written) != 0) {
+            return -1;
+        }
+        ok = (hal_uart_write(buffer, written, NULL) == HAL_UART_OK);
+        tuya_uart_note_write(ok);
+        if (ok) {
+            g_diag.tx_dp++;
+            diag_log(TUYA_MCU_DIAG_TX_DP, item->id, diag_be_number(item->value, item->len));
+        } else {
+            g_diag.tx_fail++;
+            diag_log(TUYA_MCU_DIAG_TX_FAIL, item->id, 0);
+        }
     }
-    int ok = (hal_uart_write(buffer, written, NULL) == HAL_UART_OK);
-    tuya_uart_note_write(ok);
     if (!ok) {
-        g_diag.tx_fail++;
-        diag_log(TUYA_MCU_DIAG_TX_FAIL, dpid, 0);
         return -1;
     }
-    g_diag.tx_dp++;
-    diag_log(TUYA_MCU_DIAG_TX_DP, dpid,
-             diag_be_number((const uint8_t *)value, value_len));
-    g_tx_sent_ms = hal_millis();
-    tuya_tx_task_init();
-    g_tx_in_flight_dpid = dpid;
-    hal_tasks_unschedule(&g_tx_timeout_task);
-    hal_tasks_schedule(&g_tx_timeout_task, TUYA_TX_ACK_TIMEOUT_MS);
+    g_tx_sent_ms        = hal_millis();
+    g_tx_busy           = 1;
+    g_tx_in_flight_kind = item->kind;
+    g_tx_in_flight_id   = item->id;
+    tuya_tx_arm_timer();
+    if (item->kind == TUYA_TX_KIND_DP && g_tx_callback != NULL) {
+        g_tx_callback(item->id);
+    }
     return 0;
 }
 
 static void tuya_tx_kick(void) {
-    while (g_tx_in_flight_dpid == 0 && g_txq_count > 0) {
+    while (!g_tx_busy && g_txq_count > 0) {
         tuya_tx_item_t item = g_txq[g_txq_head];
         g_txq_head = (uint8_t)((g_txq_head + 1) % TUYA_TX_QUEUE_LEN);
         g_txq_count--;
-        /* A failed write leaves nothing in flight; try the next entry. */
-        tuya_tx_send_now(item.dpid, item.dp_type, item.value, item.len);
+        if (tuya_tx_send_now(&item) != 0) {
+            /* The UART would not take it (the write already spun up to its
+             * limit): retry the rest later instead of spinning again for
+             * every queued frame in this main loop pass. */
+            tuya_tx_arm_timer();
+            break;
+        }
     }
 }
 
-/* Called for every DP the MCU reports: a report of the DP in flight is the
- * MCU's answer, so the slot is free again. */
+/* Called for every DP the MCU reports. A report of the DP in flight is the
+ * MCU's answer to it; for a command we started (query-all) the first report
+ * is the start of the answer. Either way the slot is free again. */
 static void tuya_tx_note_report(uint8_t dpid) {
-    if (g_tx_in_flight_dpid != 0 && dpid == g_tx_in_flight_dpid) {
-        uint32_t latency = hal_millis() - g_tx_sent_ms;
-        if (latency > 0xFFFF) {
-            latency = 0xFFFF;
-        }
-        g_diag.tx_ack++;
-        g_diag.ack_latency_last_ms = (uint16_t)latency;
-        if (latency > g_diag.ack_latency_max_ms) {
-            g_diag.ack_latency_max_ms = (uint16_t)latency;
-        }
-        diag_log(TUYA_MCU_DIAG_ACK, dpid, latency);
-        g_tx_in_flight_dpid = 0;
-        hal_tasks_unschedule(&g_tx_timeout_task);
+    if (!g_tx_busy) {
+        return;
     }
+    if (g_tx_in_flight_kind == TUYA_TX_KIND_DP && dpid != g_tx_in_flight_id) {
+        return;
+    }
+    uint32_t latency = hal_millis() - g_tx_sent_ms;
+    if (latency > 0xFFFF) {
+        latency = 0xFFFF;
+    }
+    g_diag.tx_ack++;
+    g_diag.ack_latency_last_ms = (uint16_t)latency;
+    if (latency > g_diag.ack_latency_max_ms) {
+        g_diag.ack_latency_max_ms = (uint16_t)latency;
+    }
+    diag_log(TUYA_MCU_DIAG_ACK, g_tx_in_flight_id, latency);
+    g_tx_busy = 0;
+    hal_tasks_unschedule(&g_tx_timeout_task);
 }
 
-int tuya_secondary_mcu_write_dp(uint8_t dpid, uint8_t dp_type,
-                                const void *value, uint16_t value_len) {
+static int tuya_tx_enqueue(uint8_t kind, uint8_t id, uint8_t dp_type,
+                           const void *value, uint16_t value_len) {
     if (!tuya_secondary_mcu_is_enabled()) {
         return -1;
     }
@@ -514,36 +559,56 @@ int tuya_secondary_mcu_write_dp(uint8_t dpid, uint8_t dp_type,
         return -1;
     }
 
-    /* Coalesce with a queued (not yet sent) write of the same DP. */
+    /* A newer write of something still waiting in the queue replaces it, and
+     * moves to the tail: the MCU sees the latest writes in the order they were
+     * made (off, on-at-80, off must not become off, level 80). */
     for (uint8_t i = 0; i < g_txq_count; i++) {
-        tuya_tx_item_t *item = &g_txq[(g_txq_head + i) % TUYA_TX_QUEUE_LEN];
-        if (item->dpid == dpid) {
-            item->dp_type = dp_type;
-            item->len     = (uint8_t)value_len;
-            memcpy(item->value, value, value_len);
+        tuya_tx_item_t *queued = &g_txq[(g_txq_head + i) % TUYA_TX_QUEUE_LEN];
+        if (queued->kind == kind && queued->id == id) {
+            for (uint8_t j = i; j + 1 < g_txq_count; j++) {
+                g_txq[(g_txq_head + j) % TUYA_TX_QUEUE_LEN] =
+                    g_txq[(g_txq_head + j + 1) % TUYA_TX_QUEUE_LEN];
+            }
+            g_txq_count--;
             g_diag.tx_coalesced++;
-            return 0;
+            break;
         }
     }
 
-    if (g_tx_in_flight_dpid == 0 && g_txq_count == 0) {
-        return tuya_tx_send_now(dpid, dp_type, value, value_len);
+    tuya_tx_item_t item;
+    item.kind    = kind;
+    item.id      = id;
+    item.dp_type = dp_type;
+    item.len     = (uint8_t)value_len;
+    if (value_len > 0) {
+        memcpy(item.value, value, value_len);
     }
 
+    if (!g_tx_busy && g_txq_count == 0) {
+        return tuya_tx_send_now(&item);
+    }
     if (g_txq_count >= TUYA_TX_QUEUE_LEN) {
-        printf("Secondary MCU TX queue full, dropping DP %d\r\n", dpid);
+        printf("Secondary MCU TX queue full, dropping %d\r\n", id);
         g_diag.tx_drop++;
-        diag_log(TUYA_MCU_DIAG_TX_DROP, dpid, 0);
+        diag_log(TUYA_MCU_DIAG_TX_DROP, id, 0);
         return -1;
     }
-    tuya_tx_item_t *item =
-        &g_txq[(g_txq_head + g_txq_count) % TUYA_TX_QUEUE_LEN];
-    item->dpid    = dpid;
-    item->dp_type = dp_type;
-    item->len     = (uint8_t)value_len;
-    memcpy(item->value, value, value_len);
+    g_txq[(g_txq_head + g_txq_count) % TUYA_TX_QUEUE_LEN] = item;
     g_txq_count++;
     return 0;
+}
+
+int tuya_secondary_mcu_write_dp(uint8_t dpid, uint8_t dp_type,
+                                const void *value, uint16_t value_len) {
+    return tuya_tx_enqueue(TUYA_TX_KIND_DP, dpid, dp_type, value, value_len);
+}
+
+int tuya_secondary_mcu_queue_cmd(uint8_t cmd, const uint8_t *payload, uint16_t len) {
+    return tuya_tx_enqueue(TUYA_TX_KIND_CMD, cmd, 0, payload, len);
+}
+
+void tuya_secondary_mcu_register_tx_callback(tuya_secondary_mcu_tx_callback_t callback) {
+    g_tx_callback = callback;
 }
 
 static tuya_secondary_mcu_dp_report_callback_t g_dp_report_callback = NULL;
@@ -567,8 +632,36 @@ void tuya_secondary_mcu_register_command_callback(
 // Assembly buffer for reconstructing frames arriving byte-by-byte over UART.
 /* A full status dump of a two channel dimmer (13 DPs) is ~100 bytes. */
 #define TUYA_RX_ASSEMBLY_CAPACITY    256
+
+/* Silence after which a frame that is still incomplete is given up: the rest
+ * is not coming (dropped DMA chunk, ring overflow, line glitch). Bytes of one
+ * frame arrive back to back, ~1 ms apart even at 9600 baud. */
+#define TUYA_RX_FRAME_TIMEOUT_MS     50
 static uint8_t  g_rx_assembly[TUYA_RX_ASSEMBLY_CAPACITY];
 static uint16_t g_rx_assembly_len = 0;
+static uint32_t g_rx_last_byte_ms = 0;
+
+static void tuya_rx_drop(uint16_t n) {
+    if (n > g_rx_assembly_len) {
+        n = g_rx_assembly_len;
+    }
+    memmove(g_rx_assembly, g_rx_assembly + n, g_rx_assembly_len - n);
+    g_rx_assembly_len -= n;
+}
+
+/* Waiting for more bytes of the frame at the head. If none came for a while,
+ * drop its sync bytes so the next frame is not swallowed by this one.
+ * Returns 1 if bytes were dropped (caller rescans). */
+static uint8_t tuya_rx_drop_if_stale(void) {
+    if (g_rx_assembly_len == 0 ||
+        (hal_millis() - g_rx_last_byte_ms) < TUYA_RX_FRAME_TIMEOUT_MS) {
+        return 0;
+    }
+    g_diag.rx_bad++;
+    diag_log(TUYA_MCU_DIAG_RX_BAD, g_rx_assembly_len > 5 ? g_rx_assembly[5] : 0, 0);
+    tuya_rx_drop(g_rx_assembly_len >= 2 ? 2 : g_rx_assembly_len);
+    return 1;
+}
 
 static void tuya_secondary_mcu_process_assembly(void) {
     for (;;) {
@@ -581,21 +674,28 @@ static void tuya_secondary_mcu_process_assembly(void) {
 
         // Need the fixed 8-byte header (incl. dlen) to know the full frame size.
         if (g_rx_assembly_len < 8) {
+            if (tuya_rx_drop_if_stale()) {
+                continue;
+            }
             return;
         }
 
-        uint16_t dlen      = (uint16_t)((g_rx_assembly[6] << 8) | g_rx_assembly[7]);
-        uint16_t frame_len = 8 + dlen + 1; // header + payload + checksum
+        uint16_t dlen = (uint16_t)((g_rx_assembly[6] << 8) | g_rx_assembly[7]);
+        /* 32 bit: 8 + 0xFFF7 + 1 wraps to 0 in 16 bit and passed the check. */
+        uint32_t frame_len32 = 8u + dlen + 1u; // header + payload + checksum
 
-        if (frame_len > TUYA_RX_ASSEMBLY_CAPACITY) {
+        if (frame_len32 > TUYA_RX_ASSEMBLY_CAPACITY) {
             // Corrupt/oversized frame: drop the sync bytes and try to resync.
             g_diag.rx_oversize++;
-            memmove(g_rx_assembly, g_rx_assembly + 2, g_rx_assembly_len - 2);
-            g_rx_assembly_len -= 2;
+            tuya_rx_drop(2);
             continue;
         }
+        uint16_t frame_len = (uint16_t)frame_len32;
 
         if (g_rx_assembly_len < frame_len) {
+            if (tuya_rx_drop_if_stale()) {
+                continue;
+            }
             return; // wait for the rest of the frame
         }
 
@@ -608,8 +708,12 @@ static void tuya_secondary_mcu_process_assembly(void) {
         if (frame_ok) {
             g_diag.rx_frames++;
         }else {
+            /* Not a frame after all (or a damaged one): skip only its sync
+             * bytes and rescan, a real frame may start inside it. */
             g_diag.rx_bad++;
             diag_log(TUYA_MCU_DIAG_RX_BAD, cmd, frame_len);
+            tuya_rx_drop(2);
+            continue;
         }
 
         if (frame_ok &&
@@ -651,11 +755,7 @@ static void tuya_secondary_mcu_process_assembly(void) {
             }
         }
 
-        // Consume this frame regardless of decode success, so a checksum
-        // mismatch can't get us stuck resyncing on the same bytes forever.
-        memmove(g_rx_assembly, g_rx_assembly + frame_len,
-                g_rx_assembly_len - frame_len);
-        g_rx_assembly_len -= frame_len;
+        tuya_rx_drop(frame_len);
 
         /* Callbacks may have queued writes; an ack may have freed the slot. */
         tuya_tx_kick();
@@ -678,6 +778,7 @@ void tuya_secondary_mcu_poll(void) {
             break;
         }
         g_rx_assembly_len += read_len;
+        g_rx_last_byte_ms  = hal_millis();
     }
 
     g_diag.rx_hal_dropped = hal_uart_rx_dropped();

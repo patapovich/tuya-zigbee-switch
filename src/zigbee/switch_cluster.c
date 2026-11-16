@@ -82,6 +82,12 @@ void switch_cluster_report_action(zigbee_switch_cluster *cluster);
 
 void switch_cluster_callback_attr_write_trampoline(uint8_t endpoint,
                                                    uint16_t attribute_id) {
+    // genOnOffSwitchCfg also lives on dimmer endpoints, which have no switch
+    // cluster: no-op there instead of writing through a NULL cluster.
+    if (endpoint >= sizeof(switch_cluster_by_endpoint) / sizeof(switch_cluster_by_endpoint[0]) ||
+        switch_cluster_by_endpoint[endpoint] == NULL) {
+        return;
+    }
     switch_cluster_on_write_attr(switch_cluster_by_endpoint[endpoint],
                                  attribute_id);
 }

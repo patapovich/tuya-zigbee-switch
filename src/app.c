@@ -68,22 +68,25 @@ void process_device_type_change() {
 #define TUYA_GW_STATUS_OFFLINE            0x00
 #define TUYA_GW_STATUS_ONLINE             0x01
 
-/* Set once we have asked the MCU for a full datapoint dump. */
-static uint8_t dp_query_sent = 0;
-
-/* The first time we know the MCU is listening: apply the IT-declared values
- * and ask for a full datapoint dump. Triggered by the MCU's first network
- * status query, or by a timer shortly after boot: the ZDMS16-2 MCU never
- * sends that query on its own (seen on the bench, 2026-11-16), so without
- * the timer min/max/switch type were never read back. */
-#define MCU_FIRST_CONTACT_DELAY_MS    2000
+/* First contact with the MCU: apply the IT-declared values and ask for a full
+ * datapoint dump. The MCU's own first network status query (0x20) is the
+ * reliable signal that it listens. Some MCUs never send it (the ZDMS16-2's,
+ * bench 2026-11-16), so a timer shortly after boot does it as a fallback;
+ * if the MCU's 0x20 still comes after that, it is done once more, because
+ * what the timer sent may have been dropped by an MCU not yet in sync. */
+#define MCU_CONTACT_NONE                  0
+#define MCU_CONTACT_TIMER                 1
+#define MCU_CONTACT_MCU                   2
+#define MCU_FIRST_CONTACT_DELAY_MS        2000
+static uint8_t    mcu_contact = MCU_CONTACT_NONE;
 static hal_task_t mcu_first_contact_task;
 
-static void mcu_first_contact(void) {
-    if (dp_query_sent) {
+static void mcu_first_contact(uint8_t source) {
+    if (mcu_contact == MCU_CONTACT_MCU ||
+        (source == MCU_CONTACT_TIMER && mcu_contact != MCU_CONTACT_NONE)) {
         return;
     }
-    dp_query_sent = 1;
+    mcu_contact = source;
 
     /* Apply the IT-declared datapoint values here, not from
      * app_init(). Writing the config string reboots only the
@@ -101,7 +104,7 @@ static void mcu_first_contact(void) {
 
 static void mcu_first_contact_timer(void *arg) {
     (void)arg;
-    mcu_first_contact();
+    mcu_first_contact(MCU_CONTACT_TIMER);
 }
 
 static void tuya_secondary_mcu_on_command(uint8_t cmd, uint16_t seq,
@@ -140,7 +143,7 @@ static void tuya_secondary_mcu_on_command(uint8_t cmd, uint16_t seq,
                 : TUYA_NET_STATUS_NOT_CONNECTED;
         tuya_secondary_mcu_send_cmd(cmd, seq, &status, 1);
 
-        mcu_first_contact();
+        mcu_first_contact(MCU_CONTACT_MCU);
         return;
     }
 

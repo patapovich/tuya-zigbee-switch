@@ -207,6 +207,10 @@ def set_level(proc: StubProc, device: Device, lvl: int) -> None:
     ack_writes(proc, device)
     device.step_time(SETTLE_MS)
     pump(proc)
+    # The first-contact query-all (2 s after boot) is still in flight: no MCU
+    # here answers it, so let its ack time out before the test goes on.
+    device.step_time(200)
+    pump(proc)
     take_tx(proc)
 
 
