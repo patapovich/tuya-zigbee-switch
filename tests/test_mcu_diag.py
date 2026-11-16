@@ -61,14 +61,15 @@ def test_write_ack_is_logged_with_latency():
         pump(proc)
         take_tx(proc)
         device.step_time(40)
-        mcu_report(proc, value_dp(DP_LEVEL_L1, 787))  # ack of the level write
+        mcu_report(proc, bool_dp(DP_ON_L1, 1))  # ack of the on write
         c = counters(device)
-        assert c["tx_dp"] == 2  # level, then on after the ack
+        assert c["tx_dp"] == 2  # on, then level after the ack
         assert c["tx_ack"] == 1
         assert c["ack_latency_last_ms"] >= 40
         kinds = [(e["kind"], e["id"]) for e in log(device)]
-        assert kinds[:3] == [("TX_DP", DP_LEVEL_L1), ("RX_DP", DP_LEVEL_L1), ("ACK", DP_LEVEL_L1)]
-        tx = [e for e in log(device) if e["kind"] == "TX_DP"]
+        assert kinds[:4] == [("TX_DP", DP_ON_L1), ("RX_DP", DP_ON_L1), ("ACK", DP_ON_L1),
+                             ("TX_DP", DP_LEVEL_L1)]
+        tx = [e for e in log(device) if e["kind"] == "TX_DP" and e["id"] == DP_LEVEL_L1]
         assert tx[0]["value"] == 787
     finally:
         proc.stop()
@@ -85,7 +86,7 @@ def test_ack_timeout_is_counted():
         device.step_time(500)
         pump(proc)
         assert counters(device)["tx_timeout"] >= 1
-        assert ("ACK_TIMEOUT", DP_LEVEL_L1) in [(e["kind"], e["id"]) for e in log(device)]
+        assert ("ACK_TIMEOUT", DP_ON_L1) in [(e["kind"], e["id"]) for e in log(device)]
     finally:
         proc.stop()
 

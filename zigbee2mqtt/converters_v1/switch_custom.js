@@ -249,6 +249,8 @@ const romasku = {
                 for (const part of parts.slice(2)) {
                     if (part == 'SLP') {
                         continue;   
+                    } else if (part == 'DR') {
+                        continue;   // dimmer levels raw (no min..max scaling)
                     } else if (part.startsWith('LP')) {
                         if (!/^LP\d+$/.test(part)) {
                             throw new Error(`Latching pulse option ${part} is invalid. Use LP<N>, e.g. LP100`);
@@ -504,9 +506,10 @@ const romasku = {
     dimmerMinLevel: (name, endpointName) =>
         numeric({
             name,
-            endpointName,
+            endpointNames: [endpointName],
             cluster: "lightingBallastCfg",
             attribute: "minLevel",
+            description: "Minimum brightness of the dimmer (MCU setting). With level scaling (default) brightness 1 is this level.",
             valueMin: 1,
             valueMax: 254,
             entityCategory: "config",
@@ -514,9 +517,10 @@ const romasku = {
     dimmerMaxLevel: (name, endpointName) =>
         numeric({
             name,
-            endpointName,
+            endpointNames: [endpointName],
             cluster: "lightingBallastCfg",
             attribute: "maxLevel",
+            description: "Maximum brightness of the dimmer (MCU setting). With level scaling (default) brightness 254 is this level.",
             valueMin: 1,
             valueMax: 254,
             entityCategory: "config",
@@ -1938,13 +1942,13 @@ const definitions = [
                 commandsResponse: {},
             }),
             light({ endpointNames: ["dimmer_left"], effect: false, powerOnBehavior: false }),
-            romasku.dimmerMinLevel("dimmer_left_min_level", "dimmer_left"),
-            romasku.dimmerMaxLevel("dimmer_left_max_level", "dimmer_left"),
-            romasku.dimmerSwitchType("dimmer_left_switch_type", "dimmer_left"),
+            romasku.dimmerMinLevel("min_level", "dimmer_left"),
+            romasku.dimmerMaxLevel("max_level", "dimmer_left"),
+            romasku.dimmerSwitchType("switch_type", "dimmer_left"),
             light({ endpointNames: ["dimmer_right"], effect: false, powerOnBehavior: false }),
-            romasku.dimmerMinLevel("dimmer_right_min_level", "dimmer_right"),
-            romasku.dimmerMaxLevel("dimmer_right_max_level", "dimmer_right"),
-            romasku.dimmerSwitchType("dimmer_right_switch_type", "dimmer_right"),
+            romasku.dimmerMinLevel("min_level", "dimmer_right"),
+            romasku.dimmerMaxLevel("max_level", "dimmer_right"),
+            romasku.dimmerSwitchType("switch_type", "dimmer_right"),
             // Universal power-on behavior (shared DP, e.g. U0E) - one expose only.
             romasku.dimmerPowerOnBehavior("power_on_behavior"),
         ],

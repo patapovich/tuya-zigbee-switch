@@ -251,6 +251,8 @@ const romasku = {
                 for (const part of parts.slice(2)) {
                     if (part == 'SLP') {
                         continue;   
+                    } else if (part == 'DR') {
+                        continue;   // dimmer levels raw (no min..max scaling)
                     } else if (part.startsWith('LP')) {
                         if (!/^LP\d+$/.test(part)) {
                             throw new Error(`Latching pulse option ${part} is invalid. Use LP<N>, e.g. LP100`);
@@ -506,9 +508,10 @@ const romasku = {
     dimmerMinLevel: (name, endpointName) =>
         numeric({
             name,
-            endpointName,
+            endpointNames: [endpointName],
             cluster: "lightingBallastCfg",
             attribute: "minLevel",
+            description: "Minimum brightness of the dimmer (MCU setting). With level scaling (default) brightness 1 is this level.",
             valueMin: 1,
             valueMax: 254,
             entityCategory: "config",
@@ -516,9 +519,10 @@ const romasku = {
     dimmerMaxLevel: (name, endpointName) =>
         numeric({
             name,
-            endpointName,
+            endpointNames: [endpointName],
             cluster: "lightingBallastCfg",
             attribute: "maxLevel",
+            description: "Maximum brightness of the dimmer (MCU setting). With level scaling (default) brightness 254 is this level.",
             valueMin: 1,
             valueMax: 254,
             entityCategory: "config",
@@ -682,9 +686,9 @@ const definitions = [
             {% endif %}
             {% for dimmerName in device.dimmerNames %}
             light({ endpointNames: ["{{dimmerName}}"], effect: false, powerOnBehavior: false }),
-            romasku.dimmerMinLevel("{{dimmerName}}_min_level", "{{dimmerName}}"),
-            romasku.dimmerMaxLevel("{{dimmerName}}_max_level", "{{dimmerName}}"),
-            romasku.dimmerSwitchType("{{dimmerName}}_switch_type", "{{dimmerName}}"),
+            romasku.dimmerMinLevel("min_level", "{{dimmerName}}"),
+            romasku.dimmerMaxLevel("max_level", "{{dimmerName}}"),
+            romasku.dimmerSwitchType("switch_type", "{{dimmerName}}"),
             {% endfor %}
             {% if device.dimmerNames %}
             // Universal power-on behavior (shared DP, e.g. U0E) - one expose only.

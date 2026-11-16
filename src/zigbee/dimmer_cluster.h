@@ -23,9 +23,16 @@ typedef struct {
     uint8_t              switch_type;
     uint8_t              on;
 
-    /* Level changed while off (MoveToLevel/Step without OnOff): written to
-     * the MCU just before the next "on". */
-    uint8_t              level_dirty;
+    /* What the MCU uses: its own min/max brightness (Tuya 10..1000, 0 =
+     * not known yet) and the last level value written to or reported by it. */
+    uint16_t             mcu_min;
+    uint16_t             mcu_max;
+    uint32_t             level_value;
+
+    /* Spread ZCL levels 1..254 over mcu_min..mcu_max (default). Cleared by
+     * the DR config token for the stock behaviour (1..254 -> 10..1000, the
+     * MCU clamps, so the ends of the slider do nothing). */
+    uint8_t              scale_levels;
     /* Level ramp (ZCL Move / MoveWithOnOff). */
     hal_task_t           ramp_task;
     uint8_t              move_direction; /* 0 = down, 1 = up */

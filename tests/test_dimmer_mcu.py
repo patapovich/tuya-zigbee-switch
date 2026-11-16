@@ -104,6 +104,20 @@ def tuya_to_zcl(value: int) -> int:
     return (value * 254 + 500) // 1000
 
 
+def scaled_to_tuya(level: int, mn: int, mx: int) -> int:
+    """Firmware mapping with level scaling: 1 = MCU min, 254 = MCU max."""
+    level = max(1, min(254, level))
+    return mn + ((level - 1) * (mx - mn) + 126) // 253
+
+
+def scaled_to_zcl(value: int, mn: int, mx: int) -> int:
+    if value <= mn:
+        return 1
+    if value >= mx:
+        return 254
+    return max(1, min(254, 1 + ((value - mn) * 253 + (mx - mn) // 2) // (mx - mn)))
+
+
 def pump(proc: StubProc, times: int = 4) -> None:
     for _ in range(times):
         proc.exec("s")
@@ -273,8 +287,9 @@ def test_full_status_dump_larger_than_64_bytes():
             enum_dp(14, 0),
             cmd=TUYA_CMD_REPORT_PASSIVE,
         )
-        assert level(device, 1) == tuya_to_zcl(400)
-        assert level(device, 2) == tuya_to_zcl(700)
+        # min/max are known from the same dump, so levels are scaled.
+        assert level(device, 1) == scaled_to_zcl(400, 100, 900)
+        assert level(device, 2) == scaled_to_zcl(700, 150, 800)
         assert int(device.read_zigbee_attr(2, ZCL_CLUSTER_BALLAST, ZCL_ATTR_BALLAST_MAX)) == tuya_to_zcl(800)
     finally:
         proc.stop()
@@ -320,10 +335,10 @@ def test_queue_moves_on_after_ack_timeout():
         proc.stop()
 
 
-def test_level_is_sent_before_on():
-    """Level first: the MCU then fades on straight to the new level instead of
-    flashing the previous one. (Verify on the bench that the MCU accepts a level
-    write while off; flip this test if it does not.)"""
+def test_on_is_sent_before_level():
+    """On first: the MCU acknowledges a level written while the channel is
+    off but does not keep it, and "on" restores its remembered level
+    (bench 2026-11-16: off, level 236, on -> MCU still at 807)."""
     proc, device = start()
     try:
         device.call_zigbee_cmd(
@@ -331,7 +346,104 @@ def test_level_is_sent_before_on():
             bytes([200, 0, 0]),
         )
         writes = ack_writes(proc, device)
-        assert [dp for dp, _ in writes][:2] == [DP_LEVEL_L1, DP_ON_L1]
+        assert [dp for dp, _ in writes][:2] == [DP_ON_L1, DP_LEVEL_L1]
+    finally:
+        proc.stop()
+
+
+def test_move_to_level_without_onoff_while_off_does_nothing():
+    """ZCL: no effect while off (and the Telink stack drops it before us)."""
+    proc, device = start()
+    try:
+        device.call_zigbee_cmd(
+            1, ZCL_CLUSTER_LEVEL_CONTROL, ZCL_CMD_LEVEL_MOVE_TO_LEVEL,
+            bytes([128, 0, 0, 0, 0]),
+        )
+        assert ack_writes(proc, device) == []
+        device.call_zigbee_cmd(1, ZCL_CLUSTER_ON_OFF, 0x01)  # on
+        assert ack_writes(proc, device) == [(DP_ON_L1, 1)]
+    finally:
+        proc.stop()
+
+
+# --------------------------------------------------------------------------
+# level scaling to the MCU's min..max range
+
+
+def dump_range(proc: StubProc, mn: int, mx: int, ch: int = 1) -> None:
+    dps = {1: (DP_MIN_L1, DP_MAX_L1), 2: (DP_MIN_L2, 11)}[ch]
+    mcu_report(proc, value_dp(dps[0], mn), value_dp(dps[1], mx), cmd=TUYA_CMD_REPORT_PASSIVE)
+
+
+def test_scaling_maps_slider_ends_to_mcu_range():
+    proc, device = start()
+    try:
+        dump_range(proc, 200, 1000)
+        for lvl, expect in ((1, 200), (254, 1000), (128, scaled_to_tuya(128, 200, 1000))):
+            device.call_zigbee_cmd(
+                1, ZCL_CLUSTER_LEVEL_CONTROL, ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF,
+                bytes([lvl, 0, 0]),
+            )
+            levels = [v for dp, v in ack_writes(proc, device) if dp == DP_LEVEL_L1]
+            assert levels[-1:] == [expect], (lvl, levels)
+    finally:
+        proc.stop()
+
+
+def test_scaling_maps_mcu_reports_back():
+    proc, device = start()
+    try:
+        dump_range(proc, 200, 1000)
+        mcu_report(proc, value_dp(DP_LEVEL_L1, 600))  # wall switch dimming
+        assert level(device) == scaled_to_zcl(600, 200, 1000)
+        mcu_report(proc, value_dp(DP_LEVEL_L1, 150))  # below the MCU minimum
+        assert level(device) == 1
+    finally:
+        proc.stop()
+
+
+def test_range_change_rescales_current_level():
+    """Same light output, other range: the level attribute must follow."""
+    proc, device = start()
+    try:
+        dump_range(proc, 200, 1000)
+        mcu_report(proc, value_dp(DP_LEVEL_L1, 600))
+        before = level(device)
+        mcu_report(proc, value_dp(DP_MIN_L1, 400))
+        after = level(device)
+        assert before == scaled_to_zcl(600, 200, 1000)
+        assert after == scaled_to_zcl(600, 400, 1000) and after != before
+    finally:
+        proc.stop()
+
+
+def test_scaling_waits_for_known_range():
+    """Before the MCU told us its range, levels map 1..254 -> 10..1000."""
+    proc, device = start()
+    try:
+        device.call_zigbee_cmd(
+            1, ZCL_CLUSTER_LEVEL_CONTROL, ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF,
+            bytes([200, 0, 0]),
+        )
+        levels = [v for dp, v in ack_writes(proc, device) if dp == DP_LEVEL_L1]
+        assert levels == [zcl_to_tuya(200)]
+    finally:
+        proc.stop()
+
+
+def test_dr_token_keeps_stock_mapping():
+    proc = StubProc(device_config=ZDMS16_2.replace("U0E;", "U0E;DR;")).start()
+    device = Device(proc)
+    try:
+        pump(proc)
+        take_tx(proc)
+        dump_range(proc, 200, 1000)
+        device.call_zigbee_cmd(
+            1, ZCL_CLUSTER_LEVEL_CONTROL, ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF,
+            bytes([1, 0, 0]),
+        )
+        levels = [v for dp, v in ack_writes(proc, device) if dp == DP_LEVEL_L1]
+        assert levels == [TUYA_BRIGHTNESS_MIN]
     finally:
         proc.stop()
 
