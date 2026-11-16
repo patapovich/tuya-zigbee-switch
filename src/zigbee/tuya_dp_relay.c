@@ -15,7 +15,6 @@ extern uint8_t         buttons_cnt;
 extern dp_init_entry_t dp_inits[];
 extern uint8_t         dp_init_cnt;
 
-static tuya_secondary_mcu_dp_report_callback_t g_next_callback = NULL;
 
 /* When we drive a relay ourselves the MCU echoes the new state back as a
  * normal report. Without this filter that echo would look like a key press,
@@ -81,15 +80,12 @@ static void dp_relay_on_tx(uint8_t dpid) {
 
 static void tuya_dp_relay_on_report(uint8_t dpid, uint8_t dp_type,
                                     const uint8_t *value, uint16_t value_len) {
-    uint8_t handled = 0;
-
     /* Reflect the reported state on the matching relay (also keeps the
      * coordinator in sync after a local key press). */
     if (dp_type == TUYA_DP_TYPE_BOOL && value != NULL && value_len >= 1) {
         for (uint8_t i = 0; i < relays_cnt; i++) {
             if (relays[i].dp_id != 0 && relays[i].dp_id == dpid) {
                 relay_set_state_from_dp(&relays[i], value[0]);
-                handled = 1;
                 break;
             }
         }
@@ -113,14 +109,9 @@ static void tuya_dp_relay_on_report(uint8_t dpid, uint8_t dp_type,
                 if (buttons[i].on_release != NULL) {
                     buttons[i].on_release(buttons[i].callback_param);
                 }
-                handled = 1;
                 break;
             }
         }
-    }
-
-    if (!handled && g_next_callback != NULL) {
-        g_next_callback(dpid, dp_type, value, value_len);
     }
 }
 
@@ -153,8 +144,7 @@ void tuya_dp_relay_init(void) {
     }
 
     relay_dp_send_hook = tuya_dp_relay_send;
-    tuya_secondary_mcu_register_tx_callback(dp_relay_on_tx);
+    tuya_secondary_mcu_set_tx_callback(dp_relay_on_tx);
 
-    g_next_callback = tuya_secondary_mcu_get_dp_report_callback();
-    tuya_secondary_mcu_register_dp_report_callback(tuya_dp_relay_on_report);
+    tuya_secondary_mcu_add_dp_listener(tuya_dp_relay_on_report);
 }

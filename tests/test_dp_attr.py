@@ -6,6 +6,18 @@ byte would pass. These drive the real UART both ways through the stub.
 """
 from client import StubProc
 from conftest import Device
+from tuya_mcu import (
+    TUYA_CMD_REPORT,
+    TUYA_CMD_REPORT_PASSIVE,
+    TUYA_CMD_WRITE,  # noqa: F401
+    TUYA_TYPE_BOOL,
+    TUYA_TYPE_ENUM,
+    TUYA_TYPE_VALUE,
+    dp_payload,
+    pump,
+    take_tx,
+    tuya_frame,
+)
 
 ZCL_CLUSTER_BASIC = 0x0000
 
@@ -17,41 +29,6 @@ ATTR_BACKLIGHT = 0xFF22
 ATTR_INDICATOR = 0xFF23
 ATTR_VIBRATION = 0xFF25
 ATTR_MOMENTARY_1 = 0xFF26
-
-TUYA_CMD_WRITE = 0x04
-TUYA_CMD_REPORT_PASSIVE = 0x05
-TUYA_CMD_REPORT = 0x06
-
-TUYA_TYPE_BOOL = 0x01
-TUYA_TYPE_VALUE = 0x02
-TUYA_TYPE_ENUM = 0x04
-
-
-def tuya_frame(cmd: int, data: bytes = b"", seq: int = 1) -> str:
-    body = (
-        bytes([0x55, 0xAA, 0x02])
-        + seq.to_bytes(2, "big")
-        + bytes([cmd])
-        + len(data).to_bytes(2, "big")
-        + data
-    )
-    return (body + bytes([sum(body) % 256])).hex().upper()
-
-
-def dp_payload(dp: int, dp_type: int, value: bytes) -> bytes:
-    return bytes([dp, dp_type]) + len(value).to_bytes(2, "big") + value
-
-
-def pump(proc: StubProc, times: int = 4) -> None:
-    """Give the main loop a chance to drain the UART."""
-    for _ in range(times):
-        proc.exec("s")
-
-
-def take_tx(proc: StubProc) -> bytes:
-    res = proc.exec("uart_tx")
-    assert res.ok
-    return bytes.fromhex(res.payload["tx"])
 
 
 def start() -> StubProc:

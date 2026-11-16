@@ -52,9 +52,6 @@ typedef struct {
 void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
                                     hal_zigbee_endpoint *endpoint);
 
-void dimmer_cluster_on(zigbee_dimmer_cluster *cluster);
-void dimmer_cluster_off(zigbee_dimmer_cluster *cluster);
-void dimmer_cluster_set_level(zigbee_dimmer_cluster *cluster, uint8_t level);
 
 // Returns HAL_ZIGBEE_CMD_SKIPPED-equivalent behavior: no-op if this endpoint
 // has no registered dimmer cluster (e.g. the write targeted a relay endpoint

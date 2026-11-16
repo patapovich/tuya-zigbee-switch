@@ -6,15 +6,8 @@
 #include "tuya_secondary_mcu.h"
 #include <string.h>
 
-/* Command 0x28, "query all DP status", module -> MCU. An empty data field
- * means every datapoint. Note this is the Zigbee serial protocol: in the Wi-Fi
- * one the same request is 0x08, which here is the RF test command instead. */
-#define TUYA_MCU_QUERY_ALL_DP    0x28
-
 dp_attr_t dp_attrs[MAX_DP_ATTRS];
 uint8_t   dp_attrs_cnt = 0;
-
-static tuya_secondary_mcu_dp_report_callback_t g_next_callback = NULL;
 
 /* Window during which reports are assumed to be the answer to our own
  * query-all rather than someone touching the switch. */
@@ -188,10 +181,7 @@ static void dp_attr_on_report(uint8_t dpid, uint8_t dp_type,
     dp_attr_t *entry = find_by_dp(dpid);
 
     if (entry == NULL || value == NULL) {
-        if (g_next_callback) {
-            g_next_callback(dpid, dp_type, value, value_len);
-        }
-        return;
+        return; /* not ours */
     }
 
     if (entry->zcl_size == 1 && value_len >= 1) {
@@ -213,14 +203,15 @@ void dp_attr_init(void) {
     if (dp_attrs_cnt == 0) {
         return;
     }
-    g_next_callback = tuya_secondary_mcu_get_dp_report_callback();
-    tuya_secondary_mcu_register_dp_report_callback(dp_attr_on_report);
+    tuya_secondary_mcu_add_dp_listener(dp_attr_on_report);
 }
 
 void dp_attr_query_all(void) {
     /* Callers decide whether a dump is useful (dp attributes, dimmers). */
     g_bulk_dump_armed      = 1;
     g_bulk_dump_started_ms = hal_millis();
-    /* Queued behind any DP write still waiting for its ack (IT inits). */
-    tuya_secondary_mcu_queue_cmd(TUYA_MCU_QUERY_ALL_DP, NULL, 0);
+
+    /* An empty data field means every DP. (In the Wi-Fi protocol the same
+    * request is 0x08, which in the Zigbee one is the RF test command.) */
+    tuya_secondary_mcu_queue_cmd(TUYA_MCU_CMD_QUERY_ALL_DP, NULL, 0);
 }

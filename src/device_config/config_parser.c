@@ -111,6 +111,10 @@ void on_multi_press_reset(void *_, uint8_t press_count) {
     }
 }
 
+static uint8_t dpid_or(uint8_t configured, uint8_t fallback) {
+    return configured != 0 ? configured : fallback;
+}
+
 void parse_config() {
     device_config_read_from_nv();
 
@@ -162,21 +166,21 @@ void parse_config() {
         if (entry[0] == 'S' && entry[1] == 'L' && entry[2] == 'P') {
             // Simultaneous Latching Pulses == SLP
             allow_simultaneous_latching_pulses = 1;
-        }else if (entry[0] == 'L' && entry[1] == 'P' && entry[2] >= '0' && entry[2] <= '9') {
+        } else if (entry[0] == 'L' && entry[1] == 'P' && entry[2] >= '0' && entry[2] <= '9') {
             // LP<N> sets the relays latching pulse duration in milliseconds.
             relay_pulse_ms = (uint16_t)parse_int(entry + 2);
-        }else if (entry[0] == 'D' && entry[1] >= '0' && entry[1] <= '9') {
+        } else if (entry[0] == 'D' && entry[1] >= '0' && entry[1] <= '9') {
             // D<N> sets the global debounce duration in milliseconds.
             debounce_ms = (uint16_t)parse_int(entry + 1);
             for (int i = 0; i < buttons_cnt; i++) {
                 buttons[i].debounce_delay_ms = debounce_ms;
             }
-        }else if (entry[0] == 'B' && entry[1] == 'T') {
+        } else if (entry[0] == 'B' && entry[1] == 'T') {
             // Battery: BT<pin>, e.g. BTC5
             hal_gpio_pin_t pin = hal_gpio_parse_pin(entry + 2);
             battery.pin = pin;
             battery_init(&battery);
-        }else if (entry[0] == 'B') {
+        } else if (entry[0] == 'B') {
             hal_gpio_pin_t  pin  = hal_gpio_parse_pin(entry + 1);
             hal_gpio_pull_t pull = hal_gpio_parse_pull(entry + 3);
             hal_gpio_init(pin, 1, pull);
@@ -187,7 +191,7 @@ void parse_config() {
             buttons[buttons_cnt].debounce_delay_ms       = debounce_ms;
             buttons[buttons_cnt].on_long_press           = on_reset_clicked;
             buttons_cnt++;
-        }else if (entry[0] == 'L') {
+        } else if (entry[0] == 'L') {
             hal_gpio_pin_t pin = hal_gpio_parse_pin(entry + 1);
             hal_gpio_init(pin, 0, HAL_GPIO_PULL_NONE);
             leds[leds_cnt].pin     = pin;
@@ -201,7 +205,7 @@ void parse_config() {
 
             has_dedicated_status_led = true;
             leds_cnt++;
-        }else if (entry[0] == 'I' && entry[1] >= 'A' && entry[1] <= 'D') {
+        } else if (entry[0] == 'I' && entry[1] >= 'A' && entry[1] <= 'D') {
             hal_gpio_pin_t pin = hal_gpio_parse_pin(entry + 1);
             hal_gpio_init(pin, 0, HAL_GPIO_PULL_NONE);
             leds[leds_cnt].pin     = pin;
@@ -231,7 +235,7 @@ void parse_config() {
                 }
             }
             leds_cnt++;
-        }else if (entry[0] == 'S' && entry[1] >= 'A' && entry[1] <= 'D') {
+        } else if (entry[0] == 'S' && entry[1] >= 'A' && entry[1] <= 'D') {
             hal_gpio_pin_t  pin  = hal_gpio_parse_pin(entry + 1);
             hal_gpio_pull_t pull = hal_gpio_parse_pull(entry + 3);
             hal_gpio_init(pin, 1, pull);
@@ -258,7 +262,7 @@ void parse_config() {
             switch_clusters[switch_clusters_cnt].level_move_rate = 50;
             buttons_cnt++;
             switch_clusters_cnt++;
-        }else if (entry[0] == 'S' && entry[1] == 'T') {
+        } else if (entry[0] == 'S' && entry[1] == 'T') {
             // ST<hh> - touch/scene event arriving as a Tuya datapoint report.
             // Creates a normal switch endpoint, so binds/detached/action modes
             // all work exactly as they do for a GPIO button.
@@ -285,7 +289,7 @@ void parse_config() {
                 buttons_cnt++;
                 switch_clusters_cnt++;
             }
-        }else if (entry[0] == 'I' && entry[1] == 'T') {
+        } else if (entry[0] == 'I' && entry[1] == 'T') {
             // IT<hh><t><v..> - write a datapoint to the secondary MCU at boot.
             // t: 1=bool 4=enum (1 byte value), 2=value (4 bytes, big-endian).
             uint8_t dpid = 0;
@@ -302,7 +306,7 @@ void parse_config() {
                         dp_inits[dp_init_cnt].value[0] = v;
                         ok = 1;
                     }
-                }else if (t == '2') {
+                } else if (t == '2') {
                     uint8_t b0, b1, b2, b3;
                     if (parse_hex_byte(entry + 5, &b0) && parse_hex_byte(entry + 7, &b1) &&
                         parse_hex_byte(entry + 9, &b2) && parse_hex_byte(entry + 11, &b3)) {
@@ -319,7 +323,7 @@ void parse_config() {
                     dp_init_cnt++;
                 }
             }
-        }else if (entry[0] == 'R' && entry[1] == 'T') {
+        } else if (entry[0] == 'R' && entry[1] == 'T') {
             // RT<hh> - relay driven through the Tuya secondary MCU.
             // <hh> = datapoint id in hex (RT18 -> DP 24).
             uint8_t dpid = 0;
@@ -346,21 +350,21 @@ void parse_config() {
                 relays_cnt++;
                 relay_clusters_cnt++;
             }
-        }else if (entry[0] == 'P' && entry[1] == 'T') {
+        } else if (entry[0] == 'P' && entry[1] == 'T') {
             // PT<hh> - device-wide power-on-behaviour datapoint
             uint8_t dp = 0;
             if (parse_hex_byte(entry + 2, &dp)) {
                 g_power_on_dp_id = dp;
             }
-        }else if (entry[0] == 'W') {
+        } else if (entry[0] == 'W') {
             // W<tx><rx> - UART pins towards the secondary MCU.
             // TLSR8258 pinmux: TX = A2 B1 C2 D0 D3 D7 / RX = A0 B0 B7 C3 C5 D6
             mcu_uart_config.tx_pin = hal_gpio_parse_pin(entry + 1);
             mcu_uart_config.rx_pin = hal_gpio_parse_pin(entry + 3);
-        }else if (entry[0] == 'Y') {
+        } else if (entry[0] == 'Y') {
             // Y<n> - baudrate of that UART (default 115200)
             mcu_uart_config.baudrate = parse_int(entry + 1);
-        }else if (entry[0] == 'R' && entry[1] >= 'A' && entry[1] <= 'D') {
+        } else if (entry[0] == 'R' && entry[1] >= 'A' && entry[1] <= 'D') {
             if (relay_clusters_cnt >= MAX_RELAYS || relays_cnt >= MAX_RELAYS) {
                 printf("Too many relays, ignoring %s\r\n", entry);
                 continue;
@@ -383,11 +387,11 @@ void parse_config() {
 
             relays_cnt++;
             relay_clusters_cnt++;
-        }else if (entry[0] == 'D' && entry[1] == 'R' && entry[2] == '\0') {
+        } else if (entry[0] == 'D' && entry[1] == 'R' && entry[2] == '\0') {
             // DR: dimmer levels raw (stock behaviour, no scaling to the MCU's
             // min..max range).
             dimmer_raw_levels = 1;
-        }else if (entry[0] == 'D' && entry[1] == 'M') {
+        } else if (entry[0] == 'D' && entry[1] == 'M') {
             uint8_t   count           = (uint8_t)parse_int(entry + 2);
             const int dimmer_capacity =
                 (int)(sizeof(dimmer_clusters) / sizeof(dimmer_clusters[0]));
@@ -408,7 +412,7 @@ void parse_config() {
                 dimmer_clusters[dimmer_clusters_cnt].on = 0;
                 dimmer_clusters_cnt++;
             }
-        }else if (entry[0] == 'U') {
+        } else if (entry[0] == 'U') {
             // Universal power-on-behavior DPID, e.g. U0E = 0x0E (hex, like the
             // Pxx DPID fields). parse_int() is decimal-only and would stop at
             // the 'E', yielding 0 - so use parse_hex_byte instead.
@@ -416,7 +420,7 @@ void parse_config() {
             if (parse_hex_byte(entry + 1, &dpid)) {
                 dimmer_power_on_behavior_dpid = dpid;
             }
-        }else if (entry[0] == 'P') {
+        } else if (entry[0] == 'P') {
             uint8_t dimmer_idx;
             if (!parse_hex_byte(entry + 1, &dimmer_idx) ||
                 dimmer_idx >= DIMMER_CONFIG_MAX_COUNT) {
@@ -440,28 +444,28 @@ void parse_config() {
                         cursor_p += 3;
                         continue;
                     }
-                }else if (*cursor_p == 'L') {
+                } else if (*cursor_p == 'L') {
                     uint8_t value;
                     if (parse_hex_byte(cursor_p + 1, &value)) {
                         dimmer_level_dpid[dimmer_idx] = value;
                         cursor_p += 3;
                         continue;
                     }
-                }else if (*cursor_p == 'S') {
+                } else if (*cursor_p == 'S') {
                     uint8_t value;
                     if (parse_hex_byte(cursor_p + 1, &value)) {
                         dimmer_switch_type_dpid[dimmer_idx] = value;
                         cursor_p += 3;
                         continue;
                     }
-                }else if (*cursor_p == 'M') {
+                } else if (*cursor_p == 'M') {
                     uint8_t value;
                     if (parse_hex_byte(cursor_p + 1, &value)) {
                         dimmer_min_level_dpid[dimmer_idx] = value;
                         cursor_p += 3;
                         continue;
                     }
-                }else if (*cursor_p == 'X') {
+                } else if (*cursor_p == 'X') {
                     uint8_t value;
                     if (parse_hex_byte(cursor_p + 1, &value)) {
                         dimmer_max_level_dpid[dimmer_idx] = value;
@@ -471,7 +475,7 @@ void parse_config() {
                 }
                 cursor_p++;
             }
-        }else if (entry[0] == 'X') {
+        } else if (entry[0] == 'X') {
             hal_gpio_pin_t  open_pin  = hal_gpio_parse_pin(entry + 1);
             hal_gpio_pin_t  close_pin = hal_gpio_parse_pin(entry + 3);
             hal_gpio_pull_t pull      = hal_gpio_parse_pull(entry + 5);
@@ -500,7 +504,7 @@ void parse_config() {
             cover_switch_clusters[cover_switch_clusters_cnt].cover_switch_idx =
                 cover_switch_clusters_cnt;
             cover_switch_clusters_cnt++;
-        }else if (entry[0] == 'C') {
+        } else if (entry[0] == 'C') {
             hal_gpio_pin_t open_pin  = hal_gpio_parse_pin(entry + 1);
             hal_gpio_pin_t close_pin = hal_gpio_parse_pin(entry + 3);
 
@@ -521,10 +525,10 @@ void parse_config() {
             cover_clusters[cover_clusters_cnt].close_relay = close_relay;
             cover_clusters[cover_clusters_cnt].cover_idx   = cover_clusters_cnt;
             cover_clusters_cnt++;
-        }else if (entry[0] == 'i') {
+        } else if (entry[0] == 'i') {
             uint32_t image_type = parse_int(entry + 1);
             hal_zigbee_set_image_type(image_type);
-        }else if (entry[0] == 'M') {
+        } else if (entry[0] == 'M') {
             for (int index = 0; index < switch_clusters_cnt; index++) {
                 switch_clusters[index].mode =
                     ZCL_ONOFF_CONFIGURATION_SWITCH_TYPE_MOMENTARY;
@@ -533,15 +537,21 @@ void parse_config() {
     }
 
     // Resolve dimmer DPIDs now that the whole config string has been parsed,
-    // since Pxx tokens may appear before or after the DM<N> token.
+    // since Pxx tokens may appear before or after the DM<N> token. Defaults
+    // are the common Tuya dimmer layout, 6 DPs per channel: on/off, level,
+    // min, switch type, max, countdown (channel 1 = DP 1..6, channel 2 =
+    // 7..12, ...), and power-on behaviour on DP 14 shared by all channels.
+    // Pxx and U override them.
     for (int i = 0; i < dimmer_clusters_cnt; i++) {
-        dimmer_clusters[i].onoff_dpid             = dimmer_onoff_dpid[i];
-        dimmer_clusters[i].level_dpid             = dimmer_level_dpid[i];
-        dimmer_clusters[i].switch_type_dpid       = dimmer_switch_type_dpid[i];
-        dimmer_clusters[i].min_level_dpid         = dimmer_min_level_dpid[i];
-        dimmer_clusters[i].max_level_dpid         = dimmer_max_level_dpid[i];
-        dimmer_clusters[i].power_on_behavior_dpid = dimmer_power_on_behavior_dpid;
-        dimmer_clusters[i].scale_levels           = !dimmer_raw_levels;
+        zigbee_dimmer_cluster *d = &dimmer_clusters[i];
+        uint8_t base             = (uint8_t)(1 + 6 * i);
+        d->onoff_dpid             = dpid_or(dimmer_onoff_dpid[i], base);
+        d->level_dpid             = dpid_or(dimmer_level_dpid[i], base + 1);
+        d->min_level_dpid         = dpid_or(dimmer_min_level_dpid[i], base + 2);
+        d->switch_type_dpid       = dpid_or(dimmer_switch_type_dpid[i], base + 3);
+        d->max_level_dpid         = dpid_or(dimmer_max_level_dpid[i], base + 4);
+        d->power_on_behavior_dpid = dpid_or(dimmer_power_on_behavior_dpid, 0x0E);
+        d->scale_levels           = !dimmer_raw_levels;
     }
 
     peripherals_init();
@@ -675,7 +685,7 @@ void network_indicator_on_network_status_change(
         network_indicator_connected(&network_indicator);
         update_switch_clusters();
         update_relay_clusters();
-    }else {
+    } else {
         network_indicator_not_connected(&network_indicator);
     }
 }
@@ -694,7 +704,7 @@ void peripherals_init() {
         network_indicator_connected(&network_indicator);
         update_switch_clusters();
         update_relay_clusters();
-    }else {
+    } else {
         network_indicator_not_connected(&network_indicator);
     }
     hal_register_on_network_status_change_callback(

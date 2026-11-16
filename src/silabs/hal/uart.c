@@ -18,13 +18,16 @@ uint16_t hal_uart_rx_available(void) {
 void hal_uart_flush(void) {
 }
 
+/* No secondary-MCU UART on Silabs boards yet: say so instead of pretending
+ * the bytes went out (the link counts failures and the TX queue backs off). */
 hal_uart_status_t hal_uart_write(const uint8_t *data, uint16_t len,
                                  uint16_t *written) {
     if (written) {
-        *written = len;
+        *written = 0;
     }
     (void)data;
-    return HAL_UART_OK;
+    (void)len;
+    return HAL_UART_ERR_IO;
 }
 
 hal_uart_status_t hal_uart_read(uint8_t *data, uint16_t len,
@@ -39,7 +42,7 @@ hal_uart_status_t hal_uart_read(uint8_t *data, uint16_t len,
 
 hal_uart_status_t hal_uart_write_byte(uint8_t byte) {
     (void)byte;
-    return HAL_UART_OK;
+    return HAL_UART_ERR_IO;
 }
 
 hal_uart_status_t hal_uart_read_byte(uint8_t *byte) {

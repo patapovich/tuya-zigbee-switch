@@ -1,6 +1,7 @@
 #include "zigbee/dimmer_cluster.h"
 #include "zigbee/cluster_common.h"
 #include "zigbee/consts.h"
+#include "zigbee/tuya_mcu_app.h"
 #include "zigbee/tuya_secondary_mcu.h"
 
 #define DIMMER_MAX_ENDPOINTS    10
@@ -9,54 +10,6 @@ static zigbee_dimmer_cluster *dimmer_cluster_by_endpoint[DIMMER_MAX_ENDPOINTS];
 static zigbee_dimmer_cluster *dimmer_by_endpoint(uint8_t endpoint) {
     return endpoint < DIMMER_MAX_ENDPOINTS ? dimmer_cluster_by_endpoint[endpoint]
                                            : NULL;
-}
-
-static uint8_t dimmer_default_onoff_dpid(uint8_t endpoint) {
-    switch (endpoint) {
-    case 1:
-        return 0x01;
-
-    case 2:
-        return 0x02;
-
-    case 3:
-        return 0x03;
-
-    case 4:
-        return 0x04;
-
-    default:
-        return 0x01;
-    }
-}
-
-static uint8_t dimmer_default_level_dpid(uint8_t endpoint) {
-    switch (endpoint) {
-    case 1:
-        return 0x08;
-
-    case 2:
-        return 0x09;
-
-    case 3:
-        return 0x0A;
-
-    case 4:
-        return 0x0B;
-
-    default:
-        return 0x08;
-    }
-}
-
-static uint8_t dimmer_get_onoff_dpid(const zigbee_dimmer_cluster *cluster) {
-    return cluster->onoff_dpid ? cluster->onoff_dpid
-                             : dimmer_default_onoff_dpid(cluster->endpoint);
-}
-
-static uint8_t dimmer_get_level_dpid(const zigbee_dimmer_cluster *cluster) {
-    return cluster->level_dpid ? cluster->level_dpid
-                             : dimmer_default_level_dpid(cluster->endpoint);
 }
 
 /* The MCU's brightness DPs use 10..1000 (Tuya schema of the DMS16 family:
@@ -186,7 +139,7 @@ static void dimmer_set_on(zigbee_dimmer_cluster *cluster, uint8_t on) {
 
 /* How long reports of the level DP are treated as the MCU's own fade towards
  * a level we wrote. The MCU always fades (both the WiFi and Zigbee DMS16
- * variants); 3 s covers a full-range fade. TODO: measure on the bench. */
+ * variants); a fade takes about 1 s, 3 s leaves margin. */
 #define DIMMER_FADE_HOLDOFF_MS    3000
 
 static void dimmer_start_holdoff(zigbee_dimmer_cluster *cluster) {
@@ -218,7 +171,7 @@ static void dimmer_holdoff_done(void *arg) {
 static void dimmer_write_level(zigbee_dimmer_cluster *cluster, uint8_t level) {
     uint32_t value = dimmer_level_to_value(cluster, level);
 
-    dimmer_write_tuya_value(dimmer_get_level_dpid(cluster), value);
+    dimmer_write_tuya_value(cluster->level_dpid, value);
     cluster->last_written_value = value;
     cluster->level_value        = value;
     dimmer_start_holdoff(cluster);
@@ -227,7 +180,7 @@ static void dimmer_write_level(zigbee_dimmer_cluster *cluster, uint8_t level) {
 static void dimmer_write_onoff(zigbee_dimmer_cluster *cluster, uint8_t on) {
     uint8_t value = on ? 1 : 0;
 
-    tuya_secondary_mcu_write_dp(dimmer_get_onoff_dpid(cluster), TUYA_DP_TYPE_BOOL,
+    tuya_secondary_mcu_write_dp(cluster->onoff_dpid, TUYA_DP_TYPE_BOOL,
                                 &value, sizeof(value));
 }
 
@@ -237,8 +190,8 @@ static void dimmer_stop_move(zigbee_dimmer_cluster *cluster) {
 }
 
 /* On before level: the MCU acknowledges a level written while the channel is
- * off but does not keep it, and "on" restores the level it remembers
- * (bench, 2026-11-16). So "on at level X" is on first, then X. */
+ * off but does not keep it, and "on" restores the level it remembers.
+ * So "on at level X" is on first, then X. */
 static void dimmer_turn_on(zigbee_dimmer_cluster *cluster) {
     dimmer_write_onoff(cluster, 1);
     dimmer_set_on(cluster, 1);
@@ -264,22 +217,6 @@ static void dimmer_change_level(zigbee_dimmer_cluster *cluster, uint8_t level) {
 
     dimmer_set_current_level(cluster, level);
     dimmer_write_level(cluster, level);
-}
-
-/* ---- public helpers (state only, no MCU traffic) ------------------------- */
-
-void dimmer_cluster_on(zigbee_dimmer_cluster *cluster) {
-    cluster->on = 1;
-}
-
-void dimmer_cluster_off(zigbee_dimmer_cluster *cluster) {
-    cluster->on = 0;
-}
-
-void dimmer_cluster_set_level(zigbee_dimmer_cluster *cluster, uint8_t level) {
-    /* No software clamp to min/max_level: those are enforced by the MCU. */
-    cluster->current_level = level;
-    cluster->on            = level != 0;
 }
 
 /* ---- ramp (Move / MoveWithOnOff) ----------------------------------------- */
@@ -449,19 +386,6 @@ static hal_zigbee_cmd_result_t dimmer_cluster_level_callback(zigbee_dimmer_clust
 
 /* ---- MCU reports --------------------------------------------------------- */
 
-static uint8_t dimmer_startup_mode_from_tuya(uint8_t value) {
-    switch (value) {
-    case 0:
-        return ZCL_START_UP_ONOFF_SET_ONOFF_TO_OFF;
-
-    case 1:
-        return ZCL_START_UP_ONOFF_SET_ONOFF_TO_ON;
-
-    default:
-        return ZCL_START_UP_ONOFF_SET_ONOFF_TO_PREVIOUS;
-    }
-}
-
 /* The MCU's min or max changed: the same light output is another level now. */
 static void dimmer_range_changed(zigbee_dimmer_cluster *cluster) {
     if (cluster->level_value != 0)
@@ -482,11 +406,11 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
 
         uint32_t number = dimmer_decode_tuya_value(value, value_len);
 
-        if (dp_type == TUYA_DP_TYPE_BOOL && dpid == dimmer_get_onoff_dpid(cluster)) {
+        if (dp_type == TUYA_DP_TYPE_BOOL && dpid == cluster->onoff_dpid) {
             if (!value[0])
                 dimmer_stop_move(cluster);
             dimmer_set_on(cluster, value[0]);
-        } else if (dp_type == TUYA_DP_TYPE_VALUE && dpid == dimmer_get_level_dpid(cluster)) {
+        } else if (dp_type == TUYA_DP_TYPE_VALUE && dpid == cluster->level_dpid) {
             if (cluster->move_active || cluster->level_holdoff) {
                 /* Our own ramp or fade in progress: the MCU reports where
                  * its smoothing is, not where the light is going. */
@@ -520,7 +444,7 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
                                                 ZCL_ATTR_ONOFF_CONFIGURATION_SWITCH_TYPE);
         } else if (dp_type == TUYA_DP_TYPE_ENUM && cluster->power_on_behavior_dpid &&
                    dpid == cluster->power_on_behavior_dpid) {
-            cluster->startup_mode = dimmer_startup_mode_from_tuya(value[0]);
+            cluster->startup_mode = tuya_mcu_startup_from_power_on(value[0]);
             hal_zigbee_notify_attribute_changed(cluster->endpoint, ZCL_CLUSTER_ON_OFF,
                                                 ZCL_ATTR_START_UP_ONOFF);
         }
@@ -615,28 +539,12 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
 
     // Receive DP state reports from the secondary MCU (e.g. physical button
     // presses) for every registered dimmer, not just this endpoint.
-    tuya_secondary_mcu_register_dp_report_callback(dimmer_cluster_on_dp_report);
+    tuya_secondary_mcu_add_dp_listener(dimmer_cluster_on_dp_report);
 
     /* Nothing is pushed to the MCU here. It stores min/max/switch type and
      * power-on behaviour itself, and those are read back from its answer to
      * query-all at first contact. (A push from here never reached the MCU
      * anyway: the UART link is enabled only after parse_config().) */
-}
-
-static uint8_t dimmer_power_on_behavior_value(uint8_t startup_mode) {
-    // Translate the ZCL StartUpOnOff enum to the common Tuya power-on-behavior
-    // DP encoding (0 = off, 1 = on, 2 = memory/previous). Toggle has no direct
-    // Tuya equivalent, so it falls back to memory.
-    switch (startup_mode) {
-    case ZCL_START_UP_ONOFF_SET_ONOFF_TO_OFF:
-        return 0;
-
-    case ZCL_START_UP_ONOFF_SET_ONOFF_TO_ON:
-        return 1;
-
-    default:
-        return 2;
-    }
 }
 
 void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
@@ -645,22 +553,22 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
         return;
 
     if (attribute_id == ZCL_ATTR_START_UP_ONOFF && cluster->power_on_behavior_dpid) {
-        uint8_t value = dimmer_power_on_behavior_value(cluster->startup_mode);
+        uint8_t value = tuya_mcu_power_on_from_startup(cluster->startup_mode);
         tuya_secondary_mcu_write_dp(cluster->power_on_behavior_dpid,
                                     TUYA_DP_TYPE_ENUM, &value, sizeof(value));
-    }else if (attribute_id == ZCL_ATTR_BALLAST_MIN_LEVEL) {
+    } else if (attribute_id == ZCL_ATTR_BALLAST_MIN_LEVEL) {
         if (!cluster->min_level_dpid)
             return;
 
         dimmer_write_tuya_value(cluster->min_level_dpid,
                                 dimmer_zcl_level_to_tuya_value(cluster->min_level));
-    }else if (attribute_id == ZCL_ATTR_BALLAST_MAX_LEVEL) {
+    } else if (attribute_id == ZCL_ATTR_BALLAST_MAX_LEVEL) {
         if (!cluster->max_level_dpid)
             return;
 
         dimmer_write_tuya_value(cluster->max_level_dpid,
                                 dimmer_zcl_level_to_tuya_value(cluster->max_level));
-    }else if (attribute_id == ZCL_ATTR_ONOFF_CONFIGURATION_SWITCH_TYPE) {
+    } else if (attribute_id == ZCL_ATTR_ONOFF_CONFIGURATION_SWITCH_TYPE) {
         if (!cluster->switch_type_dpid)
             return;
 

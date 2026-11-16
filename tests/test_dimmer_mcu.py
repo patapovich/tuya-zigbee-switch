@@ -20,6 +20,25 @@ from pathlib import Path
 
 from client import StubProc
 from conftest import Device
+from tuya_mcu import (  # noqa: F401  (re-exported for the other dimmer tests)
+    TUYA_CMD_REPORT,
+    TUYA_CMD_REPORT_PASSIVE,
+    TUYA_CMD_WRITE,
+    TUYA_TYPE_BOOL,
+    TUYA_TYPE_ENUM,
+    TUYA_TYPE_VALUE,
+    bool_dp,
+    dp_payload,
+    dp_units,
+    dp_writes,
+    enum_dp,
+    mcu_report,
+    parse_frames,
+    pump,
+    take_tx,
+    tuya_frame,
+    value_dp,
+)
 from zcl_consts import (
     ZCL_CLUSTER_LEVEL_CONTROL,
     ZCL_CLUSTER_ON_OFF,
@@ -36,7 +55,9 @@ from zcl_consts import (
     ZCL_LEVEL_MOVE_UP,
 )
 
-ZDMS16_2 = "jtbgusdc;TS0601;DM2;P00O01L02S04M03X05;P01O07L08S0AM09X0B;U0E;M;"
+ZDMS16_2 = "jtbgusdc;TS0601;DM2;M;"
+# The same DPs spelled out with Pxx/U overrides.
+ZDMS16_2_EXPLICIT = "jtbgusdc;TS0601;DM2;P00O01L02S04M03X05;P01O07L08S0AM09X0B;U0E;M;"
 
 ZCL_CLUSTER_BALLAST = 0x0301
 ZCL_ATTR_BALLAST_MIN = 0x0010
@@ -45,13 +66,6 @@ ZCL_ATTR_CURRENT_LEVEL = 0x0000
 ZCL_ATTR_ONOFF = 0x0000
 ZCL_ATTR_SWITCH_TYPE = 0x0000
 
-TUYA_CMD_WRITE = 0x04
-TUYA_CMD_REPORT_PASSIVE = 0x05
-TUYA_CMD_REPORT = 0x06
-
-TUYA_TYPE_BOOL = 0x01
-TUYA_TYPE_VALUE = 0x02
-TUYA_TYPE_ENUM = 0x04
 
 DP_ON_L1, DP_LEVEL_L1, DP_MIN_L1, DP_SWITCH_TYPE_L1, DP_MAX_L1 = 1, 2, 3, 4, 5
 DP_ON_L2, DP_LEVEL_L2, DP_MIN_L2 = 7, 8, 9
@@ -68,33 +82,6 @@ HOLDOFF_MS = 3000  # firmware DIMMER_FADE_HOLDOFF_MS
 
 # --------------------------------------------------------------------------
 # helpers
-
-
-def tuya_frame(cmd: int, data: bytes = b"", seq: int = 1) -> str:
-    body = (
-        bytes([0x55, 0xAA, 0x02])
-        + seq.to_bytes(2, "big")
-        + bytes([cmd])
-        + len(data).to_bytes(2, "big")
-        + data
-    )
-    return (body + bytes([sum(body) % 256])).hex().upper()
-
-
-def dp_payload(dp: int, dp_type: int, value: bytes) -> bytes:
-    return bytes([dp, dp_type]) + len(value).to_bytes(2, "big") + value
-
-
-def value_dp(dp: int, value: int) -> bytes:
-    return dp_payload(dp, TUYA_TYPE_VALUE, value.to_bytes(4, "big"))
-
-
-def bool_dp(dp: int, value: int) -> bytes:
-    return dp_payload(dp, TUYA_TYPE_BOOL, bytes([value]))
-
-
-def enum_dp(dp: int, value: int) -> bytes:
-    return dp_payload(dp, TUYA_TYPE_ENUM, bytes([value]))
 
 
 def zcl_to_tuya(level: int) -> int:
@@ -119,68 +106,23 @@ def scaled_to_zcl(value: int, mn: int, mx: int) -> int:
     return max(1, min(254, 1 + ((value - mn) * 253 + (mx - mn) // 2) // (mx - mn)))
 
 
-def pump(proc: StubProc, times: int = 4) -> None:
-    for _ in range(times):
-        proc.exec("s")
-
-
-def take_tx(proc: StubProc) -> bytes:
-    res = proc.exec("uart_tx")
-    assert res.ok
-    return bytes.fromhex(res.payload["tx"])
-
-
-def parse_frames(raw: bytes) -> list[tuple[int, bytes]]:
-    """Split a TX capture into (cmd, data) frames, checking every checksum."""
-    frames = []
-    i = 0
-    while i + 9 <= len(raw):
-        assert raw[i : i + 3] == b"\x55\xaa\x02", raw[i:].hex()
-        cmd = raw[i + 5]
-        dlen = int.from_bytes(raw[i + 6 : i + 8], "big")
-        end = i + 8 + dlen
-        assert sum(raw[i:end]) % 256 == raw[end], "bad checksum"
-        frames.append((cmd, raw[i + 8 : end]))
-        i = end + 1
-    assert i == len(raw), f"trailing bytes {raw[i:].hex()}"
-    return frames
-
-
-def dp_writes(raw: bytes) -> list[tuple[int, int]]:
-    """(dpid, value) for every DP write in a TX capture."""
-    out = []
-    for cmd, data in parse_frames(raw):
-        if cmd != TUYA_CMD_WRITE:
-            continue
-        dpid, _, vlen = data[0], data[1], int.from_bytes(data[2:4], "big")
-        out.append((dpid, int.from_bytes(data[4 : 4 + vlen], "big")))
-    return out
-
-
-def mcu_report(proc: StubProc, *dps: bytes, cmd: int = TUYA_CMD_REPORT) -> None:
-    proc.exec(f"uart_rx {tuya_frame(cmd, b''.join(dps))}")
-    pump(proc)
-
-
 def ack_writes(proc: StubProc, device: Device, rounds: int = 8) -> list[tuple[int, int]]:
-    """Play a well-behaved MCU: echo every DP write back as a 0x06 report, until
-    the firmware has nothing more to send. Returns all writes seen."""
+    """Play a well-behaved MCU: echo every DP write back unchanged as a 0x06
+    report (as the ZDMS16-2 does), until the firmware has nothing more to
+    send. Returns all writes seen as (dpid, value)."""
     seen = []
     for _ in range(rounds):
         pump(proc)
-        writes = dp_writes(take_tx(proc))
-        if not writes:
+        tx = take_tx(proc)
+        if not dp_units(tx):
             device.step_time(50)
             pump(proc)
-            writes = dp_writes(take_tx(proc))
-            if not writes:
+            tx = take_tx(proc)
+            if not dp_units(tx):
                 break
-        for dpid, value in writes:
-            seen.append((dpid, value))
-            if dpid in (DP_LEVEL_L1, DP_LEVEL_L2, DP_MIN_L1, DP_MAX_L1, DP_MIN_L2):
-                mcu_report(proc, value_dp(dpid, value))
-            else:
-                mcu_report(proc, dp_payload(dpid, TUYA_TYPE_BOOL, bytes([value])))
+        seen += dp_writes(tx)
+        for unit in dp_units(tx):
+            mcu_report(proc, unit)
     return seen
 
 
@@ -216,7 +158,7 @@ def set_level(proc: StubProc, device: Device, lvl: int) -> None:
 
 
 # --------------------------------------------------------------------------
-# finding 2: MCU-side settings must be read back
+# MCU-side settings must be read back
 
 
 def test_min_max_reports_reach_ballast_attributes():
@@ -259,7 +201,7 @@ def test_no_default_settings_pushed_to_mcu():
 
 
 # --------------------------------------------------------------------------
-# finding 5: several datapoints in one frame
+# several datapoints in one frame
 
 
 def test_multi_dp_frame_is_fully_decoded():
@@ -301,7 +243,7 @@ def test_full_status_dump_larger_than_64_bytes():
 
 
 # --------------------------------------------------------------------------
-# finding 4: one frame in flight
+# one frame in flight
 
 
 def test_one_frame_in_flight_until_mcu_acks():
@@ -437,7 +379,7 @@ def test_scaling_waits_for_known_range():
 
 
 def test_dr_token_keeps_stock_mapping():
-    proc = StubProc(device_config=ZDMS16_2.replace("U0E;", "U0E;DR;")).start()
+    proc = StubProc(device_config=ZDMS16_2.replace(";M;", ";DR;M;")).start()
     device = Device(proc)
     try:
         pump(proc)
@@ -454,7 +396,7 @@ def test_dr_token_keeps_stock_mapping():
 
 
 # --------------------------------------------------------------------------
-# finding 3: MCU fade reports must not fight our own target
+# MCU fade reports must not fight our own target
 
 
 def test_ramp_ignores_lagging_fade_reports():
@@ -506,7 +448,7 @@ def test_physical_dimming_after_holdoff_is_accepted():
 
 
 # --------------------------------------------------------------------------
-# finding 6: brightness range
+# brightness range
 
 
 def test_level_one_maps_inside_tuya_range():
@@ -562,7 +504,7 @@ def test_plain_move_down_stays_on_at_minimum():
 
 
 # --------------------------------------------------------------------------
-# finding 7: commands without OnOff, and Step
+# commands without OnOff, and Step
 
 
 def test_move_to_level_without_onoff():
@@ -631,7 +573,7 @@ def test_step_with_onoff_up_turns_on():
 
 
 # --------------------------------------------------------------------------
-# finding 9: NV item ids must not move between releases
+# NV item ids must not move between releases
 
 
 def _nv_ids() -> dict[str, list[int]]:
@@ -716,3 +658,45 @@ def test_cover_endpoint_comes_after_dimmers():
         assert device.read_zigbee_attr(2, ZCL_CLUSTER_WINDOW_COVERING, ZCL_ATTR_COVER_FIRST) is not None
         res = proc.exec(f"zcl_read 1 0x{ZCL_CLUSTER_WINDOW_COVERING:04X} 0x{ZCL_ATTR_COVER_FIRST:04X}")
         assert not res.ok
+
+
+# --------------------------------------------------------------------------
+# default DP layout
+
+
+def _dp_map(config: str) -> list[tuple[int, int]]:
+    """Write on + level + min + max + switch type + power-on on both channels
+    and return the DP writes, in order."""
+    proc = StubProc(device_config=config).start()
+    device = Device(proc)
+    try:
+        pump(proc)
+        take_tx(proc)
+        out = []
+        for ep in (1, 2):
+            device.call_zigbee_cmd(ep, ZCL_CLUSTER_LEVEL_CONTROL,
+                                   ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF, bytes([100, 0, 0]))
+            out += [dp for dp, _ in ack_writes(proc, device)]
+            for cluster, attr, value in ((ZCL_CLUSTER_BALLAST, ZCL_ATTR_BALLAST_MIN, 20),
+                                         (ZCL_CLUSTER_BALLAST, ZCL_ATTR_BALLAST_MAX, 200),
+                                         (ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG, ZCL_ATTR_SWITCH_TYPE, 2)):
+                device.write_zigbee_attr(ep, cluster, attr, value)
+                out += [dp for dp, _ in ack_writes(proc, device)]
+        device.write_zigbee_attr(1, ZCL_CLUSTER_ON_OFF, 0x4003, 0xFF)  # StartUpOnOff
+        out += [dp for dp, _ in ack_writes(proc, device)]
+        return out
+    finally:
+        proc.stop()
+
+
+def test_default_dps_are_the_tuya_dimmer_layout():
+    assert _dp_map(ZDMS16_2) == [1, 2, 3, 5, 4, 7, 8, 9, 11, 10, 14]
+
+
+def test_explicit_p_and_u_tokens_match_the_defaults():
+    assert _dp_map(ZDMS16_2_EXPLICIT) == _dp_map(ZDMS16_2)
+
+
+def test_p_token_overrides_one_dimmer():
+    cfg = "A;B;DM2;P01O21L22S23M24X25;U30;M;"
+    assert _dp_map(cfg) == [1, 2, 3, 5, 4, 0x21, 0x22, 0x24, 0x25, 0x23, 0x30]
