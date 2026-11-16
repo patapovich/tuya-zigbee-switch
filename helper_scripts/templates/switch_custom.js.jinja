@@ -526,6 +526,17 @@ const romasku = {
             valueMax: 254,
             entityCategory: "config",
         }),
+    dimmerOnLevel: (name, endpointName) =>
+        numeric({
+            name,
+            endpointNames: [endpointName],
+            cluster: "genLevelCtrl",
+            attribute: "onLevel",
+            description: "Brightness the light comes on at, from the wall switch or an On command, set without a round trip through the network. 255 = the level it had before.",
+            valueMin: 1,
+            valueMax: 255,
+            entityCategory: "config",
+        }),
     dimmerSwitchType: (name, endpointName) => {
         const lookup = { toggle: 0, state: 1, momentary: 2 };
         const extend = enumLookup({
@@ -693,6 +704,7 @@ const definitions = [
             romasku.dimmerMinLevel("min_level", "{{dimmerName}}"),
             romasku.dimmerMaxLevel("max_level", "{{dimmerName}}"),
             romasku.dimmerSwitchType("switch_type", "{{dimmerName}}"),
+            romasku.dimmerOnLevel("on_level", "{{dimmerName}}"),
             {% endfor %}
             {% if device.dimmerNames %}
             // Universal power-on behavior (shared DP, e.g. U0E) - one expose only.

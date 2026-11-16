@@ -14,7 +14,7 @@ typedef struct {
     uint8_t              min_level_dpid;
     uint8_t              max_level_dpid;
     uint8_t              power_on_behavior_dpid;
-    hal_zigbee_attribute attr_infos[3];             // onoff, startup, current_level
+    hal_zigbee_attribute attr_infos[4];             // onoff, startup, current_level, on_level
     hal_zigbee_attribute ballast_attr_infos[2];     // min/max level (lightingBallastCfg)
     hal_zigbee_attribute switch_type_attr_infos[1]; // switch type (genOnOffSwitchCfg)
     uint8_t              current_level;
@@ -22,6 +22,14 @@ typedef struct {
     uint8_t              max_level;
     uint8_t              switch_type;
     uint8_t              on;
+
+    /* ZCL OnLevel: the level the light comes on at, from the wall switch or
+     * an On command. 0xFF (default) = wherever the MCU left it. */
+    uint8_t              on_level;
+
+    /* Set once the MCU has told us its on/off state, so its first report
+     * after boot is not taken for a switch press. */
+    uint8_t              state_known;
 
     /* What the MCU uses: its own min/max brightness (Tuya 10..1000, 0 =
      * not known yet) and the last level value written to or reported by it. */

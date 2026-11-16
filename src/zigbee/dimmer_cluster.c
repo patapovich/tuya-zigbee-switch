@@ -203,6 +203,18 @@ static void dimmer_turn_on_at(zigbee_dimmer_cluster *cluster, uint8_t level) {
     dimmer_write_level(cluster, level);
 }
 
+static uint8_t dimmer_on_level_set(const zigbee_dimmer_cluster *cluster) {
+    return cluster->on_level >= ZCL_LEVEL_MIN && cluster->on_level <= ZCL_LEVEL_MAX;
+}
+
+/* ZCL On: to OnLevel when one is set, else wherever the MCU left it. */
+static void dimmer_turn_on_default(zigbee_dimmer_cluster *cluster) {
+    if (dimmer_on_level_set(cluster))
+        dimmer_turn_on_at(cluster, cluster->on_level);
+    else
+        dimmer_turn_on(cluster);
+}
+
 static void dimmer_turn_off(zigbee_dimmer_cluster *cluster) {
     dimmer_stop_move(cluster);
     dimmer_write_onoff(cluster, 0);
@@ -264,7 +276,7 @@ static hal_zigbee_cmd_result_t dimmer_cluster_callback(zigbee_dimmer_cluster *cl
     switch (command_id) {
     case ZCL_CMD_ONOFF_ON:
     case ZCL_CMD_ON_WITH_RECALL_GLOBAL_SCENE:
-        dimmer_turn_on(cluster);
+        dimmer_turn_on_default(cluster);
         break;
     case ZCL_CMD_ONOFF_OFF:
     case ZCL_CMD_OFF_WITH_EFFECT:
@@ -274,7 +286,7 @@ static hal_zigbee_cmd_result_t dimmer_cluster_callback(zigbee_dimmer_cluster *cl
         if (cluster->on)
             dimmer_turn_off(cluster);
         else
-            dimmer_turn_on(cluster);
+            dimmer_turn_on_default(cluster);
         break;
     default:
         return HAL_ZIGBEE_CMD_SKIPPED;
@@ -407,9 +419,24 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
         uint32_t number = dimmer_decode_tuya_value(value, value_len);
 
         if (dp_type == TUYA_DP_TYPE_BOOL && dpid == cluster->onoff_dpid) {
+            /* Our own "on" has already set cluster->on, so only the MCU
+             * switching on by itself (the wall switch) gets here while off.
+             * Not an answer to our query, not the first report after boot. */
+            uint8_t switched_on = value[0] && cluster->state_known && !cluster->on &&
+                                  !tuya_secondary_mcu_report_is_passive();
+
             if (!value[0])
                 dimmer_stop_move(cluster);
             dimmer_set_on(cluster, value[0]);
+            cluster->state_known = 1;
+
+            /* Go to OnLevel at once, with no round trip through the
+             * network: the MCU is fading in to the level it remembers and
+             * turns towards this one instead. */
+            if (switched_on && dimmer_on_level_set(cluster)) {
+                dimmer_set_current_level(cluster, cluster->on_level);
+                dimmer_write_level(cluster, cluster->on_level);
+            }
         } else if (dp_type == TUYA_DP_TYPE_VALUE && dpid == cluster->level_dpid) {
             if (cluster->move_active || cluster->level_holdoff) {
                 /* Our own ramp or fade in progress: the MCU reports where
@@ -487,12 +514,16 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
     cluster->mcu_min         = 0;
     cluster->mcu_max         = 0;
     cluster->level_value     = 0;
+    cluster->on_level        = 0xFF;
+    cluster->state_known     = 0;
 
     SETUP_ATTR(0, ZCL_ATTR_ONOFF, ZCL_DATA_TYPE_BOOLEAN, ATTR_READONLY, cluster->on);
     SETUP_ATTR(1, ZCL_ATTR_START_UP_ONOFF, ZCL_DATA_TYPE_ENUM8, ATTR_WRITABLE,
                cluster->startup_mode);
     SETUP_ATTR(2, ZCL_ATTR_LEVEL_CURRENT_LEVEL, ZCL_DATA_TYPE_UINT8, ATTR_READONLY,
                cluster->current_level);
+    SETUP_ATTR(3, ZCL_ATTR_LEVEL_ON_LEVEL, ZCL_DATA_TYPE_UINT8, ATTR_WRITABLE,
+               cluster->on_level);
 
     // Min/max brightness on the standard lightingBallastCfg cluster (0x0301),
     // so Zigbee2MQTT can render sliders bound to these without a custom cluster.
@@ -515,7 +546,7 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
     endpoint->cluster_count++;
 
     endpoint->clusters[endpoint->cluster_count].cluster_id      = ZCL_CLUSTER_LEVEL_CONTROL;
-    endpoint->clusters[endpoint->cluster_count].attribute_count = 1;
+    endpoint->clusters[endpoint->cluster_count].attribute_count = 2;
     endpoint->clusters[endpoint->cluster_count].attributes      = &cluster->attr_infos[2];
     endpoint->clusters[endpoint->cluster_count].is_server       = 1;
     endpoint->clusters[endpoint->cluster_count].cmd_callback    =
