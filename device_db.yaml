@@ -6518,12 +6518,14 @@ SWITCH_NOVADIGITAL_SALA_6G:
   stock_image_type: 54179
   firmware_image_type: 43501
   build: yes
-  status: experimental
+  status: in_progress
   info: "DP 1-6 = state_l1..l6, DP 14 = power on behaviour, taken from the
     owner's own z2m converter and confirmed working there. UART pins and baud
     are NOT confirmed: B1/B7 @9600 is carried over from the TPZ-2 on the same
     ZTU module and is a starting guess. stock_image_type is likewise the
     TPZ-2's value, unverified for this board."
+  threads: null
+  store: null
 
 SWITCH_NOVADIGITAL_TPZ2:
   human_name: NovaDigital TPZ-2 / Moes SFL02-Z-2 (secondary MCU)
@@ -6563,3 +6565,4 @@ SWITCH_NOVADIGITAL_TPZ2:
   status: mostly_supported
   info: "Relays behind Tuya secondary MCU over UART B1/B7 @9600. DP 0x18/0x19 = state_l1/state_l2."
   threads: https://github.com/romasku/tuya-zigbee-switch/issues/369
+  store: null
