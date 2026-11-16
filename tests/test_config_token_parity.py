@@ -11,9 +11,10 @@ Reviewing for it clearly does not work, so this asserts it structurally.
 import re
 from pathlib import Path
 
+from generated_converter import custom_converter_js
+
 ROOT = Path(__file__).resolve().parent.parent
 PARSER = ROOT / "src" / "device_config" / "config_parser.c"
-CONVERTER = ROOT / "zigbee2mqtt" / "converters" / "switch_custom.js"
 
 
 def two_letter_tokens() -> set[str]:
@@ -25,7 +26,7 @@ def two_letter_tokens() -> set[str]:
 
 
 def test_validator_knows_every_two_letter_token():
-    js = CONVERTER.read_text(encoding="utf-8")
+    js = custom_converter_js()
     # Accept either idiom the validator uses: startsWith('RT') for prefixes,
     # or an exact comparison such as part == 'SLP'.
     missing = [
@@ -38,7 +39,7 @@ def test_validator_knows_every_two_letter_token():
 
 
 def test_two_letter_branches_come_before_their_single_letter_branch():
-    js = CONVERTER.read_text(encoding="utf-8")
+    js = custom_converter_js()
     # Only look at the validator, not the whole file.
     start = js.index("const validatePin")
     end = js.index("entityCategory", start)
