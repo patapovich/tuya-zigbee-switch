@@ -10,6 +10,10 @@ Please describe what you are working on, under ## Upcoming
 
 ## 1.1.3
 
+- **Avatto ZDMS16-2 2-gang dimmer module** (`TS0601`, `_TZE284_jtbgusdc`)
+  - No pinouts as this board uses a secondary MCU
+  - Implemented full UART communication protocol
+
 ### Features
 
 - **Cover cluster** (window covering) for controlling the motor of curtains, blinds, and shutters.
