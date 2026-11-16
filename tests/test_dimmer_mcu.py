@@ -22,6 +22,7 @@ from client import StubProc
 from conftest import Device
 from tuya_mcu import (  # noqa: F401  (re-exported for the other dimmer tests)
     TUYA_CMD_REPORT,
+    TUYA_CMD_RESET_NETWORK,
     TUYA_CMD_REPORT_PASSIVE,
     TUYA_CMD_WRITE,
     TUYA_TYPE_BOOL,
@@ -700,3 +701,19 @@ def test_explicit_p_and_u_tokens_match_the_defaults():
 def test_p_token_overrides_one_dimmer():
     cfg = "A;B;DM2;P01O21L22S23M24X25;U30;M;"
     assert _dp_map(cfg) == [1, 2, 3, 5, 4, 0x21, 0x22, 0x24, 0x25, 0x23, 0x30]
+
+
+def test_module_button_reset_leaves_the_network():
+    """The ZDMS16-2 has no keys on the MCU: the wall switch input dims and
+    toggles, and only the module's own button makes the MCU ask for a leave.
+    That has to work like the reset button of any other device. (Touch
+    panels, whose MCU keys are the user interface, still refuse: see
+    test_dp_attr.py.)"""
+    proc, device = start()
+    try:
+        assert device.is_joined()
+        proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_RESET_NETWORK, bytes([0x01]))}")
+        pump(proc)
+        assert not device.is_joined(), "the module button must reset the device"
+    finally:
+        proc.stop()
