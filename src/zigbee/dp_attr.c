@@ -17,24 +17,21 @@ uint8_t   dp_attrs_cnt = 0;
 static tuya_secondary_mcu_dp_report_callback_t g_next_callback = NULL;
 
 /* Window during which reports are assumed to be the answer to our own
-   query-all rather than someone touching the switch. */
+ * query-all rather than someone touching the switch. */
 #define BULK_DUMP_WINDOW_MS    3000
 static uint8_t  g_bulk_dump_armed      = 0;
 static uint32_t g_bulk_dump_started_ms = 0;
 
-uint8_t dp_attr_bulk_dump_active(void)
-{
-  if (!g_bulk_dump_armed)
-  {
-    return 0;
-  }
-  /* Unsigned subtraction, so this stays correct across a millis wrap. */
-  if ((hal_millis() - g_bulk_dump_started_ms) >= BULK_DUMP_WINDOW_MS)
-  {
-    g_bulk_dump_armed = 0;
-    return 0;
-  }
-  return 1;
+uint8_t dp_attr_bulk_dump_active(void) {
+    if (!g_bulk_dump_armed) {
+        return 0;
+    }
+    /* Unsigned subtraction, so this stays correct across a millis wrap. */
+    if ((hal_millis() - g_bulk_dump_started_ms) >= BULK_DUMP_WINDOW_MS) {
+        g_bulk_dump_armed = 0;
+        return 0;
+    }
+    return 1;
 }
 
 static int8_t hex_digit(char c) {

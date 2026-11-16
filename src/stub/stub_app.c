@@ -58,7 +58,7 @@ void stub_app_init(const char *device_conf, const char *dp_conf,
     }
 
     if (dp_conf) {
-        device_config_str_t dp = {0};
+        device_config_str_t dp = { 0 };
         snprintf((char *)dp.data, sizeof(dp.data), "%s", dp_conf);
         dp.size = (uint16_t)strnlen((const char *)dp.data, sizeof(dp.data));
         printf("[STUB] Using dp configuration: %s\n", dp.data);
@@ -67,7 +67,7 @@ void stub_app_init(const char *device_conf, const char *dp_conf,
     }
 
     if (device_conf_ext) {
-        device_config_str_t ext = {0};
+        device_config_str_t ext = { 0 };
         snprintf((char *)ext.data, sizeof(ext.data), "%s", device_conf_ext);
         ext.size = (uint16_t)strnlen((const char *)ext.data, sizeof(ext.data));
         printf("[STUB] Using device configuration ext: %s\n", ext.data);
@@ -287,8 +287,9 @@ int stub_app_string_to_attribute_value(hal_zigbee_attribute *attr,
 
         break;
     }
+
     /* UTCTime is a uint32 on the wire; the real stacks treat it that way
-       and without this the stub silently mangles a Time write. */
+     * and without this the stub silently mangles a Time write. */
     case ZCL_DATA_TYPE_UTC:
     case ZCL_DATA_TYPE_UINT32: {
         unsigned long v = 0;

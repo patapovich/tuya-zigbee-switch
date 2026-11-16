@@ -22,21 +22,21 @@
 //
 // TX keeps the proven NDMA byte-push path (uart_ndma_send_byte).
 
-#define MCU_UART_TX_PIN UART_TX_PB1
-#define MCU_UART_RX_PIN UART_RX_PB7
-#define MCU_UART_BAUDRATE 115200
+#define MCU_UART_TX_PIN      UART_TX_PB1
+#define MCU_UART_RX_PIN      UART_RX_PB7
+#define MCU_UART_BAUDRATE    115200
 
 /* DMA receive buffer used by drv_uart. The first 4 bytes hold the received
  * length (big-endian), the payload follows at +4, so the usable payload
  * capacity is (size - 4). Must be 4-byte aligned. */
 /* 256: a full status dump of a two channel dimmer is ~100 bytes and can
  * arrive as one burst; 64 (60 usable) dropped it. */
-#define UART_RX_DMA_BUF_SIZE 256
+#define UART_RX_DMA_BUF_SIZE    256
 static uint8_t g_uart_rx_dma_buf[UART_RX_DMA_BUF_SIZE] __attribute__((aligned(4)));
 
 /* Software ring buffer holding bytes drained from the DMA buffer in the ISR. */
-#define UART_RX_RING_SIZE 256
-static uint8_t g_uart_rx_ring[UART_RX_RING_SIZE];
+#define UART_RX_RING_SIZE    256
+static uint8_t           g_uart_rx_ring[UART_RX_RING_SIZE];
 static volatile uint16_t g_uart_rx_head = 0;
 static volatile uint16_t g_uart_rx_tail = 0;
 
@@ -49,6 +49,7 @@ uint16_t hal_uart_rx_dropped(void) {
 static uint16_t uart_ring_used(void) {
     uint16_t head = (uint16_t)g_uart_rx_head;
     uint16_t tail = (uint16_t)g_uart_rx_tail;
+
     return (uint16_t)(head - tail);
 }
 
@@ -96,9 +97,15 @@ static uint8_t uart_rx_pin_is_valid(uint32_t p) {
 
 void hal_uart_init(const hal_uart_config_t *cfg) {
     if (cfg != NULL) {
-        if (uart_tx_pin_is_valid(cfg->tx_pin)) { g_tx_pin = cfg->tx_pin; }
-        if (uart_rx_pin_is_valid(cfg->rx_pin)) { g_rx_pin = cfg->rx_pin; }
-        if (cfg->baudrate != 0)                { g_baud   = cfg->baudrate; }
+        if (uart_tx_pin_is_valid(cfg->tx_pin)) {
+            g_tx_pin = cfg->tx_pin;
+        }
+        if (uart_rx_pin_is_valid(cfg->rx_pin)) {
+            g_rx_pin = cfg->rx_pin;
+        }
+        if (cfg->baudrate != 0) {
+            g_baud = cfg->baudrate;
+        }
     }
     (void)cfg;
 
@@ -148,18 +155,19 @@ void hal_uart_flush(void) {
 }
 
 /* The watchdog fires at one second. An unbounded spin here turns any
-   stalled UART -- wrong pinmux, bad clock, a peripheral left in a odd
-   state by a re-init -- into a reboot, and every relay command and
-   datapoint write passes through this path. Give up instead: a dropped
-   frame is recoverable, a reset is not.
-
-   The limit is a spin count rather than a timer because this runs with
-   interrupts free and must stay cheap; it is sized far above the ~1 ms a
-   byte needs at 9600 baud and far below the watchdog window. */
+ * stalled UART -- wrong pinmux, bad clock, a peripheral left in a odd
+ * state by a re-init -- into a reboot, and every relay command and
+ * datapoint write passes through this path. Give up instead: a dropped
+ * frame is recoverable, a reset is not.
+ *
+ * The limit is a spin count rather than a timer because this runs with
+ * interrupts free and must stay cheap; it is sized far above the ~1 ms a
+ * byte needs at 9600 baud and far below the watchdog window. */
 #define UART_TX_SPIN_LIMIT    2000000u
 
 static uint8_t uart_tx_wait_idle(void) {
     uint32_t spins = 0;
+
     while (uart_tx_is_busy()) {
         if (++spins > UART_TX_SPIN_LIMIT) {
             return 0;
@@ -179,7 +187,9 @@ hal_uart_status_t hal_uart_write(const uint8_t *data, uint16_t len,
         // Wait for the previous byte to finish shifting out before writing the
         // next one. NDMA mode cycles through the four TX data registers.
         if (!uart_tx_wait_idle()) {
-            if (written) { *written = actual; }
+            if (written) {
+                *written = actual;
+            }
             return HAL_UART_ERR_IO;
         }
         uart_ndma_send_byte(data[i]);
@@ -188,7 +198,9 @@ hal_uart_status_t hal_uart_write(const uint8_t *data, uint16_t len,
     // Wait for the final byte to be fully transmitted before returning, so a
     // subsequent read/command isn't corrupted by an in-flight frame.
     if (!uart_tx_wait_idle()) {
-        if (written) { *written = actual; }
+        if (written) {
+            *written = actual;
+        }
         return HAL_UART_ERR_IO;
     }
 
@@ -219,6 +231,7 @@ hal_uart_status_t hal_uart_read(uint8_t *data, uint16_t len,
 
 hal_uart_status_t hal_uart_write_byte(uint8_t byte) {
     uint16_t written = 0;
+
     return hal_uart_write(&byte, 1, &written);
 }
 
@@ -226,7 +239,7 @@ hal_uart_status_t hal_uart_read_byte(uint8_t *byte) {
     if (!byte) {
         return HAL_UART_ERR_INVALID_ARG;
     }
-    uint16_t read_len = 0;
-    hal_uart_status_t st = hal_uart_read(byte, 1, &read_len);
+    uint16_t          read_len = 0;
+    hal_uart_status_t st       = hal_uart_read(byte, 1, &read_len);
     return read_len ? HAL_UART_OK : st;
 }

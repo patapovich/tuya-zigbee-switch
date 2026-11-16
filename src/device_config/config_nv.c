@@ -140,7 +140,7 @@ void device_config_append_ext() {
     // unsigned arithmetic -- a size at or past the buffer would otherwise
     // wrap "room" to a huge value instead of correctly leaving none.
     uint16_t buf_len = (uint16_t)sizeof(device_config_str.data);
-    uint16_t room     = (device_config_str.size + 1 >= buf_len)
+    uint16_t room    = (device_config_str.size + 1 >= buf_len)
                         ? 0
                         : buf_len - device_config_str.size - 1;
     uint16_t append_len = device_config_ext_str.size;

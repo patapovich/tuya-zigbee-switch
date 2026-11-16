@@ -12,24 +12,22 @@
 /* Written by the coordinator. */
 uint32_t zcl_time       = 0;
 uint32_t zcl_local_time = 0;
+
 /* Bit 0 Master, bit 1 Synchronized. We are neither a master clock nor
-   authoritative, so only Synchronized is raised, and only once written. */
-uint8_t  zcl_time_status = 0;
+ * authoritative, so only Synchronized is raised, and only once written. */
+uint8_t zcl_time_status = 0;
 
 static uint32_t base_utc    = 0; /* value at the moment it was written */
 static uint32_t base_millis = 0;
 
 static const uint16_t cluster_revision_time = 0x0001;
 
-void time_cluster_on_write_attr(uint16_t attribute_id)
-{
+void time_cluster_on_write_attr(uint16_t attribute_id) {
     if (attribute_id != ZCL_ATTR_TIME_TIME &&
-        attribute_id != ZCL_ATTR_TIME_LOCAL_TIME)
-    {
+        attribute_id != ZCL_ATTR_TIME_LOCAL_TIME) {
         return;
     }
-    if (zcl_time == 0)
-    {
+    if (zcl_time == 0) {
         return; /* a write of zero carries no information */
     }
     base_utc        = zcl_time;
@@ -38,10 +36,8 @@ void time_cluster_on_write_attr(uint16_t attribute_id)
     printf("Clock set from coordinator: %u\r\n", (unsigned)zcl_time);
 }
 
-uint32_t zigbee_time_unix(void)
-{
-    if (base_utc == 0)
-    {
+uint32_t zigbee_time_unix(void) {
+    if (base_utc == 0) {
         return 0;
     }
     /* Unsigned arithmetic, so this stays correct across a millis wrap. */
@@ -50,8 +46,7 @@ uint32_t zigbee_time_unix(void)
 }
 
 void time_cluster_add_to_endpoint(zigbee_time_cluster *cluster,
-                                  hal_zigbee_endpoint *endpoint)
-{
+                                  hal_zigbee_endpoint *endpoint) {
     SETUP_ATTR(0, ZCL_ATTR_TIME_TIME, ZCL_DATA_TYPE_UTC, ATTR_WRITABLE,
                zcl_time);
     SETUP_ATTR(1, ZCL_ATTR_TIME_STATUS, ZCL_DATA_TYPE_BITMAP8, ATTR_READONLY,

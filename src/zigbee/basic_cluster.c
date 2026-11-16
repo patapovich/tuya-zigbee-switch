@@ -122,8 +122,8 @@ void basic_cluster_add_to_endpoint(zigbee_basic_cluster *cluster,
 
     endpoint->clusters[endpoint->cluster_count].cluster_id      = ZCL_CLUSTER_BASIC;
     endpoint->clusters[endpoint->cluster_count].attribute_count = attr_idx;
-    endpoint->clusters[endpoint->cluster_count].attributes = cluster->attr_infos;
-    endpoint->clusters[endpoint->cluster_count].is_server  = 1;
+    endpoint->clusters[endpoint->cluster_count].attributes      = cluster->attr_infos;
+    endpoint->clusters[endpoint->cluster_count].is_server       = 1;
     endpoint->cluster_count++;
 
     device_params_load_from_nv();
