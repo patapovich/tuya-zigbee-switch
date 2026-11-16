@@ -13,14 +13,15 @@ from pathlib import Path
 
 import yaml
 
+from generated_converter import custom_converter_js
+
 ROOT = Path(__file__).resolve().parent.parent
 DB = ROOT / "device_db.yaml"
-CONVERTER = ROOT / "zigbee2mqtt" / "converters" / "switch_custom.js"
 
 
 def branch_regexes() -> dict[str, re.Pattern]:
     """prefix -> regex, read from the generated validator."""
-    js = CONVERTER.read_text(encoding="utf-8")
+    js = custom_converter_js()
     start = js.index("const validatePin")
     end = js.index("entityCategory", start)
     validator = js[start:end]
