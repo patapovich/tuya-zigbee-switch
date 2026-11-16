@@ -1,4 +1,5 @@
 #include "relay_cluster.h"
+#include "zigbee/tuya_mcu_app.h"
 #include "zigbee/tuya_secondary_mcu.h"
 #include "cluster_common.h"
 #include "consts.h"
@@ -158,7 +159,7 @@ hal_zigbee_cmd_result_t relay_cluster_level_callback(zigbee_relay_cluster *clust
         uint8_t level = *(uint8_t *)cmd_payload;
         if (level == 0) {
             relay_cluster_off(cluster);
-        }else {
+        } else {
             relay_cluster_on(cluster);
         }
         break;
@@ -178,7 +179,7 @@ void sync_indicator_led(zigbee_relay_cluster *cluster) {
     if (cluster->indicator_led_mode != ZCL_ONOFF_INDICATOR_MODE_MANUAL) {
         if (cluster->indicator_led_mode == ZCL_ONOFF_INDICATOR_MODE_SAME) {
             cluster->indicator_state = cluster->relay->on;
-        }else {
+        } else {
             cluster->indicator_state = !cluster->relay->on;
         }
     }
@@ -231,12 +232,7 @@ void relay_cluster_on_write_attr(zigbee_relay_cluster *cluster,
      * relays without inventing custom attributes for them. */
     if (cluster->relay != NULL && cluster->relay->dp_id != 0) {
         if (attribute_id == ZCL_ATTR_START_UP_ONOFF && g_power_on_dp_id != 0) {
-            uint8_t v;
-            switch (cluster->startup_mode) {
-            case 0x00: v = 0; break;                 /* off      */
-            case 0x01: v = 1; break;                 /* on       */
-            default:   v = 2; break;                 /* previous */
-            }
+            uint8_t v = tuya_mcu_power_on_from_startup(cluster->startup_mode);
             tuya_secondary_mcu_write_dp(g_power_on_dp_id, TUYA_DP_TYPE_ENUM,
                                         &v, 1);
         }
@@ -313,7 +309,7 @@ void relay_cluster_handle_startup_mode(zigbee_relay_cluster *cluster) {
     case ZCL_START_UP_ONOFF_SET_ONOFF_TOGGLE:
         if (prev_on) {
             relay_cluster_off(cluster);
-        }else {
+        } else {
             relay_cluster_on(cluster);
         }
         break;
@@ -321,7 +317,7 @@ void relay_cluster_handle_startup_mode(zigbee_relay_cluster *cluster) {
     case ZCL_START_UP_ONOFF_SET_ONOFF_TO_PREVIOUS:
         if (prev_on) {
             relay_cluster_on(cluster);
-        }else {
+        } else {
             relay_cluster_off(cluster);
         }
         break;

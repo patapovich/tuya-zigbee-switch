@@ -70,7 +70,7 @@ void hal_uart_init(const hal_uart_config_t *cfg) {
         io_log("UART", "init baudrate=%lu data_bits=%u stop_bits=%u parity=%u",
                (unsigned long)cfg->baudrate, cfg->data_bits, cfg->stop_bits,
                cfg->parity);
-    }else {
+    } else {
         io_log("UART", "init default config baudrate=115200");
     }
 }
@@ -96,7 +96,7 @@ uint16_t hal_uart_rx_available(void) {
     uint16_t tail = g_hal_uart_stub.rx_tail;
     if (head >= tail) {
         used = head - tail;
-    }else {
+    } else {
         used = (HAL_UART_STUB_RX_DEPTH - tail) + head;
     }
     return used;
