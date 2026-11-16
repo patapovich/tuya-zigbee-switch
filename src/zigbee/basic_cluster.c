@@ -5,6 +5,7 @@
 #include "dp_attr.h"
 #include "tuya_mcu_app.h"
 #include "tuya_mcu_diag.h"
+#include "tuya_secondary_mcu.h"
 #include "consts.h"
 #include "device_config/config_nv.h"
 #include "device_config/config_parser.h"
@@ -60,8 +61,11 @@ void basic_cluster_callback_attr_write_trampoline(uint16_t attribute_id) {
         schedule_reboot(0);
     }
     dp_attr_on_write(attribute_id);
-    if (tuya_mcu_diag_on_write(attribute_id) == TUYA_MCU_DIAG_CONTROL_QUERY_ALL) {
+    uint8_t diag_control = tuya_mcu_diag_on_write(attribute_id);
+    if (diag_control == TUYA_MCU_DIAG_CONTROL_QUERY_ALL) {
         tuya_mcu_app_query_all();
+    } else if (diag_control >= TUYA_MCU_DIAG_CONTROL_SEND_CMD) {
+        tuya_secondary_mcu_queue_cmd(diag_control - TUYA_MCU_DIAG_CONTROL_SEND_CMD, NULL, 0);
     }
 }
 

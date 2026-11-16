@@ -63,6 +63,10 @@ extern tuya_mcu_diag_counters_t tuya_mcu_diag;
 #define TUYA_MCU_DIAG_CONTROL_CLEAR        1
 #define TUYA_MCU_DIAG_CONTROL_QUERY_ALL    2
 
+/* 0x80 + cmd: send that command to the MCU with no data (protocol probe,
+ * e.g. 0x8B asks for the MCU firmware version); the answer lands in the log. */
+#define TUYA_MCU_DIAG_CONTROL_SEND_CMD     0x80
+
 void tuya_mcu_diag_clear(void);
 
 /** Append an event to the log (value: up to the first 4 bytes, big-endian,

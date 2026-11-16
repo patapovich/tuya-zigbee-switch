@@ -183,3 +183,29 @@ def test_control_2_sends_query_all():
         assert int(device.read_zigbee_attr(1, BASIC, ATTR_CONTROL)) == 0
     finally:
         proc.stop()
+
+
+TUYA_CMD_MCU_VERSION = 0x0B
+
+
+def test_control_0x80_plus_cmd_sends_bare_command_and_logs_answer():
+    """Protocol probe: 0x8B sends 0x0B (MCU firmware version query) with no
+    data; whatever the MCU answers is in the log."""
+    proc, device = start()
+    try:
+        device.step_time(2100)  # first-contact dump out of the way
+        pump(proc)
+        take_tx(proc)
+        device.write_zigbee_attr(1, BASIC, ATTR_CONTROL, 0x80 + TUYA_CMD_MCU_VERSION)
+        device.step_time(200)  # behind the unanswered boot query in the queue
+        pump(proc)
+        from test_dimmer_mcu import parse_frames
+        frames = parse_frames(take_tx(proc))
+        assert (TUYA_CMD_MCU_VERSION, b"") in frames
+        proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_MCU_VERSION, bytes([0x40]))}")
+        pump(proc)
+        rx = [e for e in log(device) if e["kind"] == "RX_CMD" and e["id"] == TUYA_CMD_MCU_VERSION]
+        assert rx and rx[-1]["value"] == 0x40
+        assert int(device.read_zigbee_attr(1, BASIC, ATTR_CONTROL)) == 0
+    finally:
+        proc.stop()
