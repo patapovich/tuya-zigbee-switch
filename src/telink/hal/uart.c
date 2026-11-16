@@ -40,6 +40,12 @@ static uint8_t g_uart_rx_ring[UART_RX_RING_SIZE];
 static volatile uint16_t g_uart_rx_head = 0;
 static volatile uint16_t g_uart_rx_tail = 0;
 
+static volatile uint16_t g_uart_rx_dropped = 0;
+
+uint16_t hal_uart_rx_dropped(void) {
+    return g_uart_rx_dropped;
+}
+
 static uint16_t uart_ring_used(void) {
     uint16_t head = (uint16_t)g_uart_rx_head;
     uint16_t tail = (uint16_t)g_uart_rx_tail;
@@ -50,6 +56,7 @@ static void uart_ring_push(const uint8_t *data, uint16_t len) {
     for (uint16_t i = 0; i < len; i++) {
         /* Drop bytes if the ring is full rather than corrupting it. */
         if (uart_ring_used() >= (UART_RX_RING_SIZE - 1)) {
+            g_uart_rx_dropped += (uint16_t)(len - i);
             return;
         }
         uint16_t idx = (uint16_t)(g_uart_rx_head % UART_RX_RING_SIZE);
@@ -68,6 +75,8 @@ static void uart_dma_rx_callback(void) {
 
     if (dataLen && dataLen <= (UART_RX_DMA_BUF_SIZE - 4)) {
         uart_ring_push(&g_uart_rx_dma_buf[4], (uint16_t)dataLen);
+    } else if (dataLen) {
+        g_uart_rx_dropped += (uint16_t)dataLen;
     }
 }
 
