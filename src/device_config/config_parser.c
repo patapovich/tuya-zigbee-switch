@@ -588,8 +588,12 @@ void parse_config() {
     /* Lets the coordinator hand us a clock. The secondary MCU asks for
      * the time and misbehaves without it; we have no RTC and no way to
      * ask, so we accept a write instead. */
-    static zigbee_time_cluster time_cluster;
-    time_cluster_add_to_endpoint(&time_cluster, &endpoints[0]);
+    // genTime is only for the secondary MCU (it asks for the time); other
+    // devices keep the cluster set they had before.
+    if (dimmer_clusters_cnt > 0 || tuya_dp_relay_count() > 0 || dp_attrs_cnt > 0) {
+        static zigbee_time_cluster time_cluster;
+        time_cluster_add_to_endpoint(&time_cluster, &endpoints[0]);
+    }
 
     // Add battery cluster for battery-powered devices
     if (battery.pin != HAL_INVALID_PIN) {

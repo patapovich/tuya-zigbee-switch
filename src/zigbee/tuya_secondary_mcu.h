@@ -98,7 +98,18 @@ int tuya_secondary_mcu_send_cmd(uint8_t cmd, uint16_t seq,
                                 const uint8_t *payload, uint16_t len);
 
 /**
- * Write a DP frame directly to the secondary MCU UART.
+ * Queue a command we start (e.g. 0x28 query-all) behind the DP writes: it
+ * goes out when nothing else is in flight, with the next sequence number.
+ */
+int tuya_secondary_mcu_queue_cmd(uint8_t cmd, const uint8_t *payload, uint16_t len);
+
+/** Called right after a DP write actually went out on the UART (not when it
+ *  was queued). Single slot; pass NULL to unregister. */
+typedef void (*tuya_secondary_mcu_tx_callback_t)(uint8_t dpid);
+void tuya_secondary_mcu_register_tx_callback(tuya_secondary_mcu_tx_callback_t callback);
+
+/**
+ * Queue a DP write to the secondary MCU (one frame in flight at a time).
  */
 int tuya_secondary_mcu_write_dp(uint8_t dpid, uint8_t dp_type,
                                 const void *value, uint16_t value_len);

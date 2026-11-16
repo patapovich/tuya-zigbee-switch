@@ -221,6 +221,6 @@ void dp_attr_query_all(void) {
     /* Callers decide whether a dump is useful (dp attributes, dimmers). */
     g_bulk_dump_armed      = 1;
     g_bulk_dump_started_ms = hal_millis();
-    tuya_secondary_mcu_send_cmd(TUYA_MCU_QUERY_ALL_DP,
-                                tuya_secondary_mcu_next_tx_seq(), NULL, 0);
+    /* Queued behind any DP write still waiting for its ack (IT inits). */
+    tuya_secondary_mcu_queue_cmd(TUYA_MCU_QUERY_ALL_DP, NULL, 0);
 }

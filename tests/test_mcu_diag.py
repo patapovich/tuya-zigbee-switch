@@ -177,6 +177,7 @@ def test_control_2_sends_query_all():
         pump(proc)
         take_tx(proc)
         device.write_zigbee_attr(1, BASIC, ATTR_CONTROL, 2)
+        device.step_time(200)  # behind the unanswered boot query in the queue
         pump(proc)
         assert TUYA_CMD_QUERY_ALL in _sent_cmds(proc)
         assert int(device.read_zigbee_attr(1, BASIC, ATTR_CONTROL)) == 0

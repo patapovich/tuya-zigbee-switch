@@ -32,17 +32,19 @@ static void dp_echo_arm(uint8_t dpid) {
 
     for (uint8_t i = 0; i < DP_ECHO_SLOTS; i++) {
         if (g_echo_dp[i] == dpid) {
-            slot = i; break;
+            slot = i;
+            break;
         }
-        if (g_echo_until[i] < g_echo_until[slot]) {
+        /* Reuse the slot closest to expiry (signed: wrap-safe). */
+        if ((int32_t)(g_echo_until[i] - now) < (int32_t)(g_echo_until[slot] - now)) {
             slot = i;
         }
     }
     g_echo_dp[slot]    = dpid;
     g_echo_until[slot] = now + DP_ECHO_WINDOW_MS;
     if (g_echo_until[slot] == 0) {
-        g_echo_until[slot] = 1;
-    }                                                        /* 0 = free */
+        g_echo_until[slot] = 1; /* 0 = free */
+    }
 }
 
 static uint8_t dp_echo_consume(uint8_t dpid) {
@@ -62,8 +64,19 @@ static uint8_t dp_echo_consume(uint8_t dpid) {
 static void tuya_dp_relay_send(uint8_t dp_id, uint8_t state) {
     uint8_t value = state ? 1 : 0;
 
-    dp_echo_arm(dp_id);
+    /* The echo window is armed when the write actually goes out (see
+     * dp_relay_on_tx): queued behind unanswered writes it may leave much
+     * later, and the MCU's echo would then look like a key press. */
     tuya_secondary_mcu_write_dp(dp_id, TUYA_DP_TYPE_BOOL, &value, sizeof(value));
+}
+
+static void dp_relay_on_tx(uint8_t dpid) {
+    for (uint8_t i = 0; i < relays_cnt; i++) {
+        if (relays[i].dp_id != 0 && relays[i].dp_id == dpid) {
+            dp_echo_arm(dpid);
+            return;
+        }
+    }
 }
 
 static void tuya_dp_relay_on_report(uint8_t dpid, uint8_t dp_type,
@@ -140,6 +153,7 @@ void tuya_dp_relay_init(void) {
     }
 
     relay_dp_send_hook = tuya_dp_relay_send;
+    tuya_secondary_mcu_register_tx_callback(dp_relay_on_tx);
 
     g_next_callback = tuya_secondary_mcu_get_dp_report_callback();
     tuya_secondary_mcu_register_dp_report_callback(tuya_dp_relay_on_report);
