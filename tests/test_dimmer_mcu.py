@@ -63,6 +63,7 @@ RAMP_STEP = 12
 
 # Longer than any ack wait or fade hold-off the firmware may use.
 SETTLE_MS = 6000
+HOLDOFF_MS = 3000  # firmware DIMMER_FADE_HOLDOFF_MS
 
 
 # --------------------------------------------------------------------------
