@@ -193,11 +193,15 @@ def test_switch_type_write_on_dimmer_endpoint():
         proc.stop()
 
 
-def test_time_cluster_only_with_secondary_mcu():
-    with StubProc(device_config="A;B;LC0;SA0u;RB0;") as proc:
-        assert not proc.exec("zcl_read 1 0x000A 0x0000").ok
+def test_no_time_cluster_and_time_sync_answered_with_zeros():
+    """No genTime: nothing would ever write it (z2m does not push the time).
+    The MCU's time request (0x24) still gets its reply, eight zero bytes."""
     proc, device = start()
     try:
-        assert proc.exec("zcl_read 1 0x000A 0x0000").ok
+        assert not proc.exec("zcl_read 1 0x000A 0x0000").ok
+        proc.exec(f"uart_rx {tuya_frame(0x24, seq=0x1234)}")
+        pump(proc)
+        replies = [(cmd, data) for cmd, data in parse_frames(take_tx(proc)) if cmd == 0x24]
+        assert replies == [(0x24, bytes(8))]
     finally:
         proc.stop()
