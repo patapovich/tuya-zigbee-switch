@@ -437,9 +437,11 @@ void parse_config()
         else if (entry[0] == 'D' && entry[1] == 'M')
         {
             uint8_t count = (uint8_t)parse_int(entry + 2);
-            if (count > 4)
-                count = 4;
-            for (int i = 0; i < count; i++)
+            const int dimmer_capacity =
+                (int)(sizeof(dimmer_clusters) / sizeof(dimmer_clusters[0]));
+            // The cap is on the total, not per token: a second DM token used
+            // to write past dimmer_clusters[].
+            for (int i = 0; i < count && dimmer_clusters_cnt < dimmer_capacity; i++)
             {
                 // DPID fields are resolved after the full config string has
                 // been parsed (see below), since Pxx entries configuring
@@ -717,9 +719,15 @@ void parse_config()
         }
         dimmer_cluster_add_to_endpoint(&dimmer_clusters[index],
                                        &endpoints[dimmer_base + index]);
+        // Groups, like on relay endpoints: z2m group membership and group
+        // binds from remotes need it.
+        group_cluster_add_to_endpoint(&group_cluster,
+                                      &endpoints[dimmer_base + index]);
     }
 
-    int cover_switch_base = switch_clusters_cnt + relay_clusters_cnt;
+    // Endpoint order: switches, relays, dimmers, cover switches, covers.
+    int cover_switch_base =
+        switch_clusters_cnt + relay_clusters_cnt + dimmer_clusters_cnt;
     for (int index = 0; index < cover_switch_clusters_cnt; index++)
     {
         if (cover_switch_base + index != 0)
@@ -731,8 +739,8 @@ void parse_config()
                                              &endpoints[cover_switch_base + index]);
     }
 
-    int cover_base =
-        switch_clusters_cnt + relay_clusters_cnt + cover_switch_clusters_cnt;
+    int cover_base = switch_clusters_cnt + relay_clusters_cnt +
+                     dimmer_clusters_cnt + cover_switch_clusters_cnt;
     for (int index = 0; index < cover_clusters_cnt; index++)
     {
         if (cover_base + index != 0)
