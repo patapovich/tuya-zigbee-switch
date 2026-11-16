@@ -34,6 +34,7 @@ void dp_config_read_from_nv();
 
 void device_config_ext_write_to_nv();
 void device_config_ext_read_from_nv();
+
 /* Reads device_config_ext_str from NV and appends it onto device_config_str
  * (clamped to the latter's buffer capacity), re-terminating the combined
  * string. No-op if device_config_ext_str is empty. Must run after

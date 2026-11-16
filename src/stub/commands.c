@@ -248,12 +248,12 @@ static int cmd_uart_rx(int argc, char **argv) {
         io_res_err("bad_hex");
         return -1;
     }
-    uint8_t buf[128];
+    uint8_t  buf[128];
     uint16_t len = 0;
     for (size_t i = 0; i < n && len < sizeof(buf); i += 2) {
-        char     pair[3] = { hex[i], hex[i + 1], 0 };
-        char *   e       = NULL;
-        long     v       = strtol(pair, &e, 16);
+        char  pair[3] = { hex[i], hex[i + 1], 0 };
+        char *e       = NULL;
+        long  v       = strtol(pair, &e, 16);
         if (*e) {
             io_res_err("bad_hex");
             return -1;

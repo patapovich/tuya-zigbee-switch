@@ -6,16 +6,16 @@
 
 // Clusters
 
-#define ZCL_CLUSTER_BASIC                     0
-#define ZCL_CLUSTER_POWER_CFG                 1
-#define ZCL_CLUSTER_ON_OFF                    6
-#define ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG      7
-#define ZCL_CLUSTER_MULTISTATE_INPUT_BASIC    0x0012
-#define ZCL_CLUSTER_LEVEL_CONTROL             0x0008
-#define ZCL_CLUSTER_GROUPS                    0x0004
-#define ZCL_CLUSTER_OTA_BOOTLOAD              0x0019
-#define ZCL_CLUSTER_WINDOW_COVERING           0x0102
-#define ZCL_CLUSTER_COVER_SWITCH_CONFIG       0xFC01
+#define ZCL_CLUSTER_BASIC                      0
+#define ZCL_CLUSTER_POWER_CFG                  1
+#define ZCL_CLUSTER_ON_OFF                     6
+#define ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG       7
+#define ZCL_CLUSTER_MULTISTATE_INPUT_BASIC     0x0012
+#define ZCL_CLUSTER_LEVEL_CONTROL              0x0008
+#define ZCL_CLUSTER_GROUPS                     0x0004
+#define ZCL_CLUSTER_OTA_BOOTLOAD               0x0019
+#define ZCL_CLUSTER_WINDOW_COVERING            0x0102
+#define ZCL_CLUSTER_COVER_SWITCH_CONFIG        0xFC01
 #define ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG    0x0301
 
 
@@ -68,7 +68,7 @@
 // OnOff cluster
 
 #define ZCL_ATTR_ONOFF                    0x0000
-#define ZCL_ATTR_ONOFF_ON_TIME                    0x4001
+#define ZCL_ATTR_ONOFF_ON_TIME            0x4001
 #define ZCL_ATTR_START_UP_ONOFF           0x4003
 
 #define ZCL_ATTR_ONOFF_INDICATOR_MODE     0xff01
@@ -99,7 +99,7 @@
 #define ZCL_ATTR_GROUP_NAME_SUPPORT                                  0x0000
 
 // Level Control cluster
-#define ZCL_ATTR_LEVEL_CURRENT_LEVEL                                0x0000
+#define ZCL_ATTR_LEVEL_CURRENT_LEVEL                                 0x0000
 
 // WindowCovering cluster
 #define ZCL_ATTR_WINDOW_COVERING_TYPE                                0x0000
@@ -120,8 +120,8 @@
 #define ZCL_ATTR_COVER_SWITCH_CONFIG_LONG_PRESS_DUR                  0x0005
 
 // Lighting ballast configuration cluster (standard, 0x0301)
-#define ZCL_ATTR_BALLAST_MIN_LEVEL                                  0x0010
-#define ZCL_ATTR_BALLAST_MAX_LEVEL                                  0x0011
+#define ZCL_ATTR_BALLAST_MIN_LEVEL                                   0x0010
+#define ZCL_ATTR_BALLAST_MAX_LEVEL                                   0x0011
 
 // Poll Control cluster
 #define ZCL_CLUSTER_POLL_CONTROL                                     0x0020

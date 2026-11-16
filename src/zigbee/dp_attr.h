@@ -35,6 +35,7 @@ typedef struct {
     uint16_t attr_id;  /* ZCL attribute id */
     uint8_t  zcl_type; /* ZCL_DATA_TYPE_BOOLEAN / _ENUM8 / _UINT32 */
     uint8_t  zcl_size; /* 1 or 4 */
+
     /* Value in ZCL layout (little endian). The attribute table points here, so
      * it must stay put for the lifetime of the device. */
     uint8_t  raw[4];

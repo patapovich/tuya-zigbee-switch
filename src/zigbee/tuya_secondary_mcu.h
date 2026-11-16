@@ -41,11 +41,12 @@ typedef enum {
 } tuya_dp_type_t;
 
 typedef enum {
-    TUYA_MCU_CMD_WRITE  = 0x04,
+    TUYA_MCU_CMD_WRITE          = 0x04,
+
     /* Report the MCU sends back after executing a command, and the form it
      * uses to answer a query-all (0x28). Carries datapoints just like 0x06. */
     TUYA_MCU_CMD_REPORT_PASSIVE = 0x05,
-    TUYA_MCU_CMD_REPORT = 0x06,
+    TUYA_MCU_CMD_REPORT         = 0x06,
 } tuya_mcu_cmd_t;
 
 typedef struct {
@@ -152,23 +153,23 @@ void tuya_secondary_mcu_poll(void);
  * Log entry: t_ms (u16 LE, hal_millis() low bits), kind (u8), id (u8, DP id or
  * command), value (u32 LE). Decoder: helper_scripts/decode_mcu_diag.py
  */
-#define ZCL_ATTR_BASIC_MCU_DIAG_COUNTERS    0xff40
-#define ZCL_ATTR_BASIC_MCU_DIAG_LOG_FIRST   0xff41
-#define ZCL_ATTR_BASIC_MCU_DIAG_CONTROL     0xff4f
-#define TUYA_MCU_DIAG_LOG_PAGES             5
+#define ZCL_ATTR_BASIC_MCU_DIAG_COUNTERS     0xff40
+#define ZCL_ATTR_BASIC_MCU_DIAG_LOG_FIRST    0xff41
+#define ZCL_ATTR_BASIC_MCU_DIAG_CONTROL      0xff4f
+#define TUYA_MCU_DIAG_LOG_PAGES              5
 
 typedef enum {
-    TUYA_MCU_DIAG_TX_DP        = 1, /* id = dpid, value = DP value */
-    TUYA_MCU_DIAG_TX_CMD       = 2, /* id = cmd, value = first payload bytes */
-    TUYA_MCU_DIAG_RX_DP        = 3, /* 0x06 report, id = dpid, value */
-    TUYA_MCU_DIAG_RX_DP_PASSIVE = 4, /* 0x05 report, id = dpid, value */
-    TUYA_MCU_DIAG_RX_CMD       = 5, /* id = cmd, value = first payload bytes */
-    TUYA_MCU_DIAG_ACK          = 6, /* id = dpid, value = latency in ms */
-    TUYA_MCU_DIAG_ACK_TIMEOUT  = 7, /* id = dpid */
-    TUYA_MCU_DIAG_RX_BAD       = 8, /* id = cmd, value = frame length */
-    TUYA_MCU_DIAG_TX_DROP      = 9, /* queue full, id = dpid */
-    TUYA_MCU_DIAG_TX_FAIL      = 10, /* UART write failed, id = dpid or cmd */
-    TUYA_MCU_DIAG_UART_REINIT  = 11,
+    TUYA_MCU_DIAG_TX_DP         = 1,  /* id = dpid, value = DP value */
+    TUYA_MCU_DIAG_TX_CMD        = 2,  /* id = cmd, value = first payload bytes */
+    TUYA_MCU_DIAG_RX_DP         = 3,  /* 0x06 report, id = dpid, value */
+    TUYA_MCU_DIAG_RX_DP_PASSIVE = 4,  /* 0x05 report, id = dpid, value */
+    TUYA_MCU_DIAG_RX_CMD        = 5,  /* id = cmd, value = first payload bytes */
+    TUYA_MCU_DIAG_ACK           = 6,  /* id = dpid, value = latency in ms */
+    TUYA_MCU_DIAG_ACK_TIMEOUT   = 7,  /* id = dpid */
+    TUYA_MCU_DIAG_RX_BAD        = 8,  /* id = cmd, value = frame length */
+    TUYA_MCU_DIAG_TX_DROP       = 9,  /* queue full, id = dpid */
+    TUYA_MCU_DIAG_TX_FAIL       = 10, /* UART write failed, id = dpid or cmd */
+    TUYA_MCU_DIAG_UART_REINIT   = 11,
 } tuya_mcu_diag_kind_t;
 
 /** Append the diagnostics attributes to a Basic cluster attribute table.

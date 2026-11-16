@@ -37,9 +37,12 @@ void btn_init(button_t *button) {
 }
 
 void _btn_gpio_callback(hal_gpio_pin_t pin, void *arg) {
-    button_t *button    = (button_t *)arg;
-    if (button->dp_id != 0) { return; }
-    uint8_t   new_state = hal_gpio_read(button->pin);
+    button_t *button = (button_t *)arg;
+
+    if (button->dp_id != 0) {
+        return;
+    }
+    uint8_t new_state = hal_gpio_read(button->pin);
 
     if (new_state == button->debounce_last_state) {
         return;
