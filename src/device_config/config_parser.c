@@ -156,6 +156,7 @@ void parse_config() {
     uint8_t dimmer_min_level_dpid[DIMMER_CONFIG_MAX_COUNT]   = { 0 };
     uint8_t dimmer_max_level_dpid[DIMMER_CONFIG_MAX_COUNT]   = { 0 };
     uint8_t dimmer_power_on_behavior_dpid = 0;
+    uint8_t dimmer_raw_levels             = 0;
     char *  entry;
     for (entry = extract_next_entry(&cursor); *entry != '\0';
          entry = extract_next_entry(&cursor)) {
@@ -383,6 +384,10 @@ void parse_config() {
 
             relays_cnt++;
             relay_clusters_cnt++;
+        }else if (entry[0] == 'D' && entry[1] == 'R' && entry[2] == '\0') {
+            // DR: dimmer levels raw (stock behaviour, no scaling to the MCU's
+            // min..max range).
+            dimmer_raw_levels = 1;
         }else if (entry[0] == 'D' && entry[1] == 'M') {
             uint8_t   count           = (uint8_t)parse_int(entry + 2);
             const int dimmer_capacity =
@@ -537,6 +542,7 @@ void parse_config() {
         dimmer_clusters[i].min_level_dpid         = dimmer_min_level_dpid[i];
         dimmer_clusters[i].max_level_dpid         = dimmer_max_level_dpid[i];
         dimmer_clusters[i].power_on_behavior_dpid = dimmer_power_on_behavior_dpid;
+        dimmer_clusters[i].scale_levels           = !dimmer_raw_levels;
     }
 
     peripherals_init();
