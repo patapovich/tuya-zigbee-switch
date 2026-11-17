@@ -12,6 +12,26 @@ const {assertString} = require("zigbee-herdsman-converters/lib/utils");
 const reporting = require("zigbee-herdsman-converters/lib/reporting");
 const constants = require("zigbee-herdsman-converters/lib/constants");
 const Zcl = require('zigbee-herdsman').Zcl;
+const exposesLib = require("zigbee-herdsman-converters/lib/exposes");
+const e = exposesLib.presets;
+const ea = exposesLib.access;
+
+/* Major version of the secondary MCU firmware (Basic 0xff12, "x.y.z"), as last
+ * seen: kept in device.meta by romasku.mcuVersionMeta(), else the attribute
+ * cache of the endpoint. undefined if never read. */
+const mcuMajorOf = (device) => {
+    if (!device) return undefined;
+    let v = device.meta?.mcuVersion;
+    if (v === undefined) {
+        try {
+            v = device.getEndpoint(1)?.clusters?.genBasic?.attributes?.[0xff12];
+        } catch (error) {
+            v = undefined;
+        }
+    }
+    const m = typeof v === "string" ? /^(\d+)\./.exec(v) : null;
+    return m ? Number(m[1]) : undefined;
+};
 {% if z2m_v1 %}
 const ota = require("zigbee-herdsman-converters/lib/ota");
 {% endif%}
@@ -216,6 +236,71 @@ const romasku = {
             description: "Firmware version of the secondary MCU (the chip that drives the outputs)",
             entityCategory: "diagnostic",
         }),
+    mcuVersionMeta: () => ({
+        isModernExtend: true,
+        fromZigbee: [{
+            cluster: "genBasic",
+            type: ["attributeReport", "readResponse"],
+            convert: (model, msg) => {
+                const v = msg.data?.[0xff12];
+                if (typeof v === "string" && msg.device && msg.device.meta?.mcuVersion !== v) {
+                    msg.device.meta.mcuVersion = v;
+                    msg.device.save();
+                }
+            },
+        }],
+    }),
+    // Settings only an own secondary-MCU firmware has. auto shows them once the
+    // MCU has reported a new enough version (exposes are rebuilt when
+    // Zigbee2MQTT restarts or this option changes).
+    ownMcuOption: () => ({
+        isModernExtend: true,
+        options: [
+            e.enum("own_mcu_settings", ea.SET, ["auto", "show", "hide"])
+                .withDescription("Settings of an own secondary-MCU firmware (e.g. dimming curve). auto (default): shown when the MCU reports firmware 2.x or later; show / hide: always / never"),
+        ],
+    }),
+    // Enum datapoint attribute (Basic 0xffXX on endpoint 1) exposed on the
+    // endpoint of the channel it belongs to.
+    ownMcuEnum: ({name, endpointName, attrId, lookup, description, minMcu}) => {
+        const expose = e.enum(name, ea.ALL, Object.keys(lookup))
+            .withEndpoint(endpointName)
+            .withDescription(description)
+            .withCategory("config");
+        const property = `${name}_${endpointName}`;
+        return {
+            isModernExtend: true,
+            exposes: [(device, options) => {
+                const mode = options?.own_mcu_settings ?? "auto";
+                if (!device || mode === "show") return [expose];
+                if (mode === "hide") return [];
+                const major = mcuMajorOf(device);
+                return major !== undefined && major >= minMcu ? [expose] : [];
+            }],
+            fromZigbee: [{
+                cluster: "genBasic",
+                type: ["attributeReport", "readResponse"],
+                convert: (model, msg) => {
+                    if (msg.endpoint.ID !== 1 || msg.data?.[attrId] === undefined) return;
+                    const v = msg.data[attrId];
+                    const key = Object.keys(lookup).find((k) => lookup[k] === v);
+                    return {[property]: key ?? v};
+                },
+            }],
+            toZigbee: [{
+                key: [name],
+                endpoints: [endpointName],
+                convertSet: async (entity, key, value, meta) => {
+                    if (!(value in lookup)) throw new Error(`${name}: one of ${Object.keys(lookup).join(", ")}`);
+                    await meta.device.getEndpoint(1).write("genBasic", {[attrId]: {value: lookup[value], type: Zcl.DataType.ENUM8}});
+                    return {state: {[key]: value}};
+                },
+                convertGet: async (entity, key, meta) => {
+                    await meta.device.getEndpoint(1).read("genBasic", [attrId]);
+                },
+            }],
+        };
+    },
     deviceConfigExt: (name, endpointName) =>
         text({
             name,
@@ -628,7 +713,16 @@ const definitions = [
 {% if device.has_secondary_mcu %}            romasku.mcuVersion("mcu_version", "{{first_endpoint}}"),
 {% endif %}
 {% for dp in device.dp_attributes %}
-{% if dp.type == "B" %}
+{% if dp.min_mcu or dp.dimmer %}
+            romasku.ownMcuEnum({
+                name: "{{dp.name}}",
+                endpointName: "{{device.dimmerNames[dp.dimmer - 1] if dp.dimmer else first_endpoint}}",
+                attrId: 0x{{("ff" ~ dp.attr)|lower}},
+                lookup: { {% for k, v in dp["values"].items() %}"{{k}}": {{v}}{{ ", " if not loop.last }}{% endfor %} },
+                description: "{{dp.label}}",
+                minMcu: {{dp.min_mcu or 0}},
+            }),
+{% elif dp.type == "B" %}
             binary({
                 name: "{{dp.name}}",
                 endpointName: "{{first_endpoint}}",
@@ -663,6 +757,10 @@ const definitions = [
             }),
 {% endif %}
 {% endfor %}
+{% if device.dp_attributes | selectattr("min_mcu") | list %}
+            romasku.ownMcuOption(),
+            romasku.mcuVersionMeta(),
+{% endif %}
             romasku.multiPressResetCount("multi_press_reset_count", "{{first_endpoint}}"),
             {% if device.has_dedicated_net_led %}
             romasku.networkIndicator("network_led", "{{first_endpoint}}"),

@@ -194,7 +194,9 @@
                   "values": {"type": "object", "additionalProperties": {"type": "integer"}, "description": "Enum label -> value (quote labels such as \"off\")"},
                   "unit": {"type": "string"},
                   "min": {"type": "number"},
-                  "max": {"type": "number"}
+                  "max": {"type": "number"},
+                  "dimmer": {"type": "integer", "minimum": 1, "description": "Expose on this dimmer's endpoint (1-based) instead of the first one; the attribute stays on endpoint 1"},
+                  "min_mcu": {"type": "integer", "minimum": 1, "description": "Only an own secondary-MCU firmware of this major version or later has the DP: the expose follows the device option own_mcu_settings (auto/show/hide)"}
                 },
                 "required": ["dp", "type", "attr", "name"],
                 "additionalProperties": false
