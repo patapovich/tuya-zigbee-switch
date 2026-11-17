@@ -19,18 +19,20 @@ const ea = exposesLib.access;
 /* Major version of our own secondary-MCU firmware, as last seen: the module
  * shows ours as "x.y.z own" (only ours answers its identity query; a stock
  * MCU never gets the suffix, whatever its version number). Kept in
- * device.meta by romasku.mcuVersionMeta(), else the attribute cache of the
- * endpoint. undefined if the MCU is not ours or not known yet. */
+ * the endpoint's attribute cache, else in device.meta (romasku.mcuVersionMeta).
+ * undefined if the MCU is not ours or not known yet. */
 const ownMcuMajorOf = (device) => {
     if (!device) return undefined;
-    let v = device.meta?.mcuVersion;
-    if (v === undefined) {
-        try {
-            v = device.getEndpoint(1)?.clusters?.genBasic?.attributes?.[0xff12];
-        } catch (error) {
-            v = undefined;
-        }
+    let cached;
+    try {
+        cached = device.getEndpoint(1)?.clusters?.genBasic?.attributes?.[0xff12];
+    } catch (error) {
+        cached = undefined;
     }
+    // The newest value the device sent, unless it is the "" read right after
+    // a restart of the module; then the last real one kept in meta.
+    const real = (v) => typeof v === "string" && /^\d+\.\d+\.\d+( own)?$/.test(v) && !v.startsWith("0.0.0");
+    const v = real(cached) ? cached : device.meta?.mcuVersion;
     const m = typeof v === "string" ? /^(\d+)\.\d+\.\d+ own$/.exec(v) : null;
     return m ? Number(m[1]) : undefined;
 };
