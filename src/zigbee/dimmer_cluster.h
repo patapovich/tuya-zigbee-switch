@@ -14,7 +14,18 @@ typedef struct {
     uint8_t              min_level_dpid;
     uint8_t              max_level_dpid;
     uint8_t              power_on_behavior_dpid;
+
+    /* Own PY32 firmware only (the MCU answered the identity query): its
+     * per-channel power-on DP, used instead of the shared DP 14, and its
+     * wall switch gesture DP (1 single, 2 double, 3 triple, 4 hold,
+     * 5 release), reported as genMultistateInput presentValue
+     * (sequence << 4 | gesture, so every gesture is a change). */
+    uint8_t              own_power_on_dpid;
+    uint8_t              action_dpid;
+    uint8_t              action_seq;
+    uint16_t             action_state;
     hal_zigbee_attribute attr_infos[4];             // onoff, startup, current_level, on_level
+    hal_zigbee_attribute multistate_attr_infos[4];  // wall switch gestures (own MCU)
     hal_zigbee_attribute ballast_attr_infos[2];     // min/max level (lightingBallastCfg)
     hal_zigbee_attribute switch_type_attr_infos[1]; // switch type (genOnOffSwitchCfg)
     uint8_t              current_level;

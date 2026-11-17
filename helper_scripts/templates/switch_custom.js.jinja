@@ -36,6 +36,22 @@ const ownMcuMajorOf = (device) => {
     const m = typeof v === "string" ? /^(\d+)\.\d+\.\d+ own$/.exec(v) : null;
     return m ? Number(m[1]) : undefined;
 };
+
+// Whether the settings of an own MCU firmware (major >= minMcu) are shown:
+// device option own_mcu_settings auto (identified as ours) / show / hide.
+const ownMcuShown = (device, options, minMcu) => {
+    const mode = options?.own_mcu_settings ?? "auto";
+    if (!device || device.isDummyDevice || mode === "show") return true;
+    if (mode === "hide") return false;
+    const major = ownMcuMajorOf(device);
+    return major !== undefined && major >= minMcu;
+};
+
+// Name of the endpoint a message came from (the deviceEndpoints mapping).
+const endpointNameOf = (model, msg) => {
+    const map = typeof model.endpoint === "function" ? model.endpoint(msg.device) : {};
+    return Object.keys(map).find((name) => map[name] === msg.endpoint.ID);
+};
 {% if z2m_v1 %}
 const ota = require("zigbee-herdsman-converters/lib/ota");
 {% endif%}
@@ -280,11 +296,7 @@ const romasku = {
             isModernExtend: true,
             exposes: [(device, options) => {
                 if (!minMcu) return [expose];      // not tied to an own MCU firmware
-                const mode = options?.own_mcu_settings ?? "auto";
-                if (!device || device.isDummyDevice || mode === "show") return [expose];
-                if (mode === "hide") return [];
-                const major = ownMcuMajorOf(device);
-                return major !== undefined && major >= minMcu ? [expose] : [];
+                return ownMcuShown(device, options, minMcu) ? [expose] : [];
             }],
             fromZigbee: [{
                 cluster: "genBasic",
@@ -669,6 +681,70 @@ const romasku = {
         }));
         return extend;
     },
+    // Power-on behaviour of an MCU dimmer that may run the own firmware: per
+    // channel with it (DPs 103/104), else one setting for all channels (the
+    // shared DP 14: a write on any endpoint sets every channel).
+    dimmerPowerOnPerChannel: (dimmerNames) => {
+        const lookup = {off: 0, on: 1, previous: 255};
+        const names = Object.keys(lookup);
+        const shared = e.enum("power_on_behavior", ea.ALL, names)
+            .withDescription("Behavior when power is restored (previous = memory), all channels")
+            .withCategory("config");
+        const perChannel = dimmerNames.map((ep) => e.enum("power_on_behavior", ea.ALL, names)
+            .withEndpoint(ep)
+            .withDescription("Behavior of this channel when power is restored (previous = memory; own MCU firmware)")
+            .withCategory("config"));
+        return {
+            isModernExtend: true,
+            exposes: [(device, options) => (ownMcuShown(device, options, 2) ? perChannel : [shared])],
+            fromZigbee: [{
+                cluster: "genOnOff",
+                type: ["attributeReport", "readResponse"],
+                convert: (model, msg) => {
+                    const v = msg.data?.startUpOnOff;
+                    const name = endpointNameOf(model, msg);
+                    if (v === undefined || !dimmerNames.includes(name)) return;
+                    const value = names.find((k) => lookup[k] === v) ?? v;
+                    const out = {[`power_on_behavior_${name}`]: value};
+                    if (name === dimmerNames[0]) out.power_on_behavior = value;
+                    return out;
+                },
+            }],
+            toZigbee: [{
+                key: ["power_on_behavior"],
+                convertSet: async (entity, key, value, meta) => {
+                    if (!Object.prototype.hasOwnProperty.call(lookup, value)) throw new Error(`${key}: one of ${names.join(", ")}`);
+                    await entity.write("genOnOff", {startUpOnOff: lookup[value]});
+                    return {state: {[key]: value}};
+                },
+                convertGet: async (entity) => {
+                    await entity.read("genOnOff", ["startUpOnOff"]);
+                },
+            }],
+        };
+    },
+    // Wall switch gestures of the own MCU firmware (momentary switch type):
+    // genMultistateInput presentValue on the dimmer endpoint = sequence << 4 |
+    // gesture. The light itself acts on every press regardless.
+    dimmerGestures: (dimmerNames) => {
+        const kinds = ["single", "double", "triple", "hold", "release"];
+        const expose = e.action(dimmerNames.flatMap((n) => kinds.map((k) => `${k}_${n}`)))
+            .withDescription("Wall switch gesture (own MCU firmware, momentary switch type); the light acts on every press anyway");
+        return {
+            isModernExtend: true,
+            exposes: [(device, options) => (ownMcuShown(device, options, 2) ? [expose] : [])],
+            fromZigbee: [{
+                cluster: "genMultistateInput",
+                type: ["attributeReport"],
+                convert: (model, msg) => {
+                    const name = endpointNameOf(model, msg);
+                    const g = (msg.data?.presentValue ?? 0) & 0x0f;
+                    if (!dimmerNames.includes(name) || g < 1 || g > kinds.length) return;
+                    return {action: `${kinds[g - 1]}_${name}`};
+                },
+            }],
+        };
+    },
     dimmerPowerOnBehavior: (name, endpointName) =>
         enumLookup({
             name,
@@ -825,7 +901,10 @@ const definitions = [
             romasku.dimmerSwitchType("switch_type", "{{dimmerName}}"),
             romasku.dimmerOnLevel("on_level", "{{dimmerName}}"),
             {% endfor %}
-            {% if device.dimmerNames %}
+            {% if device.dimmerNames and device.secondary_mcu_image %}
+            romasku.dimmerPowerOnPerChannel({{device.dimmerNames | tojson}}),
+            romasku.dimmerGestures({{device.dimmerNames | tojson}}),
+            {% elif device.dimmerNames %}
             // Universal power-on behavior (shared DP, e.g. U0E) - one expose only.
             romasku.dimmerPowerOnBehavior("power_on_behavior"),
             {% endif %}
@@ -935,6 +1014,22 @@ const definitions = [
                     reportableChange: 1,
                 },
             ]);
+            {% if device.secondary_mcu_image %}
+            try {
+                // Wall switch gestures (own MCU firmware); older module builds lack the cluster.
+                await reporting.bind(dimmer{{loop.index}}, coordinatorEndpoint, ["genMultistateInput"]);
+                await dimmer{{loop.index}}.configureReporting("genMultistateInput", [
+                    {
+                        attribute: {ID: 0x0055 /* presentValue */, type: 0x21}, // uint16
+                        minimumReportInterval: 0,
+                        maximumReportInterval: constants.repInterval.MAX,
+                        reportableChange: 1,
+                    },
+                ]);
+            } catch (error) {
+                // not there: no gestures
+            }
+            {% endif %}
             {% endfor %}
         },
         {% if z2m_v1 %}

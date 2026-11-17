@@ -4,6 +4,12 @@
 #include "zigbee/tuya_mcu_app.h"
 #include "zigbee/tuya_secondary_mcu.h"
 
+#ifdef SECONDARY_MCU_IMAGE
+static const uint16_t dimmer_gesture_states         = 6;   /* none + 5 gestures */
+static const uint8_t  dimmer_gesture_out_of_service = 0;
+static const uint8_t  dimmer_gesture_flags          = 0;
+#endif
+
 #define DIMMER_MAX_ENDPOINTS    10
 static zigbee_dimmer_cluster *dimmer_cluster_by_endpoint[DIMMER_MAX_ENDPOINTS];
 
@@ -404,6 +410,16 @@ static void dimmer_range_changed(zigbee_dimmer_cluster *cluster) {
         dimmer_set_current_level(cluster, dimmer_value_to_level(cluster, cluster->level_value));
 }
 
+/* Our own PY32 firmware with its per-channel DPs on this dimmer. */
+static uint8_t dimmer_own_mcu(const zigbee_dimmer_cluster *cluster) {
+#ifdef SECONDARY_MCU_IMAGE
+    return cluster->own_power_on_dpid && tuya_mcu_app_mcu_is_own();
+#else
+    (void)cluster;
+    return 0;
+#endif
+}
+
 static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
                                         const uint8_t *value, uint16_t value_len) {
     if (value_len < 1)
@@ -470,11 +486,28 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
                                                 ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG,
                                                 ZCL_ATTR_ONOFF_CONFIGURATION_SWITCH_TYPE);
         } else if (dp_type == TUYA_DP_TYPE_ENUM && cluster->power_on_behavior_dpid &&
-                   dpid == cluster->power_on_behavior_dpid) {
+                   dpid == cluster->power_on_behavior_dpid && !dimmer_own_mcu(cluster)) {
+            /* Shared DP 14: every channel. Our own MCU has one per channel. */
             cluster->startup_mode = tuya_mcu_startup_from_power_on(value[0]);
             hal_zigbee_notify_attribute_changed(cluster->endpoint, ZCL_CLUSTER_ON_OFF,
                                                 ZCL_ATTR_START_UP_ONOFF);
         }
+#ifdef SECONDARY_MCU_IMAGE
+        else if (dp_type == TUYA_DP_TYPE_ENUM && dimmer_own_mcu(cluster) &&
+                 dpid == cluster->own_power_on_dpid) {
+            cluster->startup_mode = tuya_mcu_startup_from_power_on(value[0]);
+            hal_zigbee_notify_attribute_changed(cluster->endpoint, ZCL_CLUSTER_ON_OFF,
+                                                ZCL_ATTR_START_UP_ONOFF);
+        } else if (dp_type == TUYA_DP_TYPE_ENUM && cluster->action_dpid &&
+                   tuya_mcu_app_mcu_is_own() && dpid == cluster->action_dpid &&
+                   value[0] >= 1 && value[0] <= 5) {
+            cluster->action_seq   = (uint8_t)((cluster->action_seq + 1) & 0x0F);
+            cluster->action_state = (uint16_t)((cluster->action_seq << 4) | value[0]);
+            hal_zigbee_notify_attribute_changed(cluster->endpoint,
+                                                ZCL_CLUSTER_MULTISTATE_INPUT_BASIC,
+                                                ZCL_ATTR_MULTISTATE_INPUT_PRESENT_VALUE);
+        }
+#endif
     }
 }
 
@@ -568,6 +601,31 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
     endpoint->clusters[endpoint->cluster_count].cmd_callback    = NULL;
     endpoint->cluster_count++;
 
+#ifdef SECONDARY_MCU_IMAGE
+    /* Wall switch gestures of the own PY32 firmware (silent with another MCU). */
+    cluster->action_seq   = 0;
+    cluster->action_state = 0;
+    SETUP_ATTR_FOR_TABLE(cluster->multistate_attr_infos, 0,
+                         ZCL_ATTR_MULTISTATE_INPUT_NUMBER_OF_STATES,
+                         ZCL_DATA_TYPE_UINT16, ATTR_READONLY, dimmer_gesture_states);
+    SETUP_ATTR_FOR_TABLE(cluster->multistate_attr_infos, 1,
+                         ZCL_ATTR_MULTISTATE_INPUT_OUT_OF_SERVICE,
+                         ZCL_DATA_TYPE_BOOLEAN, ATTR_READONLY, dimmer_gesture_out_of_service);
+    SETUP_ATTR_FOR_TABLE(cluster->multistate_attr_infos, 2,
+                         ZCL_ATTR_MULTISTATE_INPUT_PRESENT_VALUE,
+                         ZCL_DATA_TYPE_UINT16, ATTR_READONLY, cluster->action_state);
+    SETUP_ATTR_FOR_TABLE(cluster->multistate_attr_infos, 3,
+                         ZCL_ATTR_MULTISTATE_INPUT_STATUS_FLAGS,
+                         ZCL_DATA_TYPE_BITMAP8, ATTR_READONLY, dimmer_gesture_flags);
+    endpoint->clusters[endpoint->cluster_count].cluster_id =
+        ZCL_CLUSTER_MULTISTATE_INPUT_BASIC;
+    endpoint->clusters[endpoint->cluster_count].attribute_count = 4;
+    endpoint->clusters[endpoint->cluster_count].attributes      = cluster->multistate_attr_infos;
+    endpoint->clusters[endpoint->cluster_count].is_server       = 1;
+    endpoint->clusters[endpoint->cluster_count].cmd_callback    = NULL;
+    endpoint->cluster_count++;
+#endif
+
     // Receive DP state reports from the secondary MCU (e.g. physical button
     // presses) for every registered dimmer, not just this endpoint.
     tuya_secondary_mcu_add_dp_listener(dimmer_cluster_on_dp_report);
@@ -583,9 +641,14 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
     if (cluster == NULL)
         return;
 
-    if (attribute_id == ZCL_ATTR_START_UP_ONOFF && cluster->power_on_behavior_dpid) {
+    if (attribute_id == ZCL_ATTR_START_UP_ONOFF &&
+        (cluster->power_on_behavior_dpid || dimmer_own_mcu(cluster))) {
         uint8_t value = tuya_mcu_power_on_from_startup(cluster->startup_mode);
-        tuya_secondary_mcu_write_dp(cluster->power_on_behavior_dpid,
+
+        /* Own MCU: this channel only. Another MCU: the shared DP 14 sets
+         * every channel (each endpoint follows its report). */
+        tuya_secondary_mcu_write_dp(dimmer_own_mcu(cluster) ? cluster->own_power_on_dpid
+                                                            : cluster->power_on_behavior_dpid,
                                     TUYA_DP_TYPE_ENUM, &value, sizeof(value));
     } else if (attribute_id == ZCL_ATTR_BALLAST_MIN_LEVEL) {
         if (!cluster->min_level_dpid)

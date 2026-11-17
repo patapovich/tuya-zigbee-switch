@@ -39,6 +39,9 @@ void tuya_mcu_app_mcu_restarted(void);
  * "x.y.z own" (the Z2M converter shows the own firmware's settings by it). */
 void tuya_mcu_app_set_mcu_own(void);
 
+/* The MCU answered the identity query: it runs our own PY32 firmware. */
+uint8_t tuya_mcu_app_mcu_is_own(void);
+
 /* Show (and report) the version the MCU told, as far as known now. */
 void tuya_mcu_app_show_mcu_version(void);
 

@@ -152,6 +152,10 @@ void tuya_mcu_app_show_mcu_version(void) {
     }
 }
 
+uint8_t tuya_mcu_app_mcu_is_own(void) {
+    return g_mcu_own;
+}
+
 void tuya_mcu_app_set_mcu_own(void) {
     g_mcu_own = 1;
     tuya_secondary_mcu_set_fast_acks(1, resync_all);
