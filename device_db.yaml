@@ -514,8 +514,8 @@ MODULE_AVATTO_ZDMS16_2:
   # Dimming curve per channel: DPs of the own PY32 firmware (2.x), the stock MCU
   # has none. Shown in Z2M per the device option own_mcu_settings.
   dp_attributes:
-    - {dp: "65", type: E, attr: "30", name: dimming_curve, dimmer: 1, min_mcu: 2, label: "Dimming curve (own MCU firmware)", values: {linear: 0, led: 1, led_soft: 2, incandescent: 3, led_deep: 4, led_deeper: 5}}
-    - {dp: "66", type: E, attr: "31", name: dimming_curve, dimmer: 2, min_mcu: 2, label: "Dimming curve (own MCU firmware)", values: {linear: 0, led: 1, led_soft: 2, incandescent: 3, led_deep: 4, led_deeper: 5}}
+    - {dp: "65", type: E, attr: "30", name: dimming_curve, dimmer: 1, min_mcu: 2, label: "Dimming curve (own MCU firmware)", values: {incandescent: 3, led: 1, led_deep: 4, led_deeper: 5, led_soft: 2, linear: 0}}
+    - {dp: "66", type: E, attr: "31", name: dimming_curve, dimmer: 2, min_mcu: 2, label: "Dimming curve (own MCU firmware)", values: {incandescent: 3, led: 1, led_deep: 4, led_deeper: 5, led_soft: 2, linear: 0}}
     - {dp: "96", type: V, attr: "32", name: fade_on_time, dimmer: 1, min_mcu: 2, min: 0, max: 10000, unit: "ms", label: "Fade from dark to full when switched on (own MCU firmware)"}
     - {dp: "97", type: V, attr: "33", name: fade_off_time, dimmer: 1, min_mcu: 2, min: 0, max: 10000, unit: "ms", label: "Fade from full to dark when switched off (own MCU firmware)"}
     - {dp: "98", type: V, attr: "34", name: soft_dim_end, dimmer: 1, min_mcu: 2, min: 0, max: 100, unit: "%", label: "Switching off: the lowest part above the minimum slows down to an even end (own MCU firmware)"}
@@ -560,8 +560,8 @@ MODULE_AVATTO_ZDMS16_2_TZE204:
   # Dimming curve per channel: DPs of the own PY32 firmware (2.x), the stock MCU
   # has none. Shown in Z2M per the device option own_mcu_settings.
   dp_attributes:
-    - {dp: "65", type: E, attr: "30", name: dimming_curve, dimmer: 1, min_mcu: 2, label: "Dimming curve (own MCU firmware)", values: {linear: 0, led: 1, led_soft: 2, incandescent: 3, led_deep: 4, led_deeper: 5}}
-    - {dp: "66", type: E, attr: "31", name: dimming_curve, dimmer: 2, min_mcu: 2, label: "Dimming curve (own MCU firmware)", values: {linear: 0, led: 1, led_soft: 2, incandescent: 3, led_deep: 4, led_deeper: 5}}
+    - {dp: "65", type: E, attr: "30", name: dimming_curve, dimmer: 1, min_mcu: 2, label: "Dimming curve (own MCU firmware)", values: {incandescent: 3, led: 1, led_deep: 4, led_deeper: 5, led_soft: 2, linear: 0}}
+    - {dp: "66", type: E, attr: "31", name: dimming_curve, dimmer: 2, min_mcu: 2, label: "Dimming curve (own MCU firmware)", values: {incandescent: 3, led: 1, led_deep: 4, led_deeper: 5, led_soft: 2, linear: 0}}
     - {dp: "96", type: V, attr: "32", name: fade_on_time, dimmer: 1, min_mcu: 2, min: 0, max: 10000, unit: "ms", label: "Fade from dark to full when switched on (own MCU firmware)"}
     - {dp: "97", type: V, attr: "33", name: fade_off_time, dimmer: 1, min_mcu: 2, min: 0, max: 10000, unit: "ms", label: "Fade from full to dark when switched off (own MCU firmware)"}
     - {dp: "98", type: V, attr: "34", name: soft_dim_end, dimmer: 1, min_mcu: 2, min: 0, max: 100, unit: "%", label: "Switching off: the lowest part above the minimum slows down to an even end (own MCU firmware)"}
