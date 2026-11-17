@@ -2,6 +2,8 @@
 #include "base_components/network_indicator.h"
 #include "build_date.h"
 #include "cluster_common.h"
+#include "dp_attr.h"
+#include "tuya_mcu_app.h"
 #include "consts.h"
 #include "device_config/config_nv.h"
 #include "device_config/config_parser.h"
@@ -11,6 +13,7 @@
 #include "hal/nvm.h"
 #include "hal/tasks.h"
 #include <stddef.h>
+#include <string.h>
 
 #ifdef HAL_SILABS
 #include "silabs_config.h"
@@ -25,7 +28,16 @@ const uint8_t hwVersion    = 0x00;
 uint8_t powerSource = POWER_SOURCE_MAINS_1_PHASE; // 0x01 default
 
 const uint16_t cluster_revision = 0x01;
-DEF_STR(STRINGIFY_VALUE(VERSION_STR), swBuildId);
+
+/* Software build id. A device with a secondary MCU appends the MCU's firmware
+ * version once the MCU has told it ("1.1.3-abcdef12 / MCU 1.0.7"), so it shows
+ * on the device page in Z2M. */
+#define SW_BUILD_ID            STRINGIFY_VALUE(VERSION_STR)
+#define SW_BUILD_ID_MCU_SEP    " / MCU "
+static struct {
+    uint8_t len;
+    char    str[sizeof(SW_BUILD_ID) - 1 + sizeof(SW_BUILD_ID_MCU_SEP) - 1 + 6];
+} swBuildId = { sizeof(SW_BUILD_ID) - 1, SW_BUILD_ID };
 extern network_indicator_t network_indicator;
 
 void basic_cluster_store_attrs_to_nv();
@@ -45,10 +57,42 @@ void basic_cluster_callback_attr_write_trampoline(uint16_t attribute_id) {
     if (attribute_id == ZCL_ATTR_BASIC_MULTI_PRESS_RESET_COUNT) {
         device_params_set_multi_press_reset_count(g_multi_press_reset_count);
     }
+    if (attribute_id == ZCL_ATTR_BASIC_DP_CONFIG) {
+        dp_config_str.data[dp_config_str.size] = 0; // NULL terminate the string
+        dp_config_write_to_nv();
+        schedule_reboot(0);
+    }
+    if (attribute_id == ZCL_ATTR_BASIC_DEVICE_CONFIG_EXT) {
+        device_config_ext_str.data[device_config_ext_str.size] =
+            0; // NULL terminate the string
+        device_config_ext_write_to_nv();
+        schedule_reboot(0);
+    }
+    dp_attr_on_write(attribute_id);
+}
+
+void basic_cluster_set_mcu_version(const char *version, uint8_t len) {
+    uint8_t base = (uint8_t)(sizeof(SW_BUILD_ID) - 1);
+    uint8_t sep  = (uint8_t)(sizeof(SW_BUILD_ID_MCU_SEP) - 1);
+
+    if (base + sep + len > sizeof(swBuildId.str)) {
+        return;
+    }
+    memcpy(&swBuildId.str[base], SW_BUILD_ID_MCU_SEP, sep);
+    memcpy(&swBuildId.str[base + sep], version, len);
+    swBuildId.len = (uint8_t)(base + sep + len);
+
+    /* Z2M takes Basic attributes from reports too: the device page updates
+     * without a new interview. */
+    hal_zigbee_send_report_attr(endpoints[0].endpoint, ZCL_CLUSTER_BASIC,
+                                ZCL_ATTR_BASIC_SW_BUILD_ID, ZCL_DATA_TYPE_CHAR_STR,
+                                &swBuildId, (uint8_t)(swBuildId.len + 1));
 }
 
 void basic_cluster_add_to_endpoint(zigbee_basic_cluster *cluster,
                                    hal_zigbee_endpoint *endpoint) {
+    uint8_t attr_idx = 13; // first free slot after the fixed attributes above
+
     // Set power source based on runtime battery configuration
     if (battery.pin != HAL_INVALID_PIN) {
         powerSource = POWER_SOURCE_BATTERY;
@@ -87,15 +131,25 @@ void basic_cluster_add_to_endpoint(zigbee_basic_cluster *cluster,
     SETUP_ATTR(12, ZCL_ATTR_BASIC_MULTI_PRESS_RESET_COUNT, ZCL_DATA_TYPE_UINT8,
                ATTR_WRITABLE, g_multi_press_reset_count);
     if (network_indicator.has_dedicated_led) {
-        SETUP_ATTR(13, ZCL_ATTR_BASIC_STATUS_LED_STATE, ZCL_DATA_TYPE_BOOLEAN,
+        SETUP_ATTR(attr_idx, ZCL_ATTR_BASIC_STATUS_LED_STATE, ZCL_DATA_TYPE_BOOLEAN,
                    ATTR_WRITABLE, network_indicator.manual_state_when_connected);
+        attr_idx++;
+    }
+    SETUP_ATTR(attr_idx, ZCL_ATTR_BASIC_DP_CONFIG, ZCL_DATA_TYPE_LONG_CHAR_STR,
+               ATTR_WRITABLE, dp_config_str);
+    attr_idx++;
+    SETUP_ATTR(attr_idx, ZCL_ATTR_BASIC_DEVICE_CONFIG_EXT, ZCL_DATA_TYPE_LONG_CHAR_STR,
+               ATTR_WRITABLE, device_config_ext_str);
+    attr_idx++;
+    attr_idx += dp_attr_register(cluster->attr_infos, attr_idx);
+    if (tuya_mcu_app_in_use()) {
+        attr_idx += tuya_mcu_app_register_attrs(cluster->attr_infos, attr_idx);
     }
 
     endpoint->clusters[endpoint->cluster_count].cluster_id      = ZCL_CLUSTER_BASIC;
-    endpoint->clusters[endpoint->cluster_count].attribute_count =
-        network_indicator.has_dedicated_led ? 14 : 13;
-    endpoint->clusters[endpoint->cluster_count].attributes = cluster->attr_infos;
-    endpoint->clusters[endpoint->cluster_count].is_server  = 1;
+    endpoint->clusters[endpoint->cluster_count].attribute_count = attr_idx;
+    endpoint->clusters[endpoint->cluster_count].attributes      = cluster->attr_infos;
+    endpoint->clusters[endpoint->cluster_count].is_server       = 1;
     endpoint->cluster_count++;
 
     device_params_load_from_nv();
