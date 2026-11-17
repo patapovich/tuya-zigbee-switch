@@ -5,6 +5,8 @@
 #include "zigbee/tuya_mcu_app.h"
 #include "zigbee/tuya_secondary_mcu.h"
 
+#ifdef SECONDARY_MCU_IMAGE
+
 /* Header of the carried image, right after its vector table (the MCU side
 * defines it in ota_proto.h): magic, size, crc, version, little-endian. */
 #define IMAGE_HEADER_OFFSET     0xC0
@@ -217,3 +219,21 @@ uint8_t tuya_mcu_ota_on_command(uint8_t cmd, uint16_t seq, const uint8_t *data,
         return 0;
     }
 }
+
+#else /* boards that carry no MCU firmware: nothing of this */
+
+uint8_t tuya_mcu_ota_on_version(uint8_t packed) {
+    (void)packed;
+    return 0;
+}
+
+uint8_t tuya_mcu_ota_on_command(uint8_t cmd, uint16_t seq, const uint8_t *data,
+                                uint16_t len) {
+    (void)cmd;
+    (void)seq;
+    (void)data;
+    (void)len;
+    return 0;
+}
+
+#endif
