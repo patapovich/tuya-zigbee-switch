@@ -727,13 +727,10 @@ const romasku = {
         const shared = e.enum("power_on_behavior", ea.ALL, names)
             .withDescription("Behavior when power is restored (previous = memory), all channels")
             .withCategory("config");
-        const perChannel = dimmerNames.map((ep) => e.enum("power_on_behavior", ea.ALL, names)
-            .withEndpoint(ep)
-            .withDescription("Behavior of this channel when power is restored (previous = memory; own MCU firmware)")
-            .withCategory("config"));
         return {
             isModernExtend: true,
-            exposes: [(device, options) => (ownMcuShown(device, options, 2) ? perChannel : [shared])],
+            // Per channel with the own MCU: in each channel's group (dimmerPowerOnChannel).
+            exposes: [(device, options) => (ownMcuShown(device, options, 2) ? [] : [shared])],
             fromZigbee: [{
                 cluster: "genOnOff",
                 type: ["attributeReport", "readResponse"],
@@ -758,6 +755,18 @@ const romasku = {
                     await entity.read("genOnOff", ["startUpOnOff"]);
                 },
             }],
+        };
+    },
+    // The per-channel power-on expose of one channel (own MCU); its converters
+    // are in dimmerPowerOnPerChannel.
+    dimmerPowerOnChannel: (endpointName) => {
+        const expose = e.enum("power_on_behavior", ea.ALL, ["off", "on", "previous"])
+            .withEndpoint(endpointName)
+            .withDescription("Behavior of this channel when power is restored (previous = memory; own MCU firmware)")
+            .withCategory("config");
+        return {
+            isModernExtend: true,
+            exposes: [(device, options) => (ownMcuShown(device, options, 2) ? [expose] : [])],
         };
     },
     // Wall switch gestures of the own MCU firmware (momentary switch type):
@@ -794,47 +803,7 @@ const romasku = {
         }),
 };
 
-const definitions = [
-{% for device in devices %}
-    {
-        zigbeeModel: [
-        {% for zb_model in device.zb_models %}
-            "{{zb_model}}",
-        {% endfor %}
-        ],
-        model: "{{device.model}}",
-        vendor: "Tuya-custom",
-        description: "Custom switch (https://github.com/romasku/tuya-zigbee-switch)",
-        {% set first_endpoint = device.switchNames[0] if device.switchNames else (device.relayNames[0] if device.relayNames else (device.coverNames[0] if device.coverNames else device.dimmerNames[0])) %}
-        extend: [
-            {% if device.has_battery_cluster %}
-            romasku.batteryPercentage(),
-            {% endif %}
-            deviceEndpoints({ endpoints: {
-                {%- for switchName in device.switchNames -%}
-                    "{{switchName}}": {{loop.index}},{{" "}}
-                {%- endfor -%}
-                {%- for relayName in device.relayNames -%}
-                    "{{relayName}}": {{loop.index  + (device.switchNames | length)}},{{" "}}
-                {%- endfor -%}
-                {%- for coverSwitchName in device.coverSwitchNames -%}
-                    "{{coverSwitchName}}": {{loop.index + (device.switchNames | length) + (device.relayNames | length)}},{{" "}}
-                {%- endfor -%}
-                {%- for coverName in device.coverNames -%}
-                    "{{coverName}}": {{loop.index + (device.switchNames | length) + (device.relayNames | length) + (device.coverSwitchNames | length)}},{{" "}}
-                {%- endfor -%}
-                {%- for dimmerName in device.dimmerNames -%}
-                    "{{dimmerName}}": {{loop.index + (device.switchNames | length) + (device.relayNames | length) + (device.coverSwitchNames | length) + (device.coverNames | length)}},{{" "}}
-                {%- endfor -%}
-            } }),
-            {% set first_endpoint = device.switchNames[0] if device.switchNames else (device.relayNames[0] if device.relayNames else (device.coverSwitchNames[0] if device.coverSwitchNames else (device.coverNames[0] if device.coverNames else device.dimmerNames[0]))) %}
-            romasku.deviceConfig("device_config", "{{first_endpoint}}"),
-            romasku.deviceConfigExt("device_config_ext", "{{first_endpoint}}"),
-{% if device.dp_relay_cnt > 0 %}            romasku.dpConfig("dp_config", "{{first_endpoint}}"),
-{% endif %}
-{% if device.has_secondary_mcu %}            romasku.mcuVersion("mcu_version", "{{first_endpoint}}"),
-{% endif %}
-{% for dp in device.dp_attributes %}
+{% macro dp_extend(dp, device, first_endpoint) %}
 {% if dp.type == "E" and (dp.min_mcu or dp.dimmer) %}
             romasku.ownMcuEnum({
                 name: "{{dp.name}}",
@@ -889,15 +858,61 @@ const definitions = [
 {% endif %}                entityCategory: "config",
             }),
 {% endif %}
-{% endfor %}
+{% endmacro %}
+const definitions = [
+{% for device in devices %}
+    {
+        zigbeeModel: [
+        {% for zb_model in device.zb_models %}
+            "{{zb_model}}",
+        {% endfor %}
+        ],
+        model: "{{device.model}}",
+        vendor: "Tuya-custom",
+        description: "Custom switch (https://github.com/romasku/tuya-zigbee-switch)",
+        {% set first_endpoint = device.switchNames[0] if device.switchNames else (device.relayNames[0] if device.relayNames else (device.coverNames[0] if device.coverNames else device.dimmerNames[0])) %}
+        extend: [
+            {% if device.has_battery_cluster %}
+            romasku.batteryPercentage(),
+            {% endif %}
+            deviceEndpoints({ endpoints: {
+                {%- for switchName in device.switchNames -%}
+                    "{{switchName}}": {{loop.index}},{{" "}}
+                {%- endfor -%}
+                {%- for relayName in device.relayNames -%}
+                    "{{relayName}}": {{loop.index  + (device.switchNames | length)}},{{" "}}
+                {%- endfor -%}
+                {%- for coverSwitchName in device.coverSwitchNames -%}
+                    "{{coverSwitchName}}": {{loop.index + (device.switchNames | length) + (device.relayNames | length)}},{{" "}}
+                {%- endfor -%}
+                {%- for coverName in device.coverNames -%}
+                    "{{coverName}}": {{loop.index + (device.switchNames | length) + (device.relayNames | length) + (device.coverSwitchNames | length)}},{{" "}}
+                {%- endfor -%}
+                {%- for dimmerName in device.dimmerNames -%}
+                    "{{dimmerName}}": {{loop.index + (device.switchNames | length) + (device.relayNames | length) + (device.coverSwitchNames | length) + (device.coverNames | length)}},{{" "}}
+                {%- endfor -%}
+            } }),
+            {% set first_endpoint = device.switchNames[0] if device.switchNames else (device.relayNames[0] if device.relayNames else (device.coverSwitchNames[0] if device.coverSwitchNames else (device.coverNames[0] if device.coverNames else device.dimmerNames[0]))) %}
+{% if not device.dimmerNames %}
+            romasku.deviceConfig("device_config", "{{first_endpoint}}"),
+            romasku.deviceConfigExt("device_config_ext", "{{first_endpoint}}"),
+{% if device.dp_relay_cnt > 0 %}            romasku.dpConfig("dp_config", "{{first_endpoint}}"),
+{% endif %}
+{% if device.has_secondary_mcu %}            romasku.mcuVersion("mcu_version", "{{first_endpoint}}"),
+{% endif %}
+{% endif %}
+{% for dp in device.dp_attributes if not (dp.dimmer and device.dimmerNames) %}
+{{ dp_extend(dp, device, first_endpoint) }}{% endfor %}
 {% if device.dp_attributes | selectattr("min_mcu") | list %}
             romasku.ownMcuOption(),
             romasku.mcuVersionMeta(),
 {% endif %}
+{% if not device.dimmerNames %}
             romasku.multiPressResetCount("multi_press_reset_count", "{{first_endpoint}}"),
             {% if device.has_dedicated_net_led %}
             romasku.networkIndicator("network_led", "{{first_endpoint}}"),
             {% endif%}
+{% endif %}
             {% if device.relayNames %}
             onOff({ endpointNames: {{device.relayNames | tojson }} }),
             {% endif %}
@@ -942,19 +957,41 @@ const definitions = [
             romasku.coverSwitchBindedMode("{{coverSwitch}}_binded_mode", "{{coverSwitch}}"),
             romasku.coverSwitchLongPressDuration("{{coverSwitch}}_long_press_duration", "{{coverSwitch}}"),
             {% endfor %}
+            {% if device.dimmerNames %}// Per channel: the light, its range, curve, power-on, switch, fade and hold.{% endif %}
             {% for dimmerName in device.dimmerNames %}
+            {% set dimmer_index = loop.index %}
             light({ endpointNames: ["{{dimmerName}}"], effect: false, powerOnBehavior: false }),
             romasku.dimmerMinLevel("min_level", "{{dimmerName}}"),
             romasku.dimmerMaxLevel("max_level", "{{dimmerName}}"),
-            romasku.dimmerSwitchType("switch_type", "{{dimmerName}}"),
             romasku.dimmerOnLevel("on_level", "{{dimmerName}}"),
+{% for dp in device.dp_attributes if dp.dimmer == dimmer_index and dp.type == "E" %}
+{{ dp_extend(dp, device, first_endpoint) }}{% endfor %}
+            {% if device.secondary_mcu_image %}
+            romasku.dimmerPowerOnChannel("{{dimmerName}}"),
+            {% endif %}
+            romasku.dimmerSwitchType("switch_type", "{{dimmerName}}"),
+{% for dp in device.dp_attributes if dp.dimmer == dimmer_index and dp.type != "E" %}
+{{ dp_extend(dp, device, first_endpoint) }}{% endfor %}
             {% endfor %}
             {% if device.dimmerNames and device.secondary_mcu_image %}
-            romasku.dimmerPowerOnPerChannel({{device.dimmerNames | tojson}}),
             romasku.dimmerGestures({{device.dimmerNames | tojson}}),
+            romasku.dimmerPowerOnPerChannel({{device.dimmerNames | tojson}}),
             {% elif device.dimmerNames %}
             // Universal power-on behavior (shared DP, e.g. U0E) - one expose only.
             romasku.dimmerPowerOnBehavior("power_on_behavior"),
+            {% endif %}
+            {% if device.dimmerNames %}
+            // Device: technical settings last.
+            {% if device.has_secondary_mcu %}romasku.mcuVersion("mcu_version", "{{first_endpoint}}"),
+            {% endif %}
+            romasku.multiPressResetCount("multi_press_reset_count", "{{first_endpoint}}"),
+            {% if device.has_dedicated_net_led %}
+            romasku.networkIndicator("network_led", "{{first_endpoint}}"),
+            {% endif%}
+            romasku.deviceConfig("device_config", "{{first_endpoint}}"),
+            romasku.deviceConfigExt("device_config_ext", "{{first_endpoint}}"),
+            {% if device.dp_relay_cnt > 0 %}romasku.dpConfig("dp_config", "{{first_endpoint}}"),
+            {% endif %}
             {% endif %}
         ],
         meta: { multiEndpoint: true },
@@ -1062,6 +1099,16 @@ const definitions = [
                     reportableChange: 1,
                 },
             ]);
+            // The settings shown on the page, read once so none stays unknown.
+            for (const [cluster, attrs] of [["genOnOff", ["startUpOnOff"]], ["genLevelCtrl", ["onLevel"]],
+                                            ["lightingBallastCfg", ["minLevel", "maxLevel"]],
+                                            ["genOnOffSwitchCfg", ["switchType"]]]) {
+                try {
+                    await dimmer{{loop.index}}.read(cluster, attrs);
+                } catch (error) {
+                    // not answered now; read on the next configure or with a refresh
+                }
+            }
             {% if device.secondary_mcu_image %}
             try {
                 // Wall switch gestures (own MCU firmware); older module builds lack the cluster.

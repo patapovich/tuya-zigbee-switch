@@ -66,13 +66,15 @@ const ea = { ALL: 7, SET: 2 };
 const dev = (v) => ({ meta: {}, getEndpoint: () => ({ clusters: { genBasic: { attributes: { 65298: v } } } }) });
 const names = ["dimmer_left", "dimmer_right"];
 const po = R.dimmerPowerOnPerChannel(names), ge = R.dimmerGestures(names);
+const pc = names.map((n) => R.dimmerPowerOnChannel(n));
+const shownAll = (d, o) => [...pc.flatMap((x) => shown(x, d, o)), ...shown(po, d, o)];
 const shown = (ext, d, o) => ext.exposes[0](d, o).map((x) => `${x.name}${x.endpoint ? "_" + x.endpoint : ""}`);
 const model = { endpoint: () => ({ dimmer_left: 1, dimmer_right: 2 }) };
 const fz = (ext, ep, data) => ext.fromZigbee[0].convert(model, { endpoint: { ID: ep }, data, device: {} });
 console.log(JSON.stringify({
-  own: [shown(po, dev("2.1.1 own"), {}), shown(ge, dev("2.1.1 own"), {})],
-  stock: [shown(po, dev("1.0.7"), {}), shown(ge, dev("1.0.7"), {})],
-  hide: shown(po, dev("2.1.1 own"), { own_mcu_settings: "hide" }),
+  own: [shownAll(dev("2.1.1 own"), {}), shown(ge, dev("2.1.1 own"), {})],
+  stock: [shownAll(dev("1.0.7"), {}), shown(ge, dev("1.0.7"), {})],
+  hide: shownAll(dev("2.1.1 own"), { own_mcu_settings: "hide" }),
   show: shown(ge, dev("1.0.7"), { own_mcu_settings: "show" }),
   gestures: [fz(ge, 2, { presentValue: 0x32 }), fz(ge, 1, { presentValue: 0x15 }),
              fz(ge, 1, { presentValue: 0x10 }), fz(ge, 3, { presentValue: 0x11 })],
