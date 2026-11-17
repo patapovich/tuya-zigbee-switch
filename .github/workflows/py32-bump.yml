@@ -1,0 +1,98 @@
+name: Carry a PY32 release
+
+# patapovich fork only. The ZDMS16-2 build of the home-dimmer branch carries the own PY32
+# MCU firmware (src/zigbee/secondary_mcu_image.c). This puts the newest release of
+# patapovich/zdms16-py32 there (hourly check, or at once by hand / by a repository_dispatch
+# "py32-release" from that repo), tests it, commits it to home-dimmer and builds the module
+# firmware on home-dimmer_build (= home-dimmer + the fork-ci build change). It lives on the
+# default branch because scheduled and dispatched workflows only run from there.
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+    inputs:
+      py32_tag:
+        description: "zdms16-py32 release tag (empty: the latest release)"
+        required: false
+      force:
+        description: "build even if home-dimmer already carries it, allow an older version"
+        type: boolean
+        default: false
+  repository_dispatch:
+    types: [py32-release]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: py32-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: home-dimmer
+          fetch-depth: 0
+
+      - name: Release to carry
+        id: rel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_IN: ${{ inputs.py32_tag || github.event.client_payload.tag }}
+          FORCE: ${{ inputs.force || false }}
+        run: |
+          set -e
+          tag="$TAG_IN"
+          [ -n "$tag" ] || tag=$(gh release view --repo patapovich/zdms16-py32 --json tagName --jq .tagName)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          gh release download "$tag" --repo patapovich/zdms16-py32 \
+            --pattern secondary_mcu_image.c --pattern SHA256SUMS --dir /tmp/py32
+          (cd /tmp/py32 && grep secondary_mcu_image.c SHA256SUMS | sha256sum -c -)
+          ver() { sed -n 's/.*own MCU firmware: version \([0-9.]*\).*/\1/p' "$1" | head -1; }
+          new=$(ver /tmp/py32/secondary_mcu_image.c); cur=$(ver src/zigbee/secondary_mcu_image.c)
+          echo "release $tag carries $new, home-dimmer carries ${cur:-none}"
+          if cmp -s /tmp/py32/secondary_mcu_image.c src/zigbee/secondary_mcu_image.c; then
+            echo "change=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::home-dimmer already carries $tag"
+          elif [ -n "$cur" ] && [ "$(printf '%s\n%s\n' "$cur" "$new" | sort -V | tail -1)" != "$new" ] && [ "$FORCE" != "true" ]; then
+            echo "::error::$tag ($new) is older than what home-dimmer carries ($cur); use force to go back"
+            exit 1
+          else
+            echo "change=true" >> "$GITHUB_OUTPUT"
+            cp /tmp/py32/secondary_mcu_image.c src/zigbee/secondary_mcu_image.c
+          fi
+
+      - name: Lint and tests with the new image
+        if: steps.rel.outputs.change == 'true'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q make python3 python3-pytest python3-yaml python3-jinja2 uncrustify
+          find src -name '*.c' -o -name '*.h' | xargs uncrustify -c uncrustify.cfg --check -q
+          make tests
+
+      - name: Commit to home-dimmer
+        if: steps.rel.outputs.change == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qam "Carry PY32 ${{ steps.rel.outputs.tag }}"
+          git push origin HEAD:home-dimmer
+
+      - name: Build branch and module firmware
+        if: steps.rel.outputs.change == 'true' || inputs.force
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          git fetch -q origin fork-ci
+          git checkout -q -B home-dimmer_build
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            cherry-pick FETCH_HEAD
+          git push -f origin home-dimmer_build
+          gh workflow run build.yml --ref home-dimmer_build
+          echo "::notice::module firmware build started on home-dimmer_build"
