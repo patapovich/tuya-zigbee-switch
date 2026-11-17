@@ -29,7 +29,7 @@ const mcuMajorOf = (device) => {
             v = undefined;
         }
     }
-    const m = typeof v === "string" ? /^(\d+)\./.exec(v) : null;
+    const m = typeof v === "string" && v !== "0.0.0" ? /^(\d+)\./.exec(v) : null;
     return m ? Number(m[1]) : undefined;
 };
 {% if z2m_v1 %}
@@ -243,7 +243,11 @@ const romasku = {
             type: ["attributeReport", "readResponse"],
             convert: (model, msg) => {
                 const v = msg.data?.[0xff12];
-                if (typeof v === "string" && msg.device && msg.device.meta?.mcuVersion !== v) {
+                // Keep the last real version: right after a restart the module
+                // answers "" until the MCU has told it, and an MCU in its
+                // bootloader says 0.0.0. Neither may hide its settings.
+                const real = typeof v === "string" && /^\d+\.\d+\.\d+$/.test(v) && v !== "0.0.0";
+                if (real && msg.device && msg.device.meta?.mcuVersion !== v) {
                     msg.device.meta.mcuVersion = v;
                     msg.device.save();
                 }
