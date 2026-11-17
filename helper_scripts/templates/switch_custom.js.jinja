@@ -322,6 +322,43 @@ const romasku = {
             }],
         };
     },
+    // Value datapoint attribute (Basic 0xffXX on endpoint 1, uint32) exposed on
+    // the endpoint of the channel it belongs to, shown like ownMcuEnum.
+    ownMcuNumeric: ({name, endpointName, attrId, description, valueMin, valueMax, unit, minMcu}) => {
+        let expose = e.numeric(name, ea.ALL)
+            .withEndpoint(endpointName)
+            .withValueMin(valueMin)
+            .withValueMax(valueMax)
+            .withDescription(description)
+            .withCategory("config");
+        if (unit) expose = expose.withUnit(unit);
+        const property = `${name}_${endpointName}`;
+        return {
+            isModernExtend: true,
+            exposes: [(device, options) => (!minMcu || ownMcuShown(device, options, minMcu) ? [expose] : [])],
+            fromZigbee: [{
+                cluster: "genBasic",
+                type: ["attributeReport", "readResponse"],
+                convert: (model, msg) => {
+                    if (msg.endpoint.ID !== 1 || msg.data?.[attrId] === undefined) return;
+                    return {[property]: msg.data[attrId]};
+                },
+            }],
+            toZigbee: [{
+                key: [name],
+                endpoints: [endpointName],
+                convertSet: async (entity, key, value, meta) => {
+                    const v = Number(value);
+                    if (!Number.isInteger(v) || v < valueMin || v > valueMax) throw new Error(`${name}: an integer ${valueMin}..${valueMax}`);
+                    await meta.device.getEndpoint(1).write("genBasic", {[attrId]: {value: v, type: Zcl.DataType.UINT32}});
+                    return {state: {[key]: v}};
+                },
+                convertGet: async (entity, key, meta) => {
+                    await meta.device.getEndpoint(1).read("genBasic", [attrId]);
+                },
+            }],
+        };
+    },
     deviceConfigExt: (name, endpointName) =>
         text({
             name,
@@ -798,7 +835,7 @@ const definitions = [
 {% if device.has_secondary_mcu %}            romasku.mcuVersion("mcu_version", "{{first_endpoint}}"),
 {% endif %}
 {% for dp in device.dp_attributes %}
-{% if dp.min_mcu or dp.dimmer %}
+{% if dp.type == "E" and (dp.min_mcu or dp.dimmer) %}
             romasku.ownMcuEnum({
                 name: "{{dp.name}}",
                 endpointName: "{{device.dimmerNames[dp.dimmer - 1] if dp.dimmer else first_endpoint}}",
@@ -827,6 +864,17 @@ const definitions = [
                 attribute: { ID: 0x{{("ff" ~ dp.attr)|lower}}, type: 0x30 }, // enum8
                 description: "{{dp.label}}",
                 entityCategory: "config",
+            }),
+{% elif dp.type == "V" and (dp.dimmer or dp.min_mcu) %}
+            romasku.ownMcuNumeric({
+                name: "{{dp.name}}",
+                endpointName: "{{device.dimmerNames[dp.dimmer - 1] if dp.dimmer else first_endpoint}}",
+                attrId: 0x{{("ff" ~ dp.attr)|lower}},
+                description: "{{dp.label}}",
+                valueMin: {{dp.min}},
+                valueMax: {{dp.max}},
+                unit: {{ ('"' ~ dp.unit ~ '"') if dp.unit else "undefined" }},
+                minMcu: {{dp.min_mcu or 0}},
             }),
 {% elif dp.type == "V" %}
             numeric({

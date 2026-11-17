@@ -107,3 +107,18 @@ def test_gestures_of_another_mcu_are_ignored():
         assert gesture(device, 1) == 0
     finally:
         proc.stop()
+
+
+def test_fade_and_hold_settings_map_to_their_basic_attributes():
+    """The board's full dp config (12 entries, the limit): a setting written in
+    Zigbee goes to its DP, and the MCU's report lands in its attribute."""
+    from tuya_mcu import value_dp
+    proc, device = start()
+    try:
+        mcu_report(proc, value_dp(0x9B, 1800), cmd=TUYA_CMD_REPORT_PASSIVE)   # ch2 fade on 1800 ms
+        assert int(device.read_zigbee_attr(1, 0x0000, 0xFF37)) == 1800
+        take_tx(proc)
+        device.write_zigbee_attr(1, 0x0000, 0xFF35, 2500)                      # ch1 hold 2500 ms
+        assert (0x99, 2500) in ack_writes(proc, device)
+    finally:
+        proc.stop()

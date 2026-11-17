@@ -139,7 +139,7 @@ def onoff(device: Device, ep: int = 1) -> int:
 
 # The board's datapoint config as built from device_db (the own firmware's
 # dimming curves): every dimmer test runs with it, like the real module.
-ZDMS16_2_DP_CONFIG = "65E30;66E31;"
+ZDMS16_2_DP_CONFIG = "65E30;66E31;96V32;97V33;98V34;99V35;9AV36;9BV37;9CV38;9DV39;9EV3a;9FV3b;"
 
 
 def start() -> tuple[StubProc, Device]:

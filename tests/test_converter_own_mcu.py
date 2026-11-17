@@ -90,3 +90,15 @@ console.log(JSON.stringify({
         {"power_on_behavior_dimmer_right": "off"},
         None,
     ]
+
+
+def test_fade_and_hold_settings_are_per_dimmer_with_their_own_attributes():
+    block = zdms16_block()
+    found = re.findall(
+        r'ownMcuNumeric\(\{\s*name: "(\w+)",\s*endpointName: "(\w+)",\s*attrId: (0x\w+)', block
+    )
+    names = ["fade_on_time", "fade_off_time", "soft_dim_end", "hold_time", "hold_dim_end"]
+    assert found == [(n, "dimmer_left", f"0xff{0x32 + k:02x}") for k, n in enumerate(names)] + [
+        (n, "dimmer_right", f"0xff{0x37 + k:02x}") for k, n in enumerate(names)
+    ]
+    assert block.count("minMcu: 2,") == 12          # 2 curves + 10 fade and hold settings
