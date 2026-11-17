@@ -5,7 +5,15 @@ import re
 from pathlib import Path
 
 from test_dimmer_mcu import ATTR_MCU_VERSION, TUYA_CMD_MCU_VERSION, start
-from tuya_mcu import TUYA_CMD_QUERY_NETWORK, parse_frames, pump, take_tx, tuya_frame
+from tuya_mcu import (
+    TUYA_CMD_QUERY_ALL,
+    TUYA_CMD_QUERY_NETWORK,
+    TUYA_CMD_WRITE,
+    parse_frames,
+    pump,
+    take_tx,
+    tuya_frame,
+)
 
 OTA_NOTIFY = 0xA0
 OTA_BLOCK = 0xA1
@@ -61,8 +69,14 @@ def shown_version(device) -> str:
     return device.read_zigbee_attr(1, 0x0000, ATTR_MCU_VERSION)
 
 
-def other_version() -> int:
-    return VERSION + 1 if (VERSION & 0x0F) != 0x0F else VERSION - 1
+def older_version() -> int:
+    assert VERSION & 0x0F, "carried patch 0: pick another older version"
+    return VERSION - 1
+
+
+def newer_version() -> int:
+    assert VERSION & 0x0F != 0x0F
+    return VERSION + 1
 
 
 def test_stock_1x_mcu_is_not_even_asked():
@@ -80,7 +94,7 @@ def test_stock_mcu_with_a_2x_version_is_never_offered_an_update():
     query: shown as it is, never offered our firmware."""
     proc, device = start()
     try:
-        cmds = [cmd for cmd, _ in answer_version(proc, device, other_version())]
+        cmds = [cmd for cmd, _ in answer_version(proc, device, newer_version())]
         assert OTA_IDENT in cmds
         assert OTA_NOTIFY not in cmds
         shown = shown_version(device)
@@ -133,10 +147,10 @@ def test_own_mcu_with_the_carried_version_is_left_alone():
         proc.stop()
 
 
-def test_own_mcu_with_another_version_is_offered_the_carried_one():
+def test_own_mcu_with_an_older_version_is_offered_the_carried_one():
     proc, device = start()
     try:
-        cmds, frames = contact_as_own(proc, device, other_version())
+        cmds, frames = contact_as_own(proc, device, older_version())
         assert OTA_IDENT in cmds
         offers = [data for cmd, data in frames if cmd == OTA_NOTIFY]
         assert offers == [bytes([VERSION]) + SIZE.to_bytes(4, "big") + CRC.to_bytes(4, "big")]
@@ -225,5 +239,93 @@ def test_after_a_failed_result_nothing_is_reset():
         proc.exec(f"uart_rx {tuya_frame(OTA_RESULT, bytes([1, VERSION]))}")
         cmds_after(proc, device)
         assert TUYA_CMD_MCU_VERSION not in mcu_query(proc, device)
+    finally:
+        proc.stop()
+
+
+def test_own_mcu_with_a_newer_version_is_left_alone():
+    """Only ever to a newer firmware: a newer one flashed on the bench stays."""
+    proc, device = start()
+    try:
+        _, frames = contact_as_own(proc, device, newer_version())
+        assert OTA_NOTIFY not in [cmd for cmd, _ in frames]
+        assert shown_version(device).endswith(" own")
+    finally:
+        proc.stop()
+
+
+def test_an_identity_answer_nobody_asked_for_is_ignored():
+    proc, device = start()
+    try:
+        device.step_time(2100)
+        pump(proc)
+        take_tx(proc)
+        proc.exec(ident_answer(older_version()))     # before any question
+        cmds = [cmd for cmd, _ in cmds_after(proc, device, 400)]
+        assert OTA_NOTIFY not in cmds
+        assert not shown_version(device).endswith("own")
+    finally:
+        proc.stop()
+
+
+def test_an_identity_with_another_protocol_is_not_ours():
+    proc, device = start()
+    try:
+        device.step_time(2100)
+        pump(proc)
+        take_tx(proc)
+        proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_MCU_VERSION, bytes([older_version()]))}")
+        for _ in range(5):
+            if OTA_IDENT in [cmd for cmd, _ in cmds_after(proc, device, 100)]:
+                break
+        bad = b"ZDMS" + bytes([1, older_version(), 2])
+        proc.exec(f"uart_rx {tuya_frame(OTA_IDENT, bad)}")
+        frames = []
+        for _ in range(8):
+            frames += cmds_after(proc, device, 200)
+        assert OTA_NOTIFY not in [cmd for cmd, _ in frames]
+        assert not shown_version(device).endswith("own")
+    finally:
+        proc.stop()
+
+
+def test_after_three_failed_results_nothing_is_served():
+    proc, device = start()
+    try:
+        for _ in range(3):
+            proc.exec(f"uart_rx {tuya_frame(OTA_RESULT, bytes([1, VERSION]))}")
+            cmds_after(proc, device)
+        proc.exec(f"uart_rx {tuya_frame(OTA_BLOCK, (0).to_bytes(4, 'big') + (64).to_bytes(2, 'big'))}")
+        assert OTA_BLOCK not in [cmd for cmd, _ in cmds_after(proc, device)]
+    finally:
+        proc.stop()
+
+
+def test_own_mcu_restarting_alone_is_noticed():
+    """Our firmware numbers its network queries from 0 at every start."""
+    proc, device = start()
+    try:
+        contact_as_own(proc, device, VERSION)
+        proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_QUERY_NETWORK, seq=0)}")
+        frames = []
+        for _ in range(4):
+            frames += cmds_after(proc, device, 200)
+        assert TUYA_CMD_MCU_VERSION in [cmd for cmd, _ in frames]
+    finally:
+        proc.stop()
+
+
+def test_lost_write_to_own_mcu_is_sent_again_then_everything_read():
+    proc, device = start()
+    try:
+        contact_as_own(proc, device, VERSION)
+        take_tx(proc)
+        device.call_zigbee_cmd(1, 0x0006, 0x01)   # On
+        frames = []
+        for _ in range(8):                   # the MCU never answers
+            frames += cmds_after(proc, device, 100)
+        writes = [d for cmd, d in frames if cmd == TUYA_CMD_WRITE and d[:1] == bytes([1])]
+        assert len(writes) == 3              # first try + 2 retries
+        assert TUYA_CMD_QUERY_ALL in [cmd for cmd, _ in frames]
     finally:
         proc.stop()

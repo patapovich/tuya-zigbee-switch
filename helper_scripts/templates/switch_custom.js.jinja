@@ -280,7 +280,7 @@ const romasku = {
             isModernExtend: true,
             exposes: [(device, options) => {
                 const mode = options?.own_mcu_settings ?? "auto";
-                if (!device || mode === "show") return [expose];
+                if (!device || device.isDummyDevice || mode === "show") return [expose];
                 if (mode === "hide") return [];
                 const major = ownMcuMajorOf(device);
                 return major !== undefined && major >= minMcu ? [expose] : [];
@@ -299,7 +299,7 @@ const romasku = {
                 key: [name],
                 endpoints: [endpointName],
                 convertSet: async (entity, key, value, meta) => {
-                    if (!(value in lookup)) throw new Error(`${name}: one of ${Object.keys(lookup).join(", ")}`);
+                    if (!Object.prototype.hasOwnProperty.call(lookup, value)) throw new Error(`${name}: one of ${Object.keys(lookup).join(", ")}`);
                     await meta.device.getEndpoint(1).write("genBasic", {[attrId]: {value: lookup[value], type: Zcl.DataType.ENUM8}});
                     return {state: {[key]: value}};
                 },
@@ -837,6 +837,13 @@ const definitions = [
             } catch (error) {
                 // The MCU may not have answered yet; it is reported when it does.
             }
+            {% for dp in device.dp_attributes if dp.min_mcu %}
+            try {
+                await device.getEndpoint(1).read("genBasic", [0x{{("ff" ~ dp.attr)|lower}}]); // {{dp.name}}
+            } catch (error) {
+                // Only an own MCU firmware has it.
+            }
+            {% endfor %}
             {% endif %}
             {% for switchName in device.switchNames %}
             const endpoint{{loop.index}} = device.getEndpoint({{loop.index}});

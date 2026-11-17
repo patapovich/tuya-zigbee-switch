@@ -66,6 +66,12 @@ int tuya_secondary_mcu_queue_cmd(uint8_t cmd, const uint8_t *payload, uint16_t l
 int tuya_secondary_mcu_send_reply(uint8_t cmd, uint16_t seq,
                                   const uint8_t *payload, uint16_t len);
 
+/** The MCU answers every DP write at once (our own firmware): a write that
+ *  times out was lost, so it is sent again (twice), then `resync` is called
+ *  (the app asks for all DPs). Off for other MCUs: the stock one answers a
+ *  level write only after its fade. */
+void tuya_secondary_mcu_set_fast_acks(uint8_t on, void (*resync)(void));
+
 /** Reply made of a header and a data part (a firmware block for the MCU's
  *  bootloader): up to 16 + 64 bytes, longer than send_reply takes. */
 int tuya_secondary_mcu_send_long_reply(uint8_t cmd, uint16_t seq,

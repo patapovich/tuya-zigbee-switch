@@ -137,8 +137,13 @@ def onoff(device: Device, ep: int = 1) -> int:
     return int(device.read_zigbee_attr(ep, ZCL_CLUSTER_ON_OFF, ZCL_ATTR_ONOFF))
 
 
+# The board's datapoint config as built from device_db (the own firmware's
+# dimming curves): every dimmer test runs with it, like the real module.
+ZDMS16_2_DP_CONFIG = "65E30;66E31;"
+
+
 def start() -> tuple[StubProc, Device]:
-    proc = StubProc(device_config=ZDMS16_2).start()
+    proc = StubProc(device_config=ZDMS16_2, dp_config=ZDMS16_2_DP_CONFIG).start()
     device = Device(proc)
     pump(proc)
     take_tx(proc)  # boot chatter
@@ -863,8 +868,10 @@ def test_mcu_firmware_version_is_asked_and_shown():
         proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_MCU_VERSION, bytes([0xFF]))}")
         pump(proc)
         # 2.x and later may be the own firmware: it is asked who it is
-        # first; one that does not answer is shown as it is after a timeout.
-        device.step_time(600)
+        # first (twice); one that does not answer is shown as it is after.
+        for _ in range(4):
+            device.step_time(300)
+            pump(proc)
         pump(proc)
         assert device.read_zigbee_attr(1, 0x0000, ATTR_MCU_VERSION) == "3.3.15"
     finally:

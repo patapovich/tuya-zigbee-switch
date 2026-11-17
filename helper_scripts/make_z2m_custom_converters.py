@@ -37,7 +37,15 @@ if __name__ == "__main__":
 
         # YAML 1.1 turns bare off/on/yes/no into booleans, so an enum label
         # like "off" silently becomes False and reaches z2m as "False".
+        dimmer_total = sum(
+            int(p[2:]) for p in device["config_str"].rstrip(";").split(";")[2:] if p[:2] == "DM"
+        )
         for dp in device.get("dp_attributes") or []:
+            if dp.get("dimmer") or dp.get("min_mcu"):
+                if dp.get("type") != "E":
+                    raise SystemExit(f"{dp['name']}: dimmer / min_mcu settings must be enums (type E)")
+                if dp.get("dimmer") and not 1 <= dp["dimmer"] <= dimmer_total:
+                    raise SystemExit(f"{dp['name']}: dimmer {dp['dimmer']} but the board has {dimmer_total}")
             for key in dp.get("values") or {}:
                 if not isinstance(key, str):
                     raise SystemExit(

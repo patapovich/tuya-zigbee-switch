@@ -125,6 +125,7 @@ static void first_contact(uint8_t source) {
     }
     g_contact = source;
     g_mcu_own = 0;
+    tuya_secondary_mcu_set_fast_acks(0, NULL);
     tuya_dp_apply_inits();
     tuya_secondary_mcu_queue_cmd(TUYA_MCU_CMD_MCU_VERSION, NULL, 0);
 
@@ -135,9 +136,14 @@ static void first_contact(uint8_t source) {
     }
 }
 
+static void resync_all(void) {
+    dp_attr_query_all();
+}
+
 void tuya_mcu_app_mcu_restarted(void) {
     g_contact = CONTACT_NONE;
     g_mcu_own = 0;
+    tuya_secondary_mcu_set_fast_acks(0, NULL);
 }
 
 void tuya_mcu_app_show_mcu_version(void) {
@@ -148,6 +154,7 @@ void tuya_mcu_app_show_mcu_version(void) {
 
 void tuya_mcu_app_set_mcu_own(void) {
     g_mcu_own = 1;
+    tuya_secondary_mcu_set_fast_acks(1, resync_all);
     tuya_mcu_app_show_mcu_version();
 }
 
@@ -161,7 +168,9 @@ static void first_contact_timer(void *arg) {
  * wall switch input dims and toggles, only the module's button asks for a
  * reset. */
 static bool mcu_keys_are_the_ui(void) {
-    return tuya_dp_relay_count() > 0 || dp_attrs_cnt > 0;
+    /* Settings DPs on a dimmer (e.g. the own firmware's dimming curves) do
+     * not make its module button a user interface: it stays the reset. */
+    return tuya_dp_relay_count() > 0 || (dp_attrs_cnt > 0 && dimmer_clusters_cnt == 0);
 }
 
 static uint8_t network_status(void) {
@@ -215,6 +224,11 @@ static void on_mcu_command(uint8_t cmd, uint16_t seq, const uint8_t *data, uint1
         return;
 
     case TUYA_MCU_CMD_QUERY_NETWORK: {
+        /* Our own MCU firmware numbers its queries from 0 at every start:
+         * seq 0 again means it restarted alone (reflash, watchdog, update). */
+        if (seq == 0 && g_mcu_own) {
+            tuya_mcu_app_mcu_restarted();
+        }
         /* Unanswered, the MCU assumes the link is broken (key LEDs blink). */
         uint8_t status = network_status();
         tuya_secondary_mcu_send_reply(cmd, seq, &status, 1);

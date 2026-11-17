@@ -193,6 +193,19 @@ static void tx_arm_timer(void) {
     hal_tasks_schedule(&g_tx_timer, TX_ACK_TIMEOUT_MS);
 }
 
+#define TX_RETRIES    2
+
+static uint8_t g_fast_acks;
+static uint8_t g_tx_retries;
+static void    (*g_resync)(void);
+
+void tuya_secondary_mcu_set_fast_acks(uint8_t on, void (*resync)(void)) {
+    g_fast_acks = on;
+    g_resync    = resync;
+}
+
+static int tx_send_now(const tx_item_t *item);
+
 /* Ack timeout of the frame in flight, or the retry after a failed write. */
 static void tx_timer_fired(void *arg) {
     (void)arg;
@@ -200,6 +213,20 @@ static void tx_timer_fired(void *arg) {
         tuya_mcu_diag.tx_timeout++;
         tuya_mcu_diag_log(TUYA_MCU_DIAG_ACK_TIMEOUT, tx_item_id(&g_tx_in_flight), 0);
         g_tx_busy = 0;
+        if (g_fast_acks && g_tx_in_flight.cmd == TUYA_MCU_CMD_WRITE) {
+            /* Our MCU answers at once: no answer means the frame was lost
+             * (e.g. it arrived while the MCU was writing its flash). */
+            if (g_tx_retries < TX_RETRIES) {
+                tx_item_t again = g_tx_in_flight;
+                g_tx_retries++;
+                if (tx_send_now(&again) == 0) {
+                    return;
+                }
+            } else if (g_resync != NULL) {
+                g_tx_retries = 0;
+                g_resync();          /* state may differ now: read it all */
+            }
+        }
     }
     tx_kick();
 }
@@ -225,6 +252,7 @@ static void tx_kick(void) {
         tx_item_t item = g_txq[g_txq_head];
         g_txq_head = (uint8_t)((g_txq_head + 1) % TX_QUEUE_LEN);
         g_txq_count--;
+        g_tx_retries = 0;            /* a new frame, not a retry */
         if (tx_send_now(&item) != 0) {
             /* The UART would not take it (the write already spun up to its
              * limit): retry the rest later, not again in this pass. */
