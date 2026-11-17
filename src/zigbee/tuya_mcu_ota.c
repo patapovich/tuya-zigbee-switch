@@ -40,9 +40,9 @@ static void put_be32(uint8_t *p, uint32_t v) {
     p[3] = (uint8_t)v;
 }
 
-#define IMAGE_FLAG_SIM    0x01        /* bench build with a virtual zero cross */
-#define IMAGE_MAX         (14u * 1024u)
-#define FAILURES_MAX      3           /* failed results before giving up until reboot */
+#define IMAGE_FLAG_SIM    0x01          /* bench build with a virtual zero cross */
+#define IMAGE_MAX         (12u * 1024u) /* app area behind the 4 KB bootloader */
+#define FAILURES_MAX      3             /* failed results before giving up until reboot */
 #define IDENT_RETRIES     1
 
 static uint8_t g_image_state;   /* 0 not checked, 1 good, 2 unusable */
