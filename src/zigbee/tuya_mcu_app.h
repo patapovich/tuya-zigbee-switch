@@ -31,6 +31,10 @@ void tuya_mcu_app_query_all(void);
 
 /** ZCL StartUpOnOff <-> the common Tuya power-on DP (0 off, 1 on, 2 memory).
  *  "Toggle" has no Tuya equivalent and maps to memory. */
+/* The MCU restarts (after a firmware update): its next query is a first
+ * contact again (version, settings dump). */
+void tuya_mcu_app_mcu_restarted(void);
+
 uint8_t tuya_mcu_power_on_from_startup(uint8_t startup_mode);
 uint8_t tuya_mcu_startup_from_power_on(uint8_t power_on);
 

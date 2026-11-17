@@ -66,6 +66,12 @@ int tuya_secondary_mcu_queue_cmd(uint8_t cmd, const uint8_t *payload, uint16_t l
 int tuya_secondary_mcu_send_reply(uint8_t cmd, uint16_t seq,
                                   const uint8_t *payload, uint16_t len);
 
+/** Reply made of a header and a data part (a firmware block for the MCU's
+ *  bootloader): up to 16 + 64 bytes, longer than send_reply takes. */
+int tuya_secondary_mcu_send_long_reply(uint8_t cmd, uint16_t seq,
+                                       const uint8_t *head, uint16_t head_len,
+                                       const uint8_t *data, uint16_t data_len);
+
 /** True while a passive report (0x05) is being dispatched: the MCU answering
  *  something we sent, never a fresh key press. */
 uint8_t tuya_secondary_mcu_report_is_passive(void);

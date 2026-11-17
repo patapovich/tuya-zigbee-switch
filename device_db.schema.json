@@ -178,6 +178,10 @@
           "enum": ["yes", "no"],
           "description": "Whether the device should be built"
         },
+        "secondary_mcu_image": {
+          "type": "boolean",
+          "description": "Carry the own secondary-MCU firmware (src/zigbee/secondary_mcu_image.c) and update the MCU with it when it runs another own version (never the stock MCU)"
+        },
         "dp_attributes": {
           "oneOf": [
             {"type": "null"},

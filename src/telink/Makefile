@@ -88,6 +88,7 @@ DEVICE_DEFS := \
 	-DNVM_MIGRATIONS_VERSION=$(NVM_MIGRATIONS_VERSION) \
 	-DDEFAULT_CONFIG="$(CONFIG_STR)" \
 	-DDEFAULT_DP_CONFIG="$(DP_CONFIG_STR)" \
+	$(if $(SECONDARY_MCU_IMAGE),-DSECONDARY_MCU_IMAGE) \
 	-DIMAGE_TYPE=$(IMAGE_TYPE) \
 	-DHAL_TELINK \
 	$(TEL_CHIP) 
@@ -164,6 +165,8 @@ COMMON_SOURCES := \
 	$(SRC_DIR)/zigbee/tuya_secondary_mcu.c \
 	$(SRC_DIR)/zigbee/tuya_mcu_diag.c \
 	$(SRC_DIR)/zigbee/tuya_mcu_app.c \
+	$(SRC_DIR)/zigbee/tuya_mcu_ota.c \
+	$(SRC_DIR)/zigbee/secondary_mcu_image.c \
 	$(SRC_DIR)/zigbee/dimmer_cluster.c \
 	$(SRC_DIR)/zigbee/general_commands.c \
 	$(SRC_DIR)/zigbee/group_cluster.c \

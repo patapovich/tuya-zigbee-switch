@@ -65,6 +65,9 @@ CONFIG_STR := $(shell yq -r .$(BOARD).config_str $(DEVICE_DB_FILE))
 # Datapoint map, derived from the structured dp_attributes list. Kept in a
 # separate string because a single ZCL write caps at ~74 characters.
 DP_CONFIG_STR := $(shell yq -r '.$(BOARD).dp_attributes // [] | map(.dp + .type + .attr + ";") | join("")' $(DEVICE_DB_FILE))
+# Firmware image of an own secondary MCU carried by this board's firmware
+# (src/zigbee/secondary_mcu_image.c): yes, or empty.
+SECONDARY_MCU_IMAGE := $(shell yq -r '.$(BOARD).secondary_mcu_image // ""' $(DEVICE_DB_FILE))
 FROM_STOCK_MANUFACTURER_ID := $(shell yq -r .$(BOARD).stock_manufacturer_id $(DEVICE_DB_FILE))
 FROM_STOCK_IMAGE_TYPE := $(shell yq -r .$(BOARD).stock_image_type $(DEVICE_DB_FILE))
 FIRMWARE_IMAGE_TYPE := $(shell yq -r .$(BOARD).firmware_image_type $(DEVICE_DB_FILE))
@@ -123,6 +126,7 @@ endif
 		DEVICE_TYPE=$(DEVICE_TYPE) \
 		CONFIG_STR="$(CONFIG_STR)" \
 		DP_CONFIG_STR="$(DP_CONFIG_STR)" \
+		SECONDARY_MCU_IMAGE="$(SECONDARY_MCU_IMAGE)" \
 		IMAGE_TYPE=$(FIRMWARE_IMAGE_TYPE) \
 		BIN_FILE=../../$(BIN_FILE) \
 		 -j32

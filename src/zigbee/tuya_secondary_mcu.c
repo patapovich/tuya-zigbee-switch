@@ -113,6 +113,46 @@ int tuya_secondary_mcu_send_reply(uint8_t cmd, uint16_t seq,
     return send_frame(cmd, seq, 0, 0, payload, len);
 }
 
+#define LONG_REPLY_HEAD_MAX    16
+#define LONG_REPLY_DATA_MAX    64
+
+int tuya_secondary_mcu_send_long_reply(uint8_t cmd, uint16_t seq,
+                                       const uint8_t *head, uint16_t head_len,
+                                       const uint8_t *data, uint16_t data_len) {
+    uint8_t  buf[FRAME_HEADER_LEN + LONG_REPLY_HEAD_MAX + LONG_REPLY_DATA_MAX + 1];
+    uint16_t body = (uint16_t)(head_len + data_len);
+    uint16_t idx  = 0;
+
+    if (!g_enabled || head_len > LONG_REPLY_HEAD_MAX || data_len > LONG_REPLY_DATA_MAX ||
+        (head_len && head == NULL) || (data_len && data == NULL)) {
+        return -1;
+    }
+    buf[idx++] = 0x55;
+    buf[idx++] = 0xAA;
+    buf[idx++] = FRAME_VERSION;
+    buf[idx++] = (uint8_t)(seq >> 8);
+    buf[idx++] = (uint8_t)seq;
+    buf[idx++] = cmd;
+    buf[idx++] = (uint8_t)(body >> 8);
+    buf[idx++] = (uint8_t)body;
+    if (head_len) {
+        memcpy(&buf[idx], head, head_len);
+        idx = (uint16_t)(idx + head_len);
+    }
+    if (data_len) {
+        memcpy(&buf[idx], data, data_len);
+        idx = (uint16_t)(idx + data_len);
+    }
+    buf[idx] = checksum(buf, idx);
+    idx++;
+    if (uart_send(buf, idx) != 0) {
+        tuya_mcu_diag.tx_fail++;
+        return -1;
+    }
+    tuya_mcu_diag.tx_cmd++;
+    return 0;
+}
+
 /* ---- TX queue: one frame in flight --------------------------------------
  *
  * The MCU answers every DP write with a report of that DP. Writing the next

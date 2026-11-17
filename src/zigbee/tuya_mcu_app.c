@@ -1,4 +1,5 @@
 #include "zigbee/tuya_mcu_app.h"
+#include "zigbee/tuya_mcu_ota.h"
 #include "device_config/config_parser.h"
 #include "hal/printf_selector.h"
 #include "hal/system.h"
@@ -120,6 +121,10 @@ static void first_contact(uint8_t source) {
     }
 }
 
+void tuya_mcu_app_mcu_restarted(void) {
+    g_contact = CONTACT_NONE;
+}
+
 static void first_contact_timer(void *arg) {
     (void)arg;
     first_contact(CONTACT_TIMER);
@@ -145,6 +150,7 @@ static void on_mcu_command(uint8_t cmd, uint16_t seq, const uint8_t *data, uint1
         /* The answer to our query, or sent on its own after pairing. */
         if (data_len >= 1) {
             mcu_version_store(data[0]);
+            tuya_mcu_ota_on_version(data[0]);
         }
         return;
 
@@ -200,6 +206,7 @@ static void on_mcu_command(uint8_t cmd, uint16_t seq, const uint8_t *data, uint1
     }
 
     default:
+        tuya_mcu_ota_on_command(cmd, seq, data, data_len);
         return;
     }
 }
