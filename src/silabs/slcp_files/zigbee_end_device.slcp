@@ -52,6 +52,7 @@ source:
 - {path: ../../device_config/nvm_migrations.c}
 - {path: ../../zigbee/basic_cluster.c}
 - {path: ../../zigbee/tuya_secondary_mcu.c}
+- {path: ../../zigbee/tuya_mcu_diag.c}
 - {path: ../../zigbee/tuya_mcu_app.c}
 - {path: ../../zigbee/dimmer_cluster.c}
 - {path: ../../zigbee/battery_cluster.c}
@@ -78,6 +79,7 @@ source:
 - {path: ../../zigbee/tuya_dp_relay.h}
 - {path: ../../zigbee/dp_attr.h}
 - {path: ../../zigbee/tuya_secondary_mcu.h}
+- {path: ../../zigbee/tuya_mcu_diag.h}
 - {path: ../../zigbee/tuya_mcu_app.h}
 - {path: ../../zigbee/dimmer_cluster.h}
 include:

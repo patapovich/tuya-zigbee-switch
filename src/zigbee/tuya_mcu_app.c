@@ -8,6 +8,7 @@
 #include "zigbee/consts.h"
 #include "zigbee/dp_attr.h"
 #include "zigbee/tuya_dp_relay.h"
+#include "zigbee/tuya_mcu_diag.h"
 #include "zigbee/tuya_secondary_mcu.h"
 
 extern hal_uart_config_t mcu_uart_config;
@@ -80,6 +81,10 @@ uint8_t tuya_mcu_startup_from_power_on(uint8_t power_on) {
     default:
         return ZCL_START_UP_ONOFF_SET_ONOFF_TO_PREVIOUS;
     }
+}
+
+void tuya_mcu_app_query_all(void) {
+    dp_attr_query_all();
 }
 
 /* ---- first contact ----------------------------------------------------------
@@ -206,6 +211,7 @@ void tuya_mcu_app_init(void) {
     if (!g_in_use) {
         return;
     }
+    tuya_mcu_diag_clear();
     tuya_secondary_mcu_init(&mcu_uart_config);
     tuya_dp_relay_init();
     dp_attr_init();

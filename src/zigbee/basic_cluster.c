@@ -4,6 +4,7 @@
 #include "cluster_common.h"
 #include "dp_attr.h"
 #include "tuya_mcu_app.h"
+#include "tuya_mcu_diag.h"
 #include "consts.h"
 #include "device_config/config_nv.h"
 #include "device_config/config_parser.h"
@@ -59,6 +60,9 @@ void basic_cluster_callback_attr_write_trampoline(uint16_t attribute_id) {
         schedule_reboot(0);
     }
     dp_attr_on_write(attribute_id);
+    if (tuya_mcu_diag_on_write(attribute_id) == TUYA_MCU_DIAG_CONTROL_QUERY_ALL) {
+        tuya_mcu_app_query_all();
+    }
 }
 
 void basic_cluster_add_to_endpoint(zigbee_basic_cluster *cluster,
@@ -116,6 +120,7 @@ void basic_cluster_add_to_endpoint(zigbee_basic_cluster *cluster,
     attr_idx += dp_attr_register(cluster->attr_infos, attr_idx);
     if (tuya_mcu_app_in_use()) {
         attr_idx += tuya_mcu_app_register_attrs(cluster->attr_infos, attr_idx);
+        attr_idx += tuya_mcu_diag_register(cluster->attr_infos, attr_idx);
     }
 
     endpoint->clusters[endpoint->cluster_count].cluster_id      = ZCL_CLUSTER_BASIC;

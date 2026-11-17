@@ -18,6 +18,7 @@ Please describe what you are working on, under ## Upcoming
   - Level Control (on, off, move, step, move to level, OnLevel), levels scaled to the MCU's
     min/max brightness, wall switch type and power-on behaviour
   - The module button resets the device
+  - Link diagnostics as Basic cluster attributes
 - **NovaDigital 6 gang** (`_TZE204_tdhnhhiy`) and **TPZ-2 / Moes SFL02-Z-2** (`_TZE200_hktk6hze`)
   touch switches with a secondary MCU
 

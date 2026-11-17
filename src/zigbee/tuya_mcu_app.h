@@ -26,6 +26,9 @@ void tuya_mcu_app_task(void);
  *  returns how many. */
 uint8_t tuya_mcu_app_register_attrs(hal_zigbee_attribute *table, uint8_t start_index);
 
+/** Ask the MCU for a full DP dump (after a settings change, for diagnostics). */
+void tuya_mcu_app_query_all(void);
+
 /** ZCL StartUpOnOff <-> the common Tuya power-on DP (0 off, 1 on, 2 memory).
  *  "Toggle" has no Tuya equivalent and maps to memory. */
 uint8_t tuya_mcu_power_on_from_startup(uint8_t startup_mode);

@@ -1,4 +1,5 @@
 #include "zigbee/tuya_secondary_mcu.h"
+#include "zigbee/tuya_mcu_diag.h"
 #include "hal/printf_selector.h"
 #include "hal/tasks.h"
 #include "hal/timer.h"
@@ -46,6 +47,8 @@ static int uart_send(const uint8_t *buf, uint16_t len) {
     }
     if (++g_write_failures >= UART_FAILURES_BEFORE_REINIT) {
         printf("Secondary MCU link stuck, reinitialising UART\r\n");
+        tuya_mcu_diag.uart_reinit++;
+        tuya_mcu_diag_log(TUYA_MCU_DIAG_UART_REINIT, 0, 0);
         g_write_failures = 0;
         hal_uart_deinit();
         hal_uart_init(&g_uart_cfg);
@@ -85,9 +88,19 @@ static int send_frame(uint8_t cmd, uint16_t seq, uint8_t dpid, uint8_t dp_type,
     buf[idx] = checksum(buf, idx);
     idx++;
 
-    int ok = uart_send(buf, idx) == 0;
+    int     ok = uart_send(buf, idx) == 0;
+    uint8_t id = cmd == TUYA_MCU_CMD_WRITE ? dpid : cmd;
     if (!ok) {
+        tuya_mcu_diag.tx_fail++;
+        tuya_mcu_diag_log(TUYA_MCU_DIAG_TX_FAIL, id, 0);
         return -1;
+    }
+    if (cmd == TUYA_MCU_CMD_WRITE) {
+        tuya_mcu_diag.tx_dp++;
+        tuya_mcu_diag_log(TUYA_MCU_DIAG_TX_DP, id, tuya_mcu_diag_number(data, data_len));
+    } else {
+        tuya_mcu_diag.tx_cmd++;
+        tuya_mcu_diag_log(TUYA_MCU_DIAG_TX_CMD, id, tuya_mcu_diag_number(data, data_len));
     }
     return 0;
 }
@@ -125,6 +138,7 @@ static uint8_t    g_txq_head  = 0;
 static uint8_t    g_txq_count = 0;
 static uint8_t    g_tx_busy   = 0;
 static tx_item_t  g_tx_in_flight;
+static uint32_t   g_tx_sent_ms = 0;
 static hal_task_t g_tx_timer;
 static tuya_secondary_mcu_tx_callback_t g_tx_callback = NULL;
 
@@ -143,6 +157,8 @@ static void tx_arm_timer(void) {
 static void tx_timer_fired(void *arg) {
     (void)arg;
     if (g_tx_busy) {
+        tuya_mcu_diag.tx_timeout++;
+        tuya_mcu_diag_log(TUYA_MCU_DIAG_ACK_TIMEOUT, tx_item_id(&g_tx_in_flight), 0);
         g_tx_busy = 0;
     }
     tx_kick();
@@ -156,6 +172,7 @@ static int tx_send_now(const tx_item_t *item) {
     }
     g_tx_in_flight = *item;
     g_tx_busy      = 1;
+    g_tx_sent_ms   = hal_millis();
     tx_arm_timer();
     if (item->cmd == TUYA_MCU_CMD_WRITE && g_tx_callback != NULL) {
         g_tx_callback(item->dpid);
@@ -184,6 +201,16 @@ static void tx_note_report(uint8_t dpid) {
         (g_tx_in_flight.cmd == TUYA_MCU_CMD_WRITE && dpid != g_tx_in_flight.dpid)) {
         return;
     }
+    uint32_t latency = hal_millis() - g_tx_sent_ms;
+    if (latency > 0xFFFF) {
+        latency = 0xFFFF;
+    }
+    tuya_mcu_diag.tx_ack++;
+    tuya_mcu_diag.ack_latency_last_ms = (uint16_t)latency;
+    if (latency > tuya_mcu_diag.ack_latency_max_ms) {
+        tuya_mcu_diag.ack_latency_max_ms = (uint16_t)latency;
+    }
+    tuya_mcu_diag_log(TUYA_MCU_DIAG_ACK, tx_item_id(&g_tx_in_flight), latency);
     g_tx_busy = 0;
     hal_tasks_unschedule(&g_tx_timer);
 }
@@ -224,6 +251,7 @@ static int tx_enqueue(uint8_t cmd, uint8_t dpid, uint8_t dp_type,
                     g_txq[(g_txq_head + j + 1) % TX_QUEUE_LEN];
             }
             g_txq_count--;
+            tuya_mcu_diag.tx_coalesced++;
             break;
         }
     }
@@ -233,6 +261,8 @@ static int tx_enqueue(uint8_t cmd, uint8_t dpid, uint8_t dp_type,
     }
     if (g_txq_count >= TX_QUEUE_LEN) {
         printf("Secondary MCU TX queue full, dropping %d\r\n", tx_item_id(&item));
+        tuya_mcu_diag.tx_drop++;
+        tuya_mcu_diag_log(TUYA_MCU_DIAG_TX_DROP, tx_item_id(&item), 0);
         return -1;
     }
     g_txq[(g_txq_head + g_txq_count) % TX_QUEUE_LEN] = item;
@@ -307,6 +337,8 @@ static uint8_t rx_drop_if_stale(void) {
     if (g_rx_len == 0 || (hal_millis() - g_rx_last_ms) < RX_FRAME_TIMEOUT_MS) {
         return 0;
     }
+    tuya_mcu_diag.rx_bad++;
+    tuya_mcu_diag_log(TUYA_MCU_DIAG_RX_BAD, g_rx_len > 5 ? g_rx[5] : 0, 0);
     rx_drop(2);
     return 1;
 }
@@ -325,6 +357,9 @@ static void rx_dispatch_report(uint8_t cmd, uint16_t frame_len) {
             break; /* truncated unit */
         }
         const uint8_t *value = &g_rx[off + 4];
+        tuya_mcu_diag.rx_dps++;
+        tuya_mcu_diag_log(g_report_is_passive ? TUYA_MCU_DIAG_RX_DP_PASSIVE : TUYA_MCU_DIAG_RX_DP,
+                          dpid, tuya_mcu_diag_number(value, vlen));
         tx_note_report(dpid);
         for (uint8_t i = 0; i < g_listener_cnt; i++) {
             g_listeners[i](dpid, dtype, value, vlen);
@@ -339,6 +374,7 @@ static void rx_process(void) {
         /* Resync on the 55 AA header. */
         while (g_rx_len >= 2 && (g_rx[0] != 0x55 || g_rx[1] != 0xAA)) {
             rx_drop(1);
+            tuya_mcu_diag.rx_resync_bytes++;
         }
         if (g_rx_len < FRAME_HEADER_LEN) {
             if (rx_drop_if_stale()) {
@@ -351,6 +387,7 @@ static void rx_process(void) {
         /* 32 bit: in 16 bit, 8 + 0xFFF7 + 1 wraps to 0 and passes the check. */
         uint32_t frame_len32 = FRAME_HEADER_LEN + (uint32_t)dlen + 1u;
         if (frame_len32 > RX_CAPACITY) {
+            tuya_mcu_diag.rx_oversize++;
             rx_drop(2);
             continue;
         }
@@ -367,15 +404,20 @@ static void rx_process(void) {
             checksum(g_rx, (uint16_t)(frame_len - 1)) != g_rx[frame_len - 1]) {
             /* Damaged, or not a frame after all: skip only the sync bytes, a
              * real frame may start inside. */
+            tuya_mcu_diag.rx_bad++;
+            tuya_mcu_diag_log(TUYA_MCU_DIAG_RX_BAD, cmd, frame_len);
             rx_drop(2);
             continue;
         }
+        tuya_mcu_diag.rx_frames++;
 
         if (cmd == TUYA_MCU_CMD_REPORT || cmd == TUYA_MCU_CMD_REPORT_PASSIVE) {
             rx_dispatch_report(cmd, frame_len);
         } else {
             uint16_t seq = (uint16_t)((g_rx[3] << 8) | g_rx[4]);
             tx_note_command_answer(cmd);
+            tuya_mcu_diag_log(TUYA_MCU_DIAG_RX_CMD, cmd,
+                              tuya_mcu_diag_number(&g_rx[FRAME_HEADER_LEN], dlen));
             if (g_command_callback != NULL) {
                 g_command_callback(cmd, seq, &g_rx[FRAME_HEADER_LEN], dlen);
             }
@@ -400,6 +442,7 @@ void tuya_secondary_mcu_poll(void) {
         g_rx_len     = (uint16_t)(g_rx_len + read_len);
         g_rx_last_ms = hal_millis();
     }
+    tuya_mcu_diag.rx_hal_dropped = hal_uart_rx_dropped();
     rx_process();
 }
 
