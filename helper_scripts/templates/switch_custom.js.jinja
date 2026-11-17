@@ -957,7 +957,7 @@ const definitions = [
             romasku.coverSwitchBindedMode("{{coverSwitch}}_binded_mode", "{{coverSwitch}}"),
             romasku.coverSwitchLongPressDuration("{{coverSwitch}}_long_press_duration", "{{coverSwitch}}"),
             {% endfor %}
-            {% if device.dimmerNames %}// Per channel: the light, its range, curve, power-on, switch, fade and hold.{% endif %}
+            {# Dimmers, per channel: the light, its range, curve, power-on, switch, fade and hold. #}
             {% for dimmerName in device.dimmerNames %}
             {% set dimmer_index = loop.index %}
             light({ endpointNames: ["{{dimmerName}}"], effect: false, powerOnBehavior: false }),

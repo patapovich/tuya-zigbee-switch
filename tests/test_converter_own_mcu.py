@@ -104,3 +104,12 @@ def test_fade_and_hold_settings_are_per_dimmer_with_their_own_attributes():
         (n, "dimmer_right", f"0xff{0x37 + k:02x}") for k, n in enumerate(names)
     ]
     assert block.count("minMcu: 2,") == 12          # 2 curves + 10 fade and hold settings
+
+
+def test_every_dimmer_has_its_light_on_a_line_of_its_own():
+    """A light expose that ends up behind a // comment (template whitespace) drops the
+    channel's light: Home Assistant then deletes the entity (2026-11-17)."""
+    block = zdms16_block()
+    lines = [l for l in block.splitlines() if "light({ endpointNames" in l]
+    assert [re.search(r'endpointNames: \["(\w+)"\]', l).group(1) for l in lines] == ["dimmer_left", "dimmer_right"]
+    assert all(l.strip().startswith("light(") for l in lines)
