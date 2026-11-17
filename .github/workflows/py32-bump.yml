@@ -89,6 +89,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
+          # one module build at a time: each one pushes its firmware commit to the branch
+          for _ in $(seq 60); do
+            busy=$(gh run list --workflow build.yml --branch home-dimmer_build --limit 10 \
+              --json status --jq '[.[] | select(.status != "completed")] | length')
+            [ "$busy" = "0" ] && break
+            echo "waiting for $busy running module build(s)"; sleep 30
+          done
           git fetch -q origin fork-ci
           git checkout -q -B home-dimmer_build
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
