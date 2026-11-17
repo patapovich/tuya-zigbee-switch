@@ -113,3 +113,15 @@ def test_every_dimmer_has_its_light_on_a_line_of_its_own():
     lines = [l for l in block.splitlines() if "light({ endpointNames" in l]
     assert [re.search(r'endpointNames: \["(\w+)"\]', l).group(1) for l in lines] == ["dimmer_left", "dimmer_right"]
     assert all(l.strip().startswith("light(") for l in lines)
+
+
+def test_configure_waits_for_the_mcu_before_reading_its_settings():
+    """Right after a module restart the module answers 0 until the MCU has sent its values:
+    configure must wait for a real mcu_version before it reads the own-MCU settings."""
+    js = custom_converter_js()
+    start = js.index('model: "ZDMS16-2"')
+    configure = js[js.index("configure: async", start) :]
+    wait = configure.index("realMcuVersion(version)")
+    first_setting = configure.index("0xff30]")
+    assert wait < first_setting
+    assert "setTimeout(resolve, 2000)" in configure[:first_setting]

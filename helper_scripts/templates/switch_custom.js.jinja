@@ -997,10 +997,24 @@ const definitions = [
         meta: { multiEndpoint: true },
         configure: async (device, coordinatorEndpoint, logger) => {
             {% if device.has_secondary_mcu %}
-            try {
-                await device.getEndpoint(1).read("genBasic", [0xff12]); // mcu_version
-            } catch (error) {
-                // The MCU may not have answered yet; it is reported when it does.
+            // Right after a module restart the module answers with defaults (0) until the MCU
+            // has sent its values; reading then would leave 0 on the page. Wait for a real MCU
+            // version (a few seconds, longer while the module updates the MCU), then read.
+            const mcuEndpoint = device.getEndpoint(1);
+            const realMcuVersion = (v) => typeof v === "string" && /^\d+\.\d+\.\d+( own)?$/.test(v) && !v.startsWith("0.0.0");
+            for (let attempt = 0; attempt < 15; attempt++) {
+                let version;
+                try {
+                    const result = await mcuEndpoint.read("genBasic", [0xff12]); // mcu_version
+                    version = result?.[0xff12];
+                } catch (error) {
+                    version = undefined; // not answered yet
+                }
+                if (realMcuVersion(version)) {
+                    await new Promise((resolve) => setTimeout(resolve, 1500)); // the rest of its DP dump
+                    break;
+                }
+                await new Promise((resolve) => setTimeout(resolve, 2000));
             }
             {% for dp in device.dp_attributes if dp.min_mcu %}
             try {
