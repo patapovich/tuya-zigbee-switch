@@ -138,6 +138,7 @@ def contact_as_own(proc, device, running: int):
         cmds += [cmd for cmd, _ in cmds_after(proc, device, 100)]
         if OTA_IDENT in cmds:
             break
+    assert OTA_IDENT in cmds, "the module must ask before our firmware answers"
     proc.exec(ident_answer(running))
     frames = []
     for _ in range(8):
