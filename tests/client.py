@@ -139,9 +139,13 @@ class StubProc:
     def _parse_kw_from_firmware(self, data: str) -> dict[str, str]:
         result = {}
         tokens = data.split()
-        for token in tokens:
+        for i, token in enumerate(tokens):
             if "=" in token:
                 key, value = token.split("=", 1)
+                if key == "value":
+                    # Always last on the line: a string value may hold spaces.
+                    result[key] = " ".join([value] + tokens[i + 1 :])
+                    break
                 result[key] = value
             else:
                 result[token] = ""

@@ -35,6 +35,13 @@ void tuya_mcu_app_query_all(void);
  * contact again (version, settings dump). */
 void tuya_mcu_app_mcu_restarted(void);
 
+/* The MCU identified itself as our own firmware: its version is shown as
+ * "x.y.z own" (the Z2M converter shows the own firmware's settings by it). */
+void tuya_mcu_app_set_mcu_own(void);
+
+/* Show (and report) the version the MCU told, as far as known now. */
+void tuya_mcu_app_show_mcu_version(void);
+
 uint8_t tuya_mcu_power_on_from_startup(uint8_t startup_mode);
 uint8_t tuya_mcu_startup_from_power_on(uint8_t power_on);
 

@@ -4,12 +4,13 @@
 import re
 from pathlib import Path
 
-from test_dimmer_mcu import TUYA_CMD_MCU_VERSION, start
+from test_dimmer_mcu import ATTR_MCU_VERSION, TUYA_CMD_MCU_VERSION, start
 from tuya_mcu import TUYA_CMD_QUERY_NETWORK, parse_frames, pump, take_tx, tuya_frame
 
 OTA_NOTIFY = 0xA0
 OTA_BLOCK = 0xA1
 OTA_RESULT = 0xA2
+OTA_IDENT = 0xA3
 
 IMAGE_C = Path(__file__).resolve().parent.parent / "src/zigbee/secondary_mcu_image.c"
 
@@ -52,19 +53,81 @@ def test_carried_image_is_an_own_firmware():
     assert VERSION >> 6 >= 2
 
 
-def test_stock_mcu_is_never_offered_an_update():
+def ident_answer(version: int) -> str:
+    return f"uart_rx {tuya_frame(OTA_IDENT, b'ZDMS' + bytes([1, version, 1]))}"
+
+
+def shown_version(device) -> str:
+    return device.read_zigbee_attr(1, 0x0000, ATTR_MCU_VERSION)
+
+
+def other_version() -> int:
+    return VERSION + 1 if (VERSION & 0x0F) != 0x0F else VERSION - 1
+
+
+def test_stock_1x_mcu_is_not_even_asked():
     proc, device = start()
     try:
-        frames = answer_version(proc, device, 0x47)  # stock 1.0.7
-        assert OTA_NOTIFY not in [cmd for cmd, _ in frames]
+        cmds = [cmd for cmd, _ in answer_version(proc, device, 0x47)]  # stock 1.0.7
+        assert OTA_IDENT not in cmds and OTA_NOTIFY not in cmds
+        assert shown_version(device) == "1.0.7"
     finally:
         proc.stop()
+
+
+def test_stock_mcu_with_a_2x_version_is_never_offered_an_update():
+    """A vendor MCU that happens to say 2.x does not answer the identity
+    query: shown as it is, never offered our firmware."""
+    proc, device = start()
+    try:
+        cmds = [cmd for cmd, _ in answer_version(proc, device, other_version())]
+        assert OTA_IDENT in cmds
+        assert OTA_NOTIFY not in cmds
+        shown = shown_version(device)
+        assert shown and not shown.endswith("own")
+    finally:
+        proc.stop()
+
+
+def test_version_is_shown_only_once_the_mcu_said_who_it_is():
+    proc, device = start()
+    try:
+        device.step_time(2100)
+        pump(proc)
+        take_tx(proc)
+        proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_MCU_VERSION, bytes([VERSION]))}")
+        pump(proc)
+        assert shown_version(device) == ""          # not without "own"
+        proc.exec(ident_answer(VERSION))
+        pump(proc)
+        assert shown_version(device).endswith(" own")
+    finally:
+        proc.stop()
+
+
+def contact_as_own(proc, device, running: int):
+    """Version answered; once the module asks who it is, our firmware answers.
+    Returns (commands up to the identity query, frames after the answer)."""
+    device.step_time(2100)
+    pump(proc)
+    take_tx(proc)
+    proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_MCU_VERSION, bytes([running]))}")
+    cmds = []
+    for _ in range(5):                   # behind the settings query in the queue
+        cmds += [cmd for cmd, _ in cmds_after(proc, device, 100)]
+        if OTA_IDENT in cmds:
+            break
+    proc.exec(ident_answer(running))
+    frames = []
+    for _ in range(8):
+        frames += cmds_after(proc, device, 200)
+    return cmds, frames
 
 
 def test_own_mcu_with_the_carried_version_is_left_alone():
     proc, device = start()
     try:
-        frames = answer_version(proc, device, VERSION)
+        _, frames = contact_as_own(proc, device, VERSION)
         assert OTA_NOTIFY not in [cmd for cmd, _ in frames]
     finally:
         proc.stop()
@@ -73,10 +136,11 @@ def test_own_mcu_with_the_carried_version_is_left_alone():
 def test_own_mcu_with_another_version_is_offered_the_carried_one():
     proc, device = start()
     try:
-        other = VERSION + 1 if (VERSION & 0x0F) != 0x0F else VERSION - 1
-        frames = answer_version(proc, device, other)
+        cmds, frames = contact_as_own(proc, device, other_version())
+        assert OTA_IDENT in cmds
         offers = [data for cmd, data in frames if cmd == OTA_NOTIFY]
         assert offers == [bytes([VERSION]) + SIZE.to_bytes(4, "big") + CRC.to_bytes(4, "big")]
+        assert shown_version(device).endswith(" own")
     finally:
         proc.stop()
 

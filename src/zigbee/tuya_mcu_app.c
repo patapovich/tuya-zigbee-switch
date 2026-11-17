@@ -21,12 +21,19 @@ static bool g_in_use = false;
  * (0x40 = 1.0.0). Empty until the MCU has answered. */
 static struct {
     uint8_t len;
-    char    text[7]; /* "3.3.15" */
+    char    text[11]; /* "3.3.15 own" */
 } g_mcu_version;
+
+static uint8_t g_mcu_packed;    /* last version byte the MCU told */
+static uint8_t g_mcu_known;
+static uint8_t g_mcu_own;       /* it answered the identity query */
 
 static void mcu_version_store(uint8_t packed) {
     uint8_t patch = packed & 0x0F;
     uint8_t n     = 0;
+
+    g_mcu_packed = packed;
+    g_mcu_known  = 1;
 
     g_mcu_version.text[n++] = (char)('0' + (packed >> 6));
     g_mcu_version.text[n++] = '.';
@@ -36,7 +43,13 @@ static void mcu_version_store(uint8_t packed) {
         g_mcu_version.text[n++] = '1';
     }
     g_mcu_version.text[n++] = (char)('0' + patch % 10);
-    g_mcu_version.len       = n;
+    if (g_mcu_own) {
+        g_mcu_version.text[n++] = ' ';
+        g_mcu_version.text[n++] = 'o';
+        g_mcu_version.text[n++] = 'w';
+        g_mcu_version.text[n++] = 'n';
+    }
+    g_mcu_version.len = n;
 
     hal_zigbee_send_report_attr(endpoints[0].endpoint, ZCL_CLUSTER_BASIC,
                                 ZCL_ATTR_BASIC_MCU_VERSION, ZCL_DATA_TYPE_CHAR_STR,
@@ -111,6 +124,7 @@ static void first_contact(uint8_t source) {
         return;
     }
     g_contact = source;
+    g_mcu_own = 0;
     tuya_dp_apply_inits();
     tuya_secondary_mcu_queue_cmd(TUYA_MCU_CMD_MCU_VERSION, NULL, 0);
 
@@ -123,6 +137,18 @@ static void first_contact(uint8_t source) {
 
 void tuya_mcu_app_mcu_restarted(void) {
     g_contact = CONTACT_NONE;
+    g_mcu_own = 0;
+}
+
+void tuya_mcu_app_show_mcu_version(void) {
+    if (g_mcu_known) {
+        mcu_version_store(g_mcu_packed);
+    }
+}
+
+void tuya_mcu_app_set_mcu_own(void) {
+    g_mcu_own = 1;
+    tuya_mcu_app_show_mcu_version();
 }
 
 static void first_contact_timer(void *arg) {
@@ -149,8 +175,14 @@ static void on_mcu_command(uint8_t cmd, uint16_t seq, const uint8_t *data, uint1
     case TUYA_MCU_CMD_MCU_VERSION:
         /* The answer to our query, or sent on its own after pairing. */
         if (data_len >= 1) {
-            mcu_version_store(data[0]);
-            tuya_mcu_ota_on_version(data[0]);
+            g_mcu_packed = data[0];
+            g_mcu_known  = 1;
+
+            /* 2.x or later may be our own firmware: shown once it has said
+             * who it is, so ours never shows without "own". */
+            if (!tuya_mcu_ota_on_version(data[0])) {
+                mcu_version_store(data[0]);
+            }
         }
         return;
 

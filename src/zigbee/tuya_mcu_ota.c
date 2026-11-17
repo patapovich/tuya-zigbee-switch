@@ -1,17 +1,20 @@
 #include "zigbee/tuya_mcu_ota.h"
 #include "hal/printf_selector.h"
+#include "hal/tasks.h"
 #include "zigbee/secondary_mcu_image.h"
 #include "zigbee/tuya_mcu_app.h"
 #include "zigbee/tuya_secondary_mcu.h"
 
 /* Header of the carried image, right after its vector table (the MCU side
 * defines it in ota_proto.h): magic, size, crc, version, little-endian. */
-#define IMAGE_HEADER_OFFSET    0xC0
-#define IMAGE_MAGIC            0x5A445041u
-#define IMAGE_BOOTLOADER       0x00   /* version answered by the MCU's bootloader */
-#define OWN_FIRMWARE_MAJOR     2
-#define BLOCK_HEADER_LEN       13     /* offset size crc version */
-#define BLOCK_MAX              64     /* bytes per answer: one 86 byte frame */
+#define IMAGE_HEADER_OFFSET     0xC0
+#define IMAGE_MAGIC             0x5A445041u
+#define IDENT_LEN               7     /* "ZDMS" kind version protocol */
+#define IDENT_KIND_APP          1
+#define IDENT_ASK_FROM_MAJOR    2     /* stock ZDMS16-2 MCUs are 1.x */
+#define IDENT_TIMEOUT_MS        500
+#define BLOCK_HEADER_LEN        13    /* offset size crc version */
+#define BLOCK_MAX               64    /* bytes per answer: one 86 byte frame */
 
 typedef struct {
     uint32_t size;
@@ -50,25 +53,59 @@ static int image_info(image_info_t *info) {
     return 1;
 }
 
-void tuya_mcu_ota_on_version(uint8_t packed) {
+static hal_task_t g_ident_timer;
+static uint8_t    g_ident_timer_ready;
+static uint8_t    g_ident_waiting;
+
+static void ident_timeout(void *arg) {
+    (void)arg;
+    if (g_ident_waiting) {
+        g_ident_waiting = 0;
+        tuya_mcu_app_show_mcu_version();     /* not ours: shown as it is */
+    }
+}
+
+uint8_t tuya_mcu_ota_on_version(uint8_t packed) {
     image_info_t img;
 
-    if (!image_info(&img)) {
+    if ((packed >> 6) < IDENT_ASK_FROM_MAJOR || !image_info(&img)) {
+        return 0;
+    }
+    if (!g_ident_timer_ready) {
+        g_ident_timer.handler = ident_timeout;
+        g_ident_timer.arg     = NULL;
+        hal_tasks_init(&g_ident_timer);
+        g_ident_timer_ready = 1;
+    }
+    g_ident_waiting = 1;
+    tuya_secondary_mcu_queue_cmd(TUYA_MCU_CMD_OTA_IDENT, NULL, 0);
+    hal_tasks_schedule(&g_ident_timer, IDENT_TIMEOUT_MS);
+    return 1;
+}
+
+/* Only our own firmware answers the identity query. */
+static void on_ident(const uint8_t *data, uint16_t len) {
+    image_info_t img;
+
+    if (len < IDENT_LEN || data[0] != 'Z' || data[1] != 'D' || data[2] != 'M' ||
+        data[3] != 'S' || data[4] != IDENT_KIND_APP || !image_info(&img)) {
         return;
     }
-    if (packed == IMAGE_BOOTLOADER) {
-        printf("Secondary MCU is in its bootloader: it fetches the carried firmware\r\n");
-        return;
+    uint8_t running = data[5];
+    if (g_ident_waiting) {
+        g_ident_waiting = 0;
+        hal_tasks_unschedule(&g_ident_timer);
     }
-    if ((packed >> 6) < OWN_FIRMWARE_MAJOR || packed == img.version) {
-        return;     /* stock MCU (never touched), or already this firmware */
+    tuya_mcu_app_set_mcu_own();             /* shows "x.y.z own" */
+    if (running == img.version) {
+        return;
     }
     uint8_t d[9];
     d[0] = img.version;
     put_be32(&d[1], img.size);
     put_be32(&d[5], img.crc);
-    printf("Secondary MCU firmware 0x%02x, carried 0x%02x: offering the update\r\n",
-           packed, img.version);
+    printf("Own MCU firmware 0x%02x, carried 0x%02x: offering the update\r\n",
+           running, img.version);
     tuya_secondary_mcu_queue_cmd(TUYA_MCU_CMD_OTA_NOTIFY, d, sizeof(d));
 }
 
@@ -101,6 +138,10 @@ static void answer_block(uint16_t seq, const uint8_t *data, uint16_t len) {
 uint8_t tuya_mcu_ota_on_command(uint8_t cmd, uint16_t seq, const uint8_t *data,
                                 uint16_t len) {
     switch (cmd) {
+    case TUYA_MCU_CMD_OTA_IDENT:
+        on_ident(data, len);
+        return 1;
+
     case TUYA_MCU_CMD_OTA_NOTIFY:
         printf("Secondary MCU %s the update\r\n",
                (len >= 1 && data[0] == 0) ? "accepted" : "declined");

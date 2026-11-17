@@ -862,6 +862,10 @@ def test_mcu_firmware_version_is_asked_and_shown():
         assert TUYA_CMD_QUERY_ALL in [cmd for cmd, _ in parse_frames(take_tx(proc))]
         proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_MCU_VERSION, bytes([0xFF]))}")
         pump(proc)
+        # 2.x and later may be the own firmware: it is asked who it is
+        # first; one that does not answer is shown as it is after a timeout.
+        device.step_time(600)
+        pump(proc)
         assert device.read_zigbee_attr(1, 0x0000, ATTR_MCU_VERSION) == "3.3.15"
     finally:
         proc.stop()

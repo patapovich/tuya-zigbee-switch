@@ -16,10 +16,12 @@ const exposesLib = require("zigbee-herdsman-converters/lib/exposes");
 const e = exposesLib.presets;
 const ea = exposesLib.access;
 
-/* Major version of the secondary MCU firmware (Basic 0xff12, "x.y.z"), as last
- * seen: kept in device.meta by romasku.mcuVersionMeta(), else the attribute
- * cache of the endpoint. undefined if never read. */
-const mcuMajorOf = (device) => {
+/* Major version of our own secondary-MCU firmware, as last seen: the module
+ * shows ours as "x.y.z own" (only ours answers its identity query; a stock
+ * MCU never gets the suffix, whatever its version number). Kept in
+ * device.meta by romasku.mcuVersionMeta(), else the attribute cache of the
+ * endpoint. undefined if the MCU is not ours or not known yet. */
+const ownMcuMajorOf = (device) => {
     if (!device) return undefined;
     let v = device.meta?.mcuVersion;
     if (v === undefined) {
@@ -29,7 +31,7 @@ const mcuMajorOf = (device) => {
             v = undefined;
         }
     }
-    const m = typeof v === "string" && v !== "0.0.0" ? /^(\d+)\./.exec(v) : null;
+    const m = typeof v === "string" ? /^(\d+)\.\d+\.\d+ own$/.exec(v) : null;
     return m ? Number(m[1]) : undefined;
 };
 {% if z2m_v1 %}
@@ -244,9 +246,9 @@ const romasku = {
             convert: (model, msg) => {
                 const v = msg.data?.[0xff12];
                 // Keep the last real version: right after a restart the module
-                // answers "" until the MCU has told it, and an MCU in its
-                // bootloader says 0.0.0. Neither may hide its settings.
-                const real = typeof v === "string" && /^\d+\.\d+\.\d+$/.test(v) && v !== "0.0.0";
+                // answers "" until the MCU has told it. That must not hide the
+                // own firmware's settings.
+                const real = typeof v === "string" && /^\d+\.\d+\.\d+( own)?$/.test(v) && !v.startsWith("0.0.0");
                 if (real && msg.device && msg.device.meta?.mcuVersion !== v) {
                     msg.device.meta.mcuVersion = v;
                     msg.device.save();
@@ -261,7 +263,7 @@ const romasku = {
         isModernExtend: true,
         options: [
             e.enum("own_mcu_settings", ea.SET, ["auto", "show", "hide"])
-                .withDescription("Settings of an own secondary-MCU firmware (e.g. dimming curve). auto (default): shown when the MCU reports firmware 2.x or later; show / hide: always / never"),
+                .withDescription("Settings of an own secondary-MCU firmware (e.g. dimming curve). auto (default): shown when the module has identified the MCU as ours (mcu_version \"x.y.z own\"); show / hide: always / never"),
         ],
     }),
     // Enum datapoint attribute (Basic 0xffXX on endpoint 1) exposed on the
@@ -278,7 +280,7 @@ const romasku = {
                 const mode = options?.own_mcu_settings ?? "auto";
                 if (!device || mode === "show") return [expose];
                 if (mode === "hide") return [];
-                const major = mcuMajorOf(device);
+                const major = ownMcuMajorOf(device);
                 return major !== undefined && major >= minMcu ? [expose] : [];
             }],
             fromZigbee: [{
