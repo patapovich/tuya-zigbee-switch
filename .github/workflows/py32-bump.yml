@@ -67,8 +67,8 @@ jobs:
             cp /tmp/py32/secondary_mcu_image.c src/zigbee/secondary_mcu_image.c
           fi
 
-      - name: Lint and tests with the new image
-        if: steps.rel.outputs.change == 'true'
+      - name: Lint and tests with the image
+        if: steps.rel.outputs.change == 'true' || inputs.force
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q make python3 python3-pytest python3-yaml python3-jinja2 uncrustify
