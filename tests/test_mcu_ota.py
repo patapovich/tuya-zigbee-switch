@@ -77,7 +77,8 @@ def shown_version(device) -> str:
 
 
 def older_version() -> int:
-    assert VERSION & 0x0F, "carried patch 0: pick another older version"
+    """The carried version minus one (2.1.0 -> 2.0.15): still our own firmware (major 2)."""
+    assert VERSION - 1 >= 0x80, "carried 2.0.0: no older own version to test with"
     return VERSION - 1
 
 
