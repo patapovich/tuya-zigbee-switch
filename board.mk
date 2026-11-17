@@ -66,7 +66,7 @@ CONFIG_STR := $(shell yq -r .$(BOARD).config_str $(DEVICE_DB_FILE))
 # separate string because a single ZCL write caps at ~74 characters.
 DP_CONFIG_STR := $(shell yq -r '.$(BOARD).dp_attributes // [] | map(.dp + .type + .attr + ";") | join("")' $(DEVICE_DB_FILE))
 # Firmware image of an own secondary MCU carried by this board's firmware
-# (src/zigbee/secondary_mcu_image.c): yes, or empty.
+# (src/zigbee/secondary_mcu_image.c): "true" (yq prints the YAML boolean), or empty.
 SECONDARY_MCU_IMAGE := $(shell yq -r '.$(BOARD).secondary_mcu_image // ""' $(DEVICE_DB_FILE))
 FROM_STOCK_MANUFACTURER_ID := $(shell yq -r .$(BOARD).stock_manufacturer_id $(DEVICE_DB_FILE))
 FROM_STOCK_IMAGE_TYPE := $(shell yq -r .$(BOARD).stock_image_type $(DEVICE_DB_FILE))

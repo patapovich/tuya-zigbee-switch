@@ -279,6 +279,7 @@ const romasku = {
         return {
             isModernExtend: true,
             exposes: [(device, options) => {
+                if (!minMcu) return [expose];      // not tied to an own MCU firmware
                 const mode = options?.own_mcu_settings ?? "auto";
                 if (!device || device.isDummyDevice || mode === "show") return [expose];
                 if (mode === "hide") return [];

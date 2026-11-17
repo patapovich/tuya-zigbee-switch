@@ -45,10 +45,12 @@ static void put_be32(uint8_t *p, uint32_t v) {
 #define IMAGE_FLAG_SIM    0x01          /* bench build with a virtual zero cross */
 #define IMAGE_MAX         (12u * 1024u) /* app area behind the 4 KB bootloader */
 #define FAILURES_MAX      3             /* failed results before giving up until reboot */
+#define OFFERS_MAX        3             /* offers without a result before giving up */
 #define IDENT_RETRIES     1
 
 static uint8_t g_image_state;   /* 0 not checked, 1 good, 2 unusable */
 static uint8_t g_failures;      /* failed update results since boot */
+static uint8_t g_offers;        /* offers since the last result */
 
 static uint32_t crc32_update(uint32_t crc, const uint8_t *p, uint32_t n) {
     crc = ~crc;
@@ -144,6 +146,10 @@ static void on_ident(const uint8_t *data, uint16_t len) {
     if (!image_info(&img) || img.version <= running) {
         return;                     /* only ever to a newer firmware */
     }
+    if (g_offers >= OFFERS_MAX) {
+        return;                     /* accepted but never started: not again */
+    }
+    g_offers++;
     uint8_t d[9];
     d[0] = img.version;
     put_be32(&d[1], img.size);
@@ -202,6 +208,7 @@ uint8_t tuya_mcu_ota_on_command(uint8_t cmd, uint16_t seq, const uint8_t *data,
         return 1;
 
     case TUYA_MCU_CMD_OTA_RESULT:
+        g_offers = 0;
         if (len >= 1 && data[0] == 0) {
             printf("Secondary MCU updated to 0x%02x\r\n", len >= 2 ? data[1] : 0);
 

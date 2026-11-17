@@ -56,9 +56,16 @@ def answer_version(proc, device, packed: int) -> list[tuple[int, bytes]]:
 
 
 def test_carried_image_is_an_own_firmware():
+    import zlib
+
     assert IMAGE[0xC0:0xC4] == b"APDZ"
-    assert SIZE == len(IMAGE)
+    assert SIZE == len(IMAGE) <= 12 * 1024           # app area behind the 4 KB bootloader
     assert VERSION >> 6 >= 2
+    assert not IMAGE[0xCD] & 0x01                     # never a SIM bench build
+    zeroed = IMAGE[:0xC8] + bytes(4) + IMAGE[0xCC:]
+    assert zlib.crc32(zeroed) == CRC
+    sp, reset = int.from_bytes(IMAGE[0:4], "little"), int.from_bytes(IMAGE[4:8], "little")
+    assert 0x08001000 <= reset < 0x08004000 and sp >> 20 == 0x200
 
 
 def ident_answer(version: int) -> str:
@@ -327,5 +334,22 @@ def test_lost_write_to_own_mcu_is_sent_again_then_everything_read():
         writes = [d for cmd, d in frames if cmd == TUYA_CMD_WRITE and d[:1] == bytes([1])]
         assert len(writes) == 3              # first try + 2 retries
         assert TUYA_CMD_QUERY_ALL in [cmd for cmd, _ in frames]
+    finally:
+        proc.stop()
+
+
+
+def test_offers_stop_when_the_update_never_starts():
+    """An MCU that accepts but never fetches (e.g. a layout mismatch) is not
+    offered the update over and over."""
+    proc, device = start()
+    try:
+        offers = 0
+        for _ in range(5):
+            _, frames = contact_as_own(proc, device, older_version())
+            offers += [cmd for cmd, _ in frames].count(OTA_NOTIFY)
+            proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_QUERY_NETWORK, seq=0)}")   # it restarts
+            cmds_after(proc, device, 200)
+        assert offers == 3
     finally:
         proc.stop()
