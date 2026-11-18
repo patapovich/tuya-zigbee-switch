@@ -14,6 +14,7 @@
 #include "app.h"
 #include "hal/gpio.h"
 #include "hal/telink_zigbee_hal.h"
+#include "hal/timer.h"
 #include "hal/zigbee.h"
 
 int real_main(startup_state_e state);
@@ -75,6 +76,9 @@ int real_main(startup_state_e state) {
     drv_wd_start();
 
     while (1) {
+        // hal_millis() counts on across the 268 s system timer wrap only if
+        // it runs at least once per wrap: call it every pass, whatever runs.
+        (void)hal_millis();
         drv_wd_clear();
         ev_main();
         drv_wd_clear();
