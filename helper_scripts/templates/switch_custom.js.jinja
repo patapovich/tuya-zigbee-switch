@@ -16,6 +16,23 @@ const exposesLib = require("zigbee-herdsman-converters/lib/exposes");
 const e = exposesLib.presets;
 const ea = exposesLib.access;
 
+/* A secondary-MCU version as the module reports it ("x.y.z", or "x.y.z own"
+ * once it has identified our own firmware), not the "" or "0.0.0" it
+ * answers right after a restart, before the MCU has told it. */
+const realMcuVersion = (v) => typeof v === "string" && /^\d+\.\d+\.\d+( own)?$/.test(v) && !v.startsWith("0.0.0");
+
+/* The version that says what the MCU is: the newest real one (latest), else
+ * the last one kept (kept, device.meta). "own" is sticky: a bare 2.x or later
+ * does not replace a kept "own" one, because the module reports ours without
+ * the suffix when it could not identify it (a lost identity answer). Only a
+ * version below 2.x (a stock MCU) means the MCU really changed. */
+const mcuVersionOf = (latest, kept) => {
+    if (!realMcuVersion(latest)) return realMcuVersion(kept) ? kept : undefined;
+    const bareOwnMajor = !latest.endsWith(" own") && Number(latest.split(".")[0]) >= 2;
+    if (bareOwnMajor && realMcuVersion(kept) && kept.endsWith(" own")) return kept;
+    return latest;
+};
+
 /* Major version of our own secondary-MCU firmware, as last seen: the module
  * shows ours as "x.y.z own" (only ours answers its identity query; a stock
  * MCU never gets the suffix, whatever its version number). Kept in
@@ -29,10 +46,7 @@ const ownMcuMajorOf = (device) => {
     } catch (error) {
         cached = undefined;
     }
-    // The newest value the device sent, unless it is the "" read right after
-    // a restart of the module; then the last real one kept in meta.
-    const real = (v) => typeof v === "string" && /^\d+\.\d+\.\d+( own)?$/.test(v) && !v.startsWith("0.0.0");
-    const v = real(cached) ? cached : device.meta?.mcuVersion;
+    const v = mcuVersionOf(cached, device.meta?.mcuVersion);
     const m = typeof v === "string" ? /^(\d+)\.\d+\.\d+ own$/.exec(v) : null;
     return m ? Number(m[1]) : undefined;
 };
@@ -262,12 +276,13 @@ const romasku = {
             cluster: "genBasic",
             type: ["attributeReport", "readResponse"],
             convert: (model, msg) => {
-                const v = msg.data?.[0xff12];
                 // Keep the last real version: right after a restart the module
-                // answers "" until the MCU has told it. That must not hide the
+                // answers "" until the MCU has told it, and a bare 2.x may be
+                // ours not yet identified (mcuVersionOf). Neither must hide the
                 // own firmware's settings.
-                const real = typeof v === "string" && /^\d+\.\d+\.\d+( own)?$/.test(v) && !v.startsWith("0.0.0");
-                if (real && msg.device && msg.device.meta?.mcuVersion !== v) {
+                if (!msg.device) return;
+                const v = mcuVersionOf(msg.data?.[0xff12], msg.device.meta?.mcuVersion);
+                if (v !== undefined && msg.device.meta?.mcuVersion !== v) {
                     msg.device.meta.mcuVersion = v;
                     msg.device.save();
                 }

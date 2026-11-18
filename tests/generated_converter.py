@@ -5,11 +5,16 @@ does not commit it. Tests that check the converter must therefore generate it
 themselves, or a change to the template would be tested against the old file.
 """
 import functools
+import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
+HARNESS = Path(__file__).resolve().parent / "converter_harness.js"
 
 
 @functools.cache
@@ -31,3 +36,21 @@ def custom_converter_file(z2m_v1: bool = False) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(custom_converter_js(z2m_v1))
     return str(path)
+
+
+def run_node(script: str, z2m_v1: bool = False) -> str:
+    """Run a node script that has `h` (converter_harness.js), `definitions`
+    (the generated converter, loaded through the harness's stand-ins for the
+    Zigbee2MQTT packages) and `c` (those plus some of the converter's internals:
+    romasku, mcuVersionOf, ownMcuMajorOf, ownMcuShown). Returns its output.
+    Skips the test without node."""
+    if shutil.which("node") is None:
+        pytest.skip("node not installed")
+    prelude = (
+        f"const h = require({json.dumps(str(HARNESS))});\n"
+        f"const c = h.load({json.dumps(custom_converter_file(z2m_v1))});\n"
+        "const definitions = c.definitions;\n"
+    )
+    result = subprocess.run(["node", "-e", prelude + script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    return result.stdout
