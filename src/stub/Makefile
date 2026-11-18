@@ -89,16 +89,19 @@ CFLAGS := -Wall -Wno-unused-parameter -Wno-unused-variable -g -O0 \
 
 LDFLAGS := -lpthread
 
+# e.g. EXTRA_CFLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all"
+EXTRA_CFLAGS ?=
+
 # Build targets
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 build: $(BUILD_DIR)
-	$(HOST_CC) $(CFLAGS) $(INCLUDES) $(SOURCES) -o $(BINARY) $(LDFLAGS)
+	$(HOST_CC) $(CFLAGS) $(EXTRA_CFLAGS) $(INCLUDES) $(SOURCES) -o $(BINARY) $(LDFLAGS) $(EXTRA_CFLAGS)
 	@echo "Stub binary built: $(BINARY)"
 
 build_end_device: $(BUILD_DIR)
-	$(HOST_CC) $(CFLAGS) -DEND_DEVICE $(INCLUDES) $(SOURCES) -o $(BUILD_DIR)/stub_end_device $(LDFLAGS)
+	$(HOST_CC) $(CFLAGS) $(EXTRA_CFLAGS) -DEND_DEVICE $(INCLUDES) $(SOURCES) -o $(BUILD_DIR)/stub_end_device $(LDFLAGS) $(EXTRA_CFLAGS)
 	@echo "End device stub binary built: $(BUILD_DIR)/stub_end_device"
 
 run: build

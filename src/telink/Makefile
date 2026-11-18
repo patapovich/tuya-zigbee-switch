@@ -250,6 +250,22 @@ ifdef OTA_VERSION
 OTA_VERSION_ARG := --file-version $(OTA_VERSION)
 endif
 
+# Size limit of every OTA file (normal, forced and from_tuya). This build uses
+# the SDK's 512 KB flash map without a bootloader (proj/drivers/drv_nv.h):
+# image slots at 0x0 and 0x40000, NV_1 at 0x34000, MAC address at 0x76000,
+# factory calibration at 0x77000, pre-install code at 0x78000, NV_2 at 0x7A000.
+# The SDK OTA client answers INSUFFICIENT_SPACE to a QueryNextImageResponse
+# whose image size (the whole .zigbee file) is over FLASH_OTA_IMAGE_MAX_SIZE,
+# 0x34000 = 208 KB, and ota_newImageValid() refuses a size field over it; a
+# bigger image in slot 0 would also run into NV_1. The from_tuya conversion
+# (ota_reformating/ensure_ota_scheme.c) copies the image from 0x8000 to
+# 0x40000 and only breaks above 0x36000 (MAC sector) or 0x38000 (its own
+# unread source), so this one limit covers it too. The limit is read from the
+# SDK with this build's flags; make_ota.py refuses a bigger file (padding and
+# CRC included) and warns when less than 4 KB is left.
+OTA_MAX_SIZE_EXPR = printf '\#include "tl_common.h"\nFLASH_OTA_IMAGE_MAX_SIZE\n' | \
+	$(CC) $(DEVICE_DEFS) $(INCLUDE_PATHS) -E -P -x c - | tail -n 1
+
 # Make an ota file
 ota: $(BIN_FILE)
 	@if [ -z "$(OTA_MANUFACTURER_ID)" ] || [ "$(OTA_MANUFACTURER_ID)" = "null" ] || \
@@ -257,14 +273,21 @@ ota: $(BIN_FILE)
         echo "Skipping OTA file generation: missing arguments"; \
         echo " "; \
     else \
+	    max_size=$$($(OTA_MAX_SIZE_EXPR)); \
+	    max_size=$$(($${max_size:-0})); \
+	    if [ "$$max_size" -le 0 ]; then \
+	        echo "ERROR: cannot read FLASH_OTA_IMAGE_MAX_SIZE from the SDK"; \
+	        exit 1; \
+	    fi; \
 	    echo 'Creating OTA file $(OTA_FILE)'; \
 			echo ' '; \
 	    mkdir -p $(dir $(OTA_FILE)); \
 	    python3 $(SRC_DIR)/telink/make_ota.py create-ota \
 	      --manufacturer-id $(OTA_MANUFACTURER_ID) \
 	      --image-type $(OTA_IMAGE_TYPE) \
+	      --max-size $$max_size \
 	      $(OTA_VERSION_ARG) \
-	      $(BIN_FILE) $(OTA_FILE); \
+	      $(BIN_FILE) $(OTA_FILE) || exit 1; \
 	    echo ''; \
 	fi
 

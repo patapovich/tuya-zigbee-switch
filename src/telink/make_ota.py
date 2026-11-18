@@ -12,6 +12,9 @@ OTA_HDR_STRUCT = struct.Struct("<I5HIH32sI")
 
 OTA_SUB_ELEMENT_HDR_STRUCT = struct.Struct("<HI")
 
+# create-ota --max-size warns when less than this is left below the limit.
+LOW_MARGIN = 4096
+
 
 @dataclass
 class OTAHeader:
@@ -123,6 +126,22 @@ def make_ota_image(
     return ota_header.pack() + sub_element_header.pack() + image_data
 
 
+def check_ota_size(size: int, max_size: int, name: str) -> None:
+    """Refuse an OTA file of `size` bytes over `max_size`, the largest image
+    size the device's OTA client takes; say how much is left otherwise."""
+    left = max_size - size
+    if left < 0:
+        raise click.ClickException(
+            f"{name} would be {size} bytes, {-left} over the {max_size} byte "
+            f"(0x{max_size:X}) limit of the device's OTA client"
+        )
+    warning = "WARNING: " if left < LOW_MARGIN else ""
+    click.echo(
+        f"{warning}{name}: {size} bytes, {left} left below the {max_size} byte "
+        f"(0x{max_size:X}) OTA limit"
+    )
+
+
 @click.group()
 def cli():
     pass
@@ -193,6 +212,14 @@ INT_OR_HEX = IntOrHexParamType()
     callback=max_length_validator(31),
     help="Header String (max 31 characters)",
 )
+@click.option(
+    "--max-size",
+    type=INT_OR_HEX,
+    required=False,
+    default=None,
+    help="Largest OTA file (image size) the device takes; a bigger file is "
+    "not written and the command fails",
+)
 def create_ota(
     input_file: str,
     output_file: str,
@@ -200,6 +227,7 @@ def create_ota(
     image_type: int,
     file_version: int | None,
     header_string: str,
+    max_size: int | None,
 ) -> None:
     with open(input_file, "rb") as f:
         image_data = f.read()
@@ -210,6 +238,8 @@ def create_ota(
         file_version,
         header_string,
     )
+    if max_size is not None:
+        check_ota_size(len(ota_image), max_size, output_file)
     with open(output_file, "wb") as f:
         f.write(ota_image)
 

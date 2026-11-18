@@ -136,7 +136,9 @@ drop-old-files:
 	rm -f $(BIN_PATH)/*.s37
 	rm -f $(BIN_PATH)/*.zigbee
 
-# Generate all three types of OTA files
+# Generate all three types of OTA files. On Telink each must fit the SDK's OTA
+# limit (FLASH_OTA_IMAGE_MAX_SIZE, 0x34000): the ota target of
+# src/telink/Makefile fails the build otherwise.
 generate-ota-files: generate-normal-ota generate-tuya-ota generate-force-ota
 
 generate-normal-ota:
