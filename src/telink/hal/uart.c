@@ -27,15 +27,30 @@
 #define MCU_UART_BAUDRATE    115200
 
 /* DMA receive buffer used by drv_uart. The first 4 bytes hold the received
- * length (big-endian), the payload follows at +4, so the usable payload
- * capacity is (size - 4). Must be 4-byte aligned. */
-/* 256: a full status dump of a two channel dimmer is ~100 bytes and can
- * arrive as one burst; 64 (60 usable) dropped it. */
+ * length (little-endian), the payload follows at +4, so the usable payload
+ * capacity is (size - 4). Must be 4-byte aligned and a multiple of 16 (the
+ * DMA size register counts 16 byte units).
+ *
+ * The DMA hands a chunk over once the line has been idle for a few byte
+ * times, so frames the MCU sends back to back arrive as one chunk, and a
+ * chunk larger than the buffer is lost whole. The own ZDMS16-2 MCU answers a
+ * query-all with a 234 byte dump and sends its version (10 B) or identity
+ * (16 B) answer right behind it: 244 and 250 bytes, against 252 usable with
+ * 256. One more frame in the same burst (a wall switch report) or one more DP
+ * per channel then dropped the whole burst. 512 (508 usable) leaves room for
+ * both. End devices keep 256: deep retention bounds their RAM.
+ * tests/test_uart_hal.py reads the router value from this file. */
+#ifdef END_DEVICE
 #define UART_RX_DMA_BUF_SIZE    256
+#else
+#define UART_RX_DMA_BUF_SIZE    512
+#endif
 static uint8_t g_uart_rx_dma_buf[UART_RX_DMA_BUF_SIZE] __attribute__((aligned(4)));
 
-/* Software ring buffer holding bytes drained from the DMA buffer in the ISR. */
-#define UART_RX_RING_SIZE    256
+/* Software ring buffer holding bytes drained from the DMA buffer in the ISR:
+ * at least one full chunk. The size must divide 65536 (free-running uint16_t
+ * indices). */
+#define UART_RX_RING_SIZE    UART_RX_DMA_BUF_SIZE
 static uint8_t           g_uart_rx_ring[UART_RX_RING_SIZE];
 static volatile uint16_t g_uart_rx_head = 0;
 static volatile uint16_t g_uart_rx_tail = 0;

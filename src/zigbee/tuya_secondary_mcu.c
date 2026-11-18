@@ -379,7 +379,9 @@ uint8_t tuya_secondary_mcu_report_is_passive(void) {
     return g_report_is_passive;
 }
 
-/* A full status dump of a two channel dimmer (13 DPs) is ~100 bytes. */
+/* Frame assembly: one frame and what follows it. The own ZDMS16-2 MCU's
+ * status dump is 234 bytes in five frames, the largest 61 bytes; what does
+ * not fit waits in the HAL's RX ring for the next pass. */
 #define RX_CAPACITY            256
 
 /* Silence after which an incomplete frame is given up (lost DMA chunk, ring
