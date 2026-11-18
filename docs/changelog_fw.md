@@ -24,6 +24,12 @@ Please describe what you are working on, under ## Upcoming
   - OnLevel is kept across restarts; On to a channel that is already on keeps its level
   - The module button resets the device
   - Link diagnostics as Basic cluster attributes
+  - Open Dimmer, the open-source firmware for its PY32F002A dimming MCU: carried in the image,
+    which updates an MCU that runs another Open Dimmer version (a stock MCU is never touched)
+  - Z2M: `mcu_firmware` says Open Dimmer or Tuya (stock), `mcu_version` shows the version alone;
+    the Open Dimmer settings (dimming curve, fade and hold, per-channel power-on behaviour, wall
+    switch gestures) follow the device option `open_dimmer_settings` (auto / show / hide; the
+    old name `own_mcu_settings` still works)
 - **NovaDigital 6 gang** (`_TZE204_tdhnhhiy`) and **TPZ-2 / Moes SFL02-Z-2** (`_TZE200_hktk6hze`)
   touch switches with a secondary MCU
 - Telink: an attribute write the stack refused (read-only, unknown attribute, wrong type) is no
