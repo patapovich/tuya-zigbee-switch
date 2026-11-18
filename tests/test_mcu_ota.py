@@ -1057,3 +1057,24 @@ def seqs(raw: bytes) -> list[tuple[int, int]]:
         out.append((int.from_bytes(raw[i + 3:i + 5], "big"), cmd))
         i += 9 + len(data)
     return out
+
+
+def test_the_health_dps_of_a_v2_app_only_reach_the_link_log():
+    """DPs 130..137 (DP 136: boot sector CRC, 137: boot word; v2 app health
+    report) are logged and taken by nothing else: no frame to the MCU, no
+    attribute, and the link goes on."""
+    from test_mcu_diag import log
+    proc, device = start()
+    try:
+        contact_as_own(proc, device, VERSION, build=300, boot=2)
+        take_tx(proc)
+        units = b"".join(bytes([dp, 2, 0, 4]) + (0xB2001001 + dp).to_bytes(4, "big")
+                         for dp in range(130, 138))
+        proc.exec(f"uart_rx {tuya_frame(0x06, units)}")
+        assert cmds_after(proc, device, 200) == []
+        logged = {e["id"]: e["value"] for e in log(device) if e["kind"] == "RX_DP"}
+        assert {dp: logged.get(dp) for dp in (136, 137)} == {136: 0xB2001001 + 136,
+                                                             137: 0xB2001001 + 137}
+        assert TUYA_CMD_QUERY_NETWORK in mcu_query(proc, device)       # still answered
+    finally:
+        proc.stop()

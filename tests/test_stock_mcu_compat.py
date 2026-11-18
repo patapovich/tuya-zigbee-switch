@@ -368,3 +368,35 @@ def test_no_zigbee_input_breaks_a_stock_mcus_limits():
         assert mcu.cmds().count(0x04) > 100
     finally:
         proc.stop()
+
+
+@pytest.mark.parametrize("attr, value", [(0xFF00, ZDMS16_2), (0xFF11, ZDMS16_2_DP_CONFIG)])
+def test_a_config_write_restarts_the_module_into_what_phase_1_sends(attr, value):
+    """Rule 4 for the config and dp_config writes: nothing to the MCU on the
+    way to the reboot (in the stub: the process ends), and the restarted
+    module, the MCU running on, sends what phase 1 sends then."""
+    proc, device, mcu = stock_run()
+    try:
+        mcu.run(5000)
+        sent = len(mcu.trace)
+        assert proc.exec(f"zcl_write 1 0x0000 0x{attr:04X} {value}").ok
+        while proc.is_running() and mcu.t < 20_000:
+            try:
+                mcu.run(100)
+            except (TimeoutError, RuntimeError, BrokenPipeError):
+                break
+        assert proc.wait_for_exit(2.0), "the config write did not restart the module"
+        assert mcu.trace[sent:] == [] and mcu.faults == []
+    finally:
+        proc.stop()
+    proc = StubProc().start()                    # the config from its NV, as after a reboot
+    try:
+        device = Device(proc)
+        pump(proc)
+        mcu = StockMcu(proc, device)
+        ztu_restart(mcu, device)
+        want = golden()["scenarios"]["ztu_restart"]
+        assert diff(encode(mcu), want["trace"]) is None, diff(encode(mcu), want["trace"])
+        assert state(device) == want["state"]
+    finally:
+        proc.stop()
