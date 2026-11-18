@@ -115,6 +115,80 @@ console.log(JSON.stringify({
     ]
 
 
+def test_own_settings_from_a_stock_mcu_are_not_stored():
+    """The module answers 0 for the own-MCU attributes when the MCU is stock: those
+    must not reach the state as 'linear' / 0 (item 23 of the 2026-11-18 review)."""
+    out = json.loads(run_node(ZDMS + """
+const ver = (v) => { const d = h.device(); d.getEndpoint(1).clusters.genBasic.attributes[0xff12] = v; return d; };
+const data = {[0xff30]: 0, [0xff35]: 950};
+console.log(JSON.stringify({
+    own: fz(ver("2.1.10 own"), 1, data),
+    stock: fz(ver("1.0.7"), 1, data),
+    unknown: fz(ver(""), 1, data),
+    show: fz(ver("1.0.7"), 1, data, {own_mcu_settings: "show"}),
+}));
+"""))
+    assert out["own"] == [{"dimming_curve_dimmer_left": "linear"}, {"hold_time_dimmer_left": 950}]
+    assert out["stock"] == []
+    assert out["unknown"] == []
+    assert out["show"] == out["own"]
+
+
+CONFIGURE = ZDMS + """
+const configure = async (versions) => {
+    const dev = h.device({versions});
+    h.log.length = 0;
+    h.delays.length = 0;
+    await def.configure(dev, {ID: 1}, def);
+    const reads = h.log.filter((l) => l[0] === "read");
+    return {
+        versionReads: reads.filter((l) => l[2] === "genBasic" && l[3][0] === 0xff12).length,
+        ownReads: reads.filter((l) => l[2] === "genBasic" && l[3][0] !== 0xff12).map((l) => l[3][0].toString(16)),
+        dimmerReads: reads.filter((l) => l[2] !== "genBasic").map((l) => `${l[1]}:${l[2]}:${l[3].join("+")}`),
+        reporting: h.log.filter((l) => l[0] === "report").map((l) => [l[1], l[2], ...(l[3].map ? l[3].map((r) => [r.attribute.ID ?? r.attribute, r.minimumReportInterval, r.maximumReportInterval]) : [l[3]])]),
+        delays: [...h.delays],
+    };
+};
+"""
+
+
+def test_configure_waits_for_the_mcu_before_reading_its_settings():
+    """Right after a module restart the module answers "" until the MCU has told it:
+    configure waits for a real mcu_version before it reads the MCU's settings."""
+    out = json.loads(run_node(CONFIGURE + """
+(async () => console.log(JSON.stringify(await configure(["", "", "2.1.10 own"]))))();
+"""))
+    assert out["versionReads"] == 3
+    assert out["delays"][:3] == [2000, 2000, 1500]
+    assert out["ownReads"] == [f"ff{a:02x}" for a in range(0x30, 0x3C)]
+    assert out["dimmerReads"] == [
+        f"{ep}:{cluster}" for ep in (1, 2) for cluster in
+        ("genOnOff:startUpOnOff", "genLevelCtrl:onLevel", "lightingBallastCfg:minLevel+maxLevel", "genOnOffSwitchCfg:switchType")
+    ]
+
+
+def test_configure_reads_own_settings_only_from_an_own_mcu():
+    """A stock MCU (or a bare version: the module did not identify ours) has none
+    of them; reading would store the module's 0s."""
+    out = json.loads(run_node(CONFIGURE + """
+(async () => console.log(JSON.stringify([await configure(["1.0.7"]), await configure(["2.1.10"])])))();
+"""))
+    for run in out:
+        assert run["versionReads"] == 1
+        assert run["ownReads"] == []
+        assert len(run["dimmerReads"]) == 8
+
+
+def test_configure_stops_waiting_for_a_module_that_does_not_answer():
+    """An offline module: two timeouts and configure goes on (was ~3 min of reads)."""
+    out = json.loads(run_node(CONFIGURE + """
+(async () => console.log(JSON.stringify(await configure([new Error("timeout")]))))();
+"""))
+    assert out["versionReads"] == 2
+    assert out["ownReads"] == []
+    assert 2000 not in out["delays"]
+
+
 def test_fade_and_hold_settings_are_per_dimmer_with_their_own_attributes():
     block = zdms16_block()
     found = re.findall(
@@ -134,15 +208,3 @@ def test_every_dimmer_has_its_light_on_a_line_of_its_own():
     lines = [l for l in block.splitlines() if "light({ endpointNames" in l]
     assert [re.search(r'endpointNames: \["(\w+)"\]', l).group(1) for l in lines] == ["dimmer_left", "dimmer_right"]
     assert all(l.strip().startswith("light(") for l in lines)
-
-
-def test_configure_waits_for_the_mcu_before_reading_its_settings():
-    """Right after a module restart the module answers 0 until the MCU has sent its values:
-    configure must wait for a real mcu_version before it reads the own-MCU settings."""
-    js = custom_converter_js()
-    start = js.index('model: "ZDMS16-2"')
-    configure = js[js.index("configure: async", start) :]
-    wait = configure.index("realMcuVersion(version)")
-    first_setting = configure.index("0xff30]")
-    assert wait < first_setting
-    assert "setTimeout(resolve, 2000)" in configure[:first_setting]

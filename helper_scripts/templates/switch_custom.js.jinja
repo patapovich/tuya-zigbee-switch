@@ -316,8 +316,10 @@ const romasku = {
             fromZigbee: [{
                 cluster: "genBasic",
                 type: ["attributeReport", "readResponse"],
-                convert: (model, msg) => {
+                convert: (model, msg, publish, options) => {
                     if (msg.endpoint.ID !== 1 || msg.data?.[attrId] === undefined) return;
+                    // A stock MCU has no such setting: the module answers 0.
+                    if (minMcu && !ownMcuShown(msg.device, options, minMcu)) return;
                     const v = msg.data[attrId];
                     const key = Object.keys(lookup).find((k) => lookup[k] === v);
                     return {[property]: key ?? v};
@@ -354,8 +356,9 @@ const romasku = {
             fromZigbee: [{
                 cluster: "genBasic",
                 type: ["attributeReport", "readResponse"],
-                convert: (model, msg) => {
+                convert: (model, msg, publish, options) => {
                     if (msg.endpoint.ID !== 1 || msg.data?.[attrId] === undefined) return;
+                    if (minMcu && !ownMcuShown(msg.device, options, minMcu)) return;   // as ownMcuEnum
                     return {[property]: msg.data[attrId]};
                 },
             }],
@@ -1011,33 +1014,41 @@ const definitions = [
         ],
         meta: { multiEndpoint: true },
         configure: async (device, coordinatorEndpoint, logger) => {
-            {% if device.has_secondary_mcu %}
+            {% if device.dimmerNames or (device.dp_attributes | selectattr("min_mcu") | list) %}
             // Right after a module restart the module answers with defaults (0) until the MCU
             // has sent its values; reading then would leave 0 on the page. Wait for a real MCU
             // version (a few seconds, longer while the module updates the MCU), then read.
+            // A module that does not answer at all is offline: stop after two timeouts.
             const mcuEndpoint = device.getEndpoint(1);
-            const realMcuVersion = (v) => typeof v === "string" && /^\d+\.\d+\.\d+( own)?$/.test(v) && !v.startsWith("0.0.0");
-            for (let attempt = 0; attempt < 15; attempt++) {
-                let version;
+            let mcuVersion;
+            for (let attempt = 0, timeouts = 0; attempt < 15 && timeouts < 2; attempt++) {
                 try {
                     const result = await mcuEndpoint.read("genBasic", [0xff12]); // mcu_version
-                    version = result?.[0xff12];
+                    mcuVersion = result?.[0xff12];
+                    timeouts = 0;
                 } catch (error) {
-                    version = undefined; // not answered yet
+                    mcuVersion = undefined; // not answered
+                    timeouts++;
+                    continue;
                 }
-                if (realMcuVersion(version)) {
+                if (realMcuVersion(mcuVersion)) {
                     await new Promise((resolve) => setTimeout(resolve, 1500)); // the rest of its DP dump
                     break;
                 }
                 await new Promise((resolve) => setTimeout(resolve, 2000));
             }
-            {% for dp in device.dp_attributes if dp.min_mcu %}
-            try {
-                await device.getEndpoint(1).read("genBasic", [0x{{("ff" ~ dp.attr)|lower}}]); // {{dp.name}}
-            } catch (error) {
-                // Only an own MCU firmware has it.
+            {% if device.dp_attributes | selectattr("min_mcu") | list %}
+            // Settings only an own MCU firmware has: a stock MCU's module answers 0 for them.
+            if (typeof mcuVersion === "string" && mcuVersion.endsWith(" own")) {
+                {% for dp in device.dp_attributes if dp.min_mcu %}
+                try {
+                    await mcuEndpoint.read("genBasic", [0x{{("ff" ~ dp.attr)|lower}}]); // {{dp.name}}
+                } catch (error) {
+                    // not answered now; read on the next configure or with a refresh
+                }
+                {% endfor %}
             }
-            {% endfor %}
+            {% endif %}
             {% endif %}
             {% for switchName in device.switchNames %}
             const endpoint{{loop.index}} = device.getEndpoint({{loop.index}});
