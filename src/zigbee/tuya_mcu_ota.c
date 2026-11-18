@@ -42,11 +42,12 @@ static void put_be32(uint8_t *p, uint32_t v) {
     p[3] = (uint8_t)v;
 }
 
-#define IMAGE_FLAG_SIM    0x01          /* bench build with a virtual zero cross */
-#define IMAGE_MAX         (12u * 1024u) /* app area behind the 4 KB bootloader */
-#define FAILURES_MAX      3             /* failed results before giving up until reboot */
-#define OFFERS_MAX        3             /* offers without a result before giving up */
-#define IDENT_RETRIES     1
+#define IMAGE_FLAG_SIM        0x01          /* bench build with a virtual zero cross */
+#define IMAGE_FLAG_MEASURE    0x02          /* measurement build: outputs always off */
+#define IMAGE_MAX             (12u * 1024u) /* app area behind the 4 KB bootloader */
+#define FAILURES_MAX          3             /* failed results before giving up until reboot */
+#define OFFERS_MAX            3             /* offers without a result before giving up */
+#define IDENT_RETRIES         1
 
 static uint8_t g_image_state;   /* 0 not checked, 1 good, 2 unusable */
 static uint8_t g_failures;      /* failed update results since boot */
@@ -64,7 +65,8 @@ static uint32_t crc32_update(uint32_t crc, const uint8_t *p, uint32_t n) {
 }
 
 /* The carried image, checked once: header, size, CRC (with the CRC field read
- * as 0, as tools/mkimage.py computes it), never a SIM bench build. */
+ * as 0, as tools/mkimage.py computes it), never a SIM bench build or a
+ * measurement build (they must never reach a lamp on mains by themselves). */
 static int image_info(image_info_t *info) {
     if (g_image_state == 2 || secondary_mcu_image_size < IMAGE_HEADER_OFFSET + 16) {
         return 0;
@@ -82,7 +84,7 @@ static int image_info(image_info_t *info) {
                            secondary_mcu_image_size - at - 4);
         g_image_state = (le32(h) == IMAGE_MAGIC && info->size == secondary_mcu_image_size &&
                          info->size <= IMAGE_MAX && crc == info->crc &&
-                         !(h[13] & IMAGE_FLAG_SIM)) ? 1 : 2;
+                         !(h[13] & (IMAGE_FLAG_SIM | IMAGE_FLAG_MEASURE))) ? 1 : 2;
         if (g_image_state == 2) {
             printf("Carried MCU firmware unusable: not offered\r\n");
             return 0;

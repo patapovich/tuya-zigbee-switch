@@ -6,6 +6,9 @@ BINARY             := $(BUILD_DIR)/stub_device
 
 CONFIG ?= X;Y;BA0u;LA1;SA2u;RA3;IA4;
 
+# Carried secondary-MCU image (tests build a variant with a changed one)
+MCU_IMAGE_SRC ?= $(SRC_DIR)/zigbee/secondary_mcu_image.c
+
 # Default target
 help:
 	@echo "Stub Device Build System"
@@ -63,7 +66,7 @@ SOURCES := \
 	$(SRC_DIR)/zigbee/tuya_mcu_diag.c \
 	$(SRC_DIR)/zigbee/tuya_mcu_app.c \
 	$(SRC_DIR)/zigbee/tuya_mcu_ota.c \
-	$(SRC_DIR)/zigbee/secondary_mcu_image.c \
+	$(MCU_IMAGE_SRC) \
 	$(SRC_DIR)/zigbee/dimmer_cluster.c \
 	$(SRC_DIR)/zigbee/tuya_dp_relay.c \
 	$(SRC_DIR)/zigbee/dp_attr.c \

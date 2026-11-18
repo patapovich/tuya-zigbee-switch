@@ -2,10 +2,14 @@
 (src/zigbee/tuya_mcu_ota.c). The stub build carries the real image."""
 
 import re
+import subprocess
+import zlib
 from pathlib import Path
 
 import pytest
-from test_dimmer_mcu import ATTR_MCU_VERSION, TUYA_CMD_MCU_VERSION, start
+from client import StubProc
+from conftest import Device
+from test_dimmer_mcu import ATTR_MCU_VERSION, TUYA_CMD_MCU_VERSION, ZDMS16_2, ZDMS16_2_DP_CONFIG, start
 from tuya_mcu import (
     TUYA_CMD_QUERY_ALL,
     TUYA_CMD_QUERY_NETWORK,
@@ -21,7 +25,9 @@ OTA_BLOCK = 0xA1
 OTA_RESULT = 0xA2
 OTA_IDENT = 0xA3
 
-IMAGE_C = Path(__file__).resolve().parent.parent / "src/zigbee/secondary_mcu_image.c"
+ROOT = Path(__file__).resolve().parent.parent
+IMAGE_C = ROOT / "src/zigbee/secondary_mcu_image.c"
+IMAGE_FLAG_SIM, IMAGE_FLAG_MEASURE = 0x01, 0x02
 
 
 def carried_image() -> bytes:
@@ -57,12 +63,10 @@ def answer_version(proc, device, packed: int) -> list[tuple[int, bytes]]:
 
 
 def test_carried_image_is_an_own_firmware():
-    import zlib
-
     assert IMAGE[0xC0:0xC4] == b"APDZ"
     assert SIZE == len(IMAGE) <= 12 * 1024           # app area behind the 4 KB bootloader
     assert VERSION >> 6 >= 2
-    assert not IMAGE[0xCD] & 0x01                     # never a SIM bench build
+    assert not IMAGE[0xCD] & (IMAGE_FLAG_SIM | IMAGE_FLAG_MEASURE)   # never a bench build
     zeroed = IMAGE[:0xC8] + bytes(4) + IMAGE[0xCC:]
     assert zlib.crc32(zeroed) == CRC
     sp, reset = int.from_bytes(IMAGE[0:4], "little"), int.from_bytes(IMAGE[4:8], "little")
@@ -315,6 +319,11 @@ def test_an_identity_with_another_protocol_is_not_ours():
         proc.stop()
 
 
+def served(proc, device) -> bool:
+    proc.exec(f"uart_rx {tuya_frame(OTA_BLOCK, (0).to_bytes(4, 'big') + (64).to_bytes(2, 'big'))}")
+    return OTA_BLOCK in [cmd for cmd, _ in cmds_after(proc, device)]
+
+
 def test_after_three_failed_results_nothing_is_served():
     proc, device = start()
     try:
@@ -323,6 +332,41 @@ def test_after_three_failed_results_nothing_is_served():
             cmds_after(proc, device)
         proc.exec(f"uart_rx {tuya_frame(OTA_BLOCK, (0).to_bytes(4, 'big') + (64).to_bytes(2, 'big'))}")
         assert OTA_BLOCK not in [cmd for cmd, _ in cmds_after(proc, device)]
+    finally:
+        proc.stop()
+
+
+def flagged_stub(tmp_path: Path, flags: int) -> list[str]:
+    """A stub that carries the image with header flags set (CRC still right,
+    so the flags are the only thing wrong with it)."""
+    img = bytearray(IMAGE)
+    img[0xCD] |= flags
+    img[0xC8:0xCC] = bytes(4)
+    img[0xC8:0xCC] = zlib.crc32(bytes(img)).to_bytes(4, "little")
+    body = ",\n".join(", ".join(f"0x{b:02x}" for b in img[i:i + 16]) for i in range(0, len(img), 16))
+    src = tmp_path / "secondary_mcu_image.c"
+    src.write_text('#include "zigbee/secondary_mcu_image.h"\n'
+                   f"const uint8_t secondary_mcu_image[] = {{\n{body}\n}};\n"
+                   "const uint32_t secondary_mcu_image_size = sizeof(secondary_mcu_image);\n")
+    binary = tmp_path / "stub_device"
+    subprocess.run(["make", "-s", "-C", str(ROOT / "src/stub"), "build", f"BINARY={binary}",
+                    f"MCU_IMAGE_SRC={src}"], check=True, capture_output=True)
+    return [str(binary)]
+
+
+@pytest.mark.parametrize("flags", [IMAGE_FLAG_SIM, IMAGE_FLAG_MEASURE])
+def test_a_bench_or_measurement_image_is_never_offered_or_served(tmp_path, flags):
+    proc = StubProc(cmd=flagged_stub(tmp_path, flags), device_config=ZDMS16_2,
+                    dp_config=ZDMS16_2_DP_CONFIG).start()
+    device = Device(proc)
+    try:
+        pump(proc)
+        take_tx(proc)
+        cmds, frames = contact_as_own(proc, device, older_version())
+        assert OTA_IDENT in cmds                     # asked who it is: ours
+        assert OTA_NOTIFY not in [cmd for cmd, _ in frames]
+        assert shown_version(device).endswith(" own")
+        assert not served(proc, device)              # nor to a bootloader that asks
     finally:
         proc.stop()
 
