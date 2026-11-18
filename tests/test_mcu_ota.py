@@ -120,11 +120,13 @@ def test_stock_1x_mcu_is_not_even_asked():
 
 def test_stock_mcu_with_a_2x_version_is_never_offered_an_update():
     """A vendor MCU that happens to say 2.x does not answer the identity
-    query: shown as it is, never offered our firmware."""
+    query: shown as it is once asked 4 times, never offered our firmware."""
     proc, device = start()
     try:
         cmds = [cmd for cmd, _ in answer_version(proc, device, newer_version())]
-        assert OTA_IDENT in cmds
+        for _ in range(30):
+            cmds += [cmd for cmd, _ in cmds_after(proc, device, 200)]
+        assert cmds.count(OTA_IDENT) == 4
         assert OTA_NOTIFY not in cmds
         shown = shown_version(device)
         assert shown and not shown.endswith("own")
@@ -298,7 +300,10 @@ def test_an_identity_answer_nobody_asked_for_is_ignored():
         proc.stop()
 
 
-def test_an_identity_with_another_protocol_is_not_ours():
+def test_an_identity_with_another_update_protocol_is_ours_but_not_offered():
+    """The protocol byte is the update protocol's: a later own firmware with
+    another one keeps its DPs (and its entities in Z2M), it only cannot take
+    this image."""
     proc, device = start()
     try:
         device.step_time(2100)
@@ -308,13 +313,33 @@ def test_an_identity_with_another_protocol_is_not_ours():
         for _ in range(5):
             if OTA_IDENT in [cmd for cmd, _ in cmds_after(proc, device, 100)]:
                 break
-        bad = b"ZDMS" + bytes([1, older_version(), 2])
-        proc.exec(f"uart_rx {tuya_frame(OTA_IDENT, bad)}")
+        other = b"ZDMS" + bytes([1, older_version(), 2])
+        proc.exec(f"uart_rx {tuya_frame(OTA_IDENT, other)}")
         frames = []
         for _ in range(8):
             frames += cmds_after(proc, device, 200)
         assert OTA_NOTIFY not in [cmd for cmd, _ in frames]
-        assert not shown_version(device).endswith("own")
+        assert shown_version(device).endswith(" own")
+    finally:
+        proc.stop()
+
+
+def test_an_identity_of_another_kind_is_not_ours():
+    proc, device = start()
+    try:
+        device.step_time(2100)
+        pump(proc)
+        take_tx(proc)
+        proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_MCU_VERSION, bytes([older_version()]))}")
+        for _ in range(5):
+            if OTA_IDENT in [cmd for cmd, _ in cmds_after(proc, device, 100)]:
+                break
+        proc.exec(f"uart_rx {tuya_frame(OTA_IDENT, b'ZDMS' + bytes([2, older_version(), 1]))}")
+        frames = []
+        for _ in range(8):
+            frames += cmds_after(proc, device, 200)
+        assert OTA_NOTIFY not in [cmd for cmd, _ in frames]
+        assert shown_version(device) == ""          # still asking
     finally:
         proc.stop()
 

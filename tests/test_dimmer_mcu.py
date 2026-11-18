@@ -868,11 +868,15 @@ def test_mcu_firmware_version_is_asked_and_shown():
         proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_MCU_VERSION, bytes([0xFF]))}")
         pump(proc)
         # 2.x and later may be the own firmware: it is asked who it is
-        # first (twice); one that does not answer is shown as it is after.
-        for _ in range(4):
-            device.step_time(300)
+        # first (4 times in 7.5 s); one that does not answer is shown as it
+        # is after that.
+        for _ in range(70):
+            device.step_time(100)
             pump(proc)
-        pump(proc)
+        assert device.read_zigbee_attr(1, 0x0000, ATTR_MCU_VERSION) == "1.0.7"
+        for _ in range(10):
+            device.step_time(100)
+            pump(proc)
         assert device.read_zigbee_attr(1, 0x0000, ATTR_MCU_VERSION) == "3.3.15"
     finally:
         proc.stop()

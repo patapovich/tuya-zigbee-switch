@@ -16,7 +16,7 @@
 #define IDENT_KIND_APP          1
 #define IDENT_PROTOCOL          1
 #define IDENT_ASK_FROM_MAJOR    2     /* stock ZDMS16-2 MCUs are 1.x */
-#define IDENT_TIMEOUT_MS        500
+#define IDENT_TIMEOUT_MS        500   /* first wait; doubles at every retry */
 #define BLOCK_HEADER_LEN        13    /* offset size crc version */
 #define BLOCK_MAX               64    /* bytes per answer: one 86 byte frame */
 
@@ -50,7 +50,7 @@ static void put_be32(uint8_t *p, uint32_t v) {
 #define PAUSE_FIRST_MIN       15            /* then served again; doubles at every */
 #define PAUSE_MAX_MIN         (24u * 60u)   /* further failure, up to a day */
 #define OFFERS_MAX            3             /* offers without a result before giving up */
-#define IDENT_RETRIES         1
+#define IDENT_RETRIES         3             /* asked 4 times in 7.5 s before a bare version */
 
 static uint8_t  g_image_state;              /* 0 not checked, 1 good, 2 unusable */
 static uint8_t  g_failures;                 /* failed update results since the last good one */
@@ -159,18 +159,34 @@ static void ident_timeout(void *arg) {
     if (!g_ident_waiting) {
         return;
     }
-    if (g_ident_retries < IDENT_RETRIES) {      /* lost on the way? once more */
+
+    /* Lost on the way (a dropped UART burst, the MCU busy writing its
+     * flash, a full queue): asked again, at growing intervals. A bare
+     * version shown for our own MCU makes the converter take it for a stock
+     * one, so that comes only after all of them. */
+    if (g_ident_retries < IDENT_RETRIES) {
         g_ident_retries++;
         tuya_secondary_mcu_queue_cmd(TUYA_MCU_CMD_OTA_IDENT, NULL, 0);
-        hal_tasks_schedule(&g_ident_timer, IDENT_TIMEOUT_MS);
+        hal_tasks_schedule(&g_ident_timer, (uint32_t)IDENT_TIMEOUT_MS << g_ident_retries);
         return;
     }
     g_ident_waiting = 0;
     tuya_mcu_app_show_mcu_version();     /* not ours: shown as it is */
 }
 
+uint8_t tuya_mcu_ota_may_be_own(uint8_t packed) {
+    return (packed >> 6) >= IDENT_ASK_FROM_MAJOR && secondary_mcu_image_size != 0;
+}
+
+void tuya_mcu_ota_mcu_restarted(void) {
+    if (g_ident_waiting) {
+        g_ident_waiting = 0;
+        hal_tasks_unschedule(&g_ident_timer);
+    }
+}
+
 uint8_t tuya_mcu_ota_on_version(uint8_t packed) {
-    if ((packed >> 6) < IDENT_ASK_FROM_MAJOR || secondary_mcu_image_size == 0) {
+    if (!tuya_mcu_ota_may_be_own(packed)) {
         return 0;
     }
     if (!g_ident_timer_ready) {
@@ -186,13 +202,15 @@ uint8_t tuya_mcu_ota_on_version(uint8_t packed) {
     return 1;
 }
 
-/* Only our own firmware answers the identity query. */
+/* Only our own firmware answers the identity query. The protocol byte is
+ * the update protocol: a firmware with another one is still ours (its DPs),
+ * it is only not offered an image it could not take. */
 static void on_ident(const uint8_t *data, uint16_t len) {
     if (!g_ident_waiting) {
         return;                     /* only an answer to our own question */
     }
     if (len < IDENT_LEN || data[0] != 'Z' || data[1] != 'D' || data[2] != 'M' ||
-        data[3] != 'S' || data[4] != IDENT_KIND_APP || data[6] != IDENT_PROTOCOL) {
+        data[3] != 'S' || data[4] != IDENT_KIND_APP) {
         return;
     }
     g_ident_waiting = 0;
@@ -201,6 +219,10 @@ static void on_ident(const uint8_t *data, uint16_t len) {
 
     image_info_t img;
     uint8_t      running = data[5];
+    if (data[6] != IDENT_PROTOCOL) {
+        printf("Own MCU firmware with update protocol %u: not offered\r\n", data[6]);
+        return;
+    }
     if (!image_info(&img) || img.version <= running) {
         return;                     /* only ever to a newer firmware */
     }
@@ -296,6 +318,14 @@ uint8_t tuya_mcu_ota_on_command(uint8_t cmd, uint16_t seq, const uint8_t *data,
 uint8_t tuya_mcu_ota_on_version(uint8_t packed) {
     (void)packed;
     return 0;
+}
+
+uint8_t tuya_mcu_ota_may_be_own(uint8_t packed) {
+    (void)packed;
+    return 0;
+}
+
+void tuya_mcu_ota_mcu_restarted(void) {
 }
 
 uint8_t tuya_mcu_ota_on_command(uint8_t cmd, uint16_t seq, const uint8_t *data,
