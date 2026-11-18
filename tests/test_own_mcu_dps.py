@@ -1,9 +1,9 @@
 """DPs of the own PY32 firmware that the module uses only once the MCU has
 answered the identity query: per-channel power-on (103/104 instead of the
 shared 14) and the wall switch gestures (105/106 -> genMultistateInput)."""
+from own_mcu import own_mcu_contact
 from test_dimmer_mcu import ack_writes, start
-from test_mcu_ota import VERSION, contact_as_own
-from tuya_mcu import TUYA_CMD_REPORT_PASSIVE, dp_writes, enum_dp, mcu_report, pump, take_tx
+from tuya_mcu import TUYA_CMD_REPORT_PASSIVE, enum_dp, mcu_report, pump, take_tx
 
 ZCL_CLUSTER_ON_OFF = 0x0006
 ZCL_ATTR_START_UP_ONOFF = 0x4003
@@ -30,8 +30,19 @@ def written_after_startup_write(proc, device, ep: int, value: int) -> list[tuple
 
 
 def own(proc, device):
-    contact_as_own(proc, device, VERSION)
+    """First contact in the real order, with the real dump (power-on of
+    channel 1 'previous', channel 2 'on'), then nothing left to send."""
+    own_mcu_contact(proc, device, power_on=(2, 1))
     take_tx(proc)
+
+
+def test_own_mcu_contact_reads_the_power_on_per_channel():
+    proc, device = start()
+    try:
+        own(proc, device)
+        assert (startup(device, 1), startup(device, 2)) == (STARTUP_PREVIOUS, STARTUP_ON)
+    finally:
+        proc.stop()
 
 
 def test_own_mcu_power_on_is_written_per_channel():

@@ -19,6 +19,8 @@ COUNTER_FIELDS = (
     "rx_hal_dropped", "tx_dp", "tx_cmd", "tx_ack", "tx_timeout",
     "tx_coalesced", "tx_drop", "tx_fail", "uart_reinit",
     "ack_latency_last_ms", "ack_latency_max_ms", "log_total",
+    # appended later: older firmware sends fewer fields
+    "ota_failures", "ota_pause_min",
 )
 
 KINDS = {
@@ -46,7 +48,8 @@ def decode_counters(data: bytes) -> dict:
     if fmt != 1:
         raise ValueError(f"unknown counters format {fmt}")
     last_event_ms, = struct.unpack_from("<I", data, 1)
-    values = struct.unpack_from("<" + "H" * len(COUNTER_FIELDS), data, 5)
+    count = min(len(COUNTER_FIELDS), (len(data) - 5) // 2)
+    values = struct.unpack_from("<" + "H" * count, data, 5)
     return {"format": fmt, "last_event_ms": last_event_ms,
             **dict(zip(COUNTER_FIELDS, values))}
 

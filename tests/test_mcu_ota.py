@@ -2,9 +2,14 @@
 (src/zigbee/tuya_mcu_ota.c). The stub build carries the real image."""
 
 import re
+import subprocess
+import zlib
 from pathlib import Path
 
-from test_dimmer_mcu import ATTR_MCU_VERSION, TUYA_CMD_MCU_VERSION, start
+import pytest
+from client import StubProc
+from conftest import Device
+from test_dimmer_mcu import ATTR_MCU_VERSION, TUYA_CMD_MCU_VERSION, ZDMS16_2, ZDMS16_2_DP_CONFIG, start
 from tuya_mcu import (
     TUYA_CMD_QUERY_ALL,
     TUYA_CMD_QUERY_NETWORK,
@@ -20,7 +25,9 @@ OTA_BLOCK = 0xA1
 OTA_RESULT = 0xA2
 OTA_IDENT = 0xA3
 
-IMAGE_C = Path(__file__).resolve().parent.parent / "src/zigbee/secondary_mcu_image.c"
+ROOT = Path(__file__).resolve().parent.parent
+IMAGE_C = ROOT / "src/zigbee/secondary_mcu_image.c"
+IMAGE_FLAG_SIM, IMAGE_FLAG_MEASURE = 0x01, 0x02
 
 
 def carried_image() -> bytes:
@@ -56,12 +63,10 @@ def answer_version(proc, device, packed: int) -> list[tuple[int, bytes]]:
 
 
 def test_carried_image_is_an_own_firmware():
-    import zlib
-
     assert IMAGE[0xC0:0xC4] == b"APDZ"
     assert SIZE == len(IMAGE) <= 12 * 1024           # app area behind the 4 KB bootloader
     assert VERSION >> 6 >= 2
-    assert not IMAGE[0xCD] & 0x01                     # never a SIM bench build
+    assert not IMAGE[0xCD] & (IMAGE_FLAG_SIM | IMAGE_FLAG_MEASURE)   # never a bench build
     zeroed = IMAGE[:0xC8] + bytes(4) + IMAGE[0xCC:]
     assert zlib.crc32(zeroed) == CRC
     sp, reset = int.from_bytes(IMAGE[0:4], "little"), int.from_bytes(IMAGE[4:8], "little")
@@ -76,15 +81,31 @@ def shown_version(device) -> str:
     return device.read_zigbee_attr(1, 0x0000, ATTR_MCU_VERSION)
 
 
+# Version bytes: 2 bits major, 2 bits minor, 4 bits patch, compared as one
+# byte (2.1.15 + 1 = 2.2.0). 0xBF is reserved for SIM bench builds, 0xFF is
+# the ceiling.
+VERSION_SIM = 0xBF
+
+
 def older_version() -> int:
     """The carried version minus one (2.1.0 -> 2.0.15): still our own firmware (major 2)."""
     assert VERSION - 1 >= 0x80, "carried 2.0.0: no older own version to test with"
-    return VERSION - 1
+    return VERSION - 1 if VERSION - 1 != VERSION_SIM else VERSION - 2
 
 
 def newer_version() -> int:
-    assert VERSION & 0x0F != 0x0F
-    return VERSION + 1
+    """A version above the carried one, as a bench build may have."""
+    newer = VERSION + 1 if VERSION + 1 != VERSION_SIM else VERSION + 2
+    if newer >= 0xFF:
+        pytest.skip("carried version at the ceiling: none newer")
+    return newer
+
+
+def test_version_helpers_stay_in_the_valid_range():
+    assert older_version() < VERSION < newer_version() < 0xFF
+    assert VERSION_SIM not in (older_version(), newer_version())
+    if VERSION < 0xBE:
+        assert newer_version() == VERSION + 1
 
 
 def test_stock_1x_mcu_is_not_even_asked():
@@ -99,11 +120,13 @@ def test_stock_1x_mcu_is_not_even_asked():
 
 def test_stock_mcu_with_a_2x_version_is_never_offered_an_update():
     """A vendor MCU that happens to say 2.x does not answer the identity
-    query: shown as it is, never offered our firmware."""
+    query: shown as it is once asked 4 times, never offered our firmware."""
     proc, device = start()
     try:
         cmds = [cmd for cmd, _ in answer_version(proc, device, newer_version())]
-        assert OTA_IDENT in cmds
+        for _ in range(30):
+            cmds += [cmd for cmd, _ in cmds_after(proc, device, 200)]
+        assert cmds.count(OTA_IDENT) == 4
         assert OTA_NOTIFY not in cmds
         shown = shown_version(device)
         assert shown and not shown.endswith("own")
@@ -241,6 +264,27 @@ def test_after_a_good_result_the_next_query_is_a_first_contact():
         proc.stop()
 
 
+def test_a_bootloader_fetching_the_image_is_not_asked_its_version():
+    """A bootloader without an app asks for the image by itself, here right
+    after the module's contact timer asked the version. Its first block
+    request means the MCU restarted: the version question is dropped (asked at
+    the app's first query), not sent again between the blocks."""
+    proc, device = start()
+    try:
+        device.step_time(2100)
+        pump(proc)
+        assert TUYA_CMD_MCU_VERSION in [cmd for cmd, _ in parse_frames(take_tx(proc))]
+        sent = []
+        for k in range(40):                          # 8 s of blocks
+            data = (64 * k).to_bytes(4, "big") + (64).to_bytes(2, "big")
+            proc.exec(f"uart_rx {tuya_frame(OTA_BLOCK, data)}")
+            sent += [cmd for cmd, _ in cmds_after(proc, device, 200)]
+        assert sent.count(OTA_BLOCK) == 40
+        assert TUYA_CMD_MCU_VERSION not in sent
+    finally:
+        proc.stop()
+
+
 def test_after_a_failed_result_nothing_is_reset():
     proc, device = start()
     try:
@@ -277,7 +321,10 @@ def test_an_identity_answer_nobody_asked_for_is_ignored():
         proc.stop()
 
 
-def test_an_identity_with_another_protocol_is_not_ours():
+def test_an_identity_with_another_update_protocol_is_ours_but_not_offered():
+    """The protocol byte is the update protocol's: a later own firmware with
+    another one keeps its DPs (and its entities in Z2M), it only cannot take
+    this image."""
     proc, device = start()
     try:
         device.step_time(2100)
@@ -287,25 +334,136 @@ def test_an_identity_with_another_protocol_is_not_ours():
         for _ in range(5):
             if OTA_IDENT in [cmd for cmd, _ in cmds_after(proc, device, 100)]:
                 break
-        bad = b"ZDMS" + bytes([1, older_version(), 2])
-        proc.exec(f"uart_rx {tuya_frame(OTA_IDENT, bad)}")
+        other = b"ZDMS" + bytes([1, older_version(), 2])
+        proc.exec(f"uart_rx {tuya_frame(OTA_IDENT, other)}")
         frames = []
         for _ in range(8):
             frames += cmds_after(proc, device, 200)
         assert OTA_NOTIFY not in [cmd for cmd, _ in frames]
-        assert not shown_version(device).endswith("own")
+        assert shown_version(device).endswith(" own")
     finally:
         proc.stop()
 
 
-def test_after_three_failed_results_nothing_is_served():
+def test_an_identity_of_another_kind_is_not_ours():
+    proc, device = start()
+    try:
+        device.step_time(2100)
+        pump(proc)
+        take_tx(proc)
+        proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_MCU_VERSION, bytes([older_version()]))}")
+        for _ in range(5):
+            if OTA_IDENT in [cmd for cmd, _ in cmds_after(proc, device, 100)]:
+                break
+        proc.exec(f"uart_rx {tuya_frame(OTA_IDENT, b'ZDMS' + bytes([2, older_version(), 1]))}")
+        frames = []
+        for _ in range(8):
+            frames += cmds_after(proc, device, 200)
+        assert OTA_NOTIFY not in [cmd for cmd, _ in frames]
+        assert shown_version(device) == ""          # still asking
+    finally:
+        proc.stop()
+
+
+MINUTE = 60_000
+
+
+def fail(proc, device) -> None:
+    proc.exec(f"uart_rx {tuya_frame(OTA_RESULT, bytes([1, VERSION]))}")
+    cmds_after(proc, device)
+
+
+def served(proc, device) -> bool:
+    proc.exec(f"uart_rx {tuya_frame(OTA_BLOCK, (0).to_bytes(4, 'big') + (64).to_bytes(2, 'big'))}")
+    return OTA_BLOCK in [cmd for cmd, _ in cmds_after(proc, device)]
+
+
+def ota_state(device) -> tuple[int, int]:
+    """(failed results since the last good one, current pause in minutes)
+    from the link diagnostics."""
+    from test_mcu_diag import counters
+    c = counters(device)
+    return c["ota_failures"], c["ota_pause_min"]
+
+
+def test_after_three_failed_results_nothing_is_served_for_a_while():
+    proc, device = start()
+    try:
+        for _ in range(2):
+            fail(proc, device)
+            assert served(proc, device)              # the bootloader tries again
+        fail(proc, device)
+        assert not served(proc, device)
+        assert ota_state(device) == (3, 15)
+        device.write_zigbee_attr(1, 0x0000, 0xFF4F, 1)   # clearing the counters keeps it
+        assert ota_state(device) == (3, 15)
+        device.step_time(15 * MINUTE - 100)
+        assert not served(proc, device)
+        device.step_time(200)
+        assert served(proc, device)                  # the MCU has no app: not for good
+        assert ota_state(device) == (3, 0)
+    finally:
+        proc.stop()
+
+
+def test_the_pause_doubles_up_to_a_day_and_a_good_result_ends_it():
     proc, device = start()
     try:
         for _ in range(3):
-            proc.exec(f"uart_rx {tuya_frame(OTA_RESULT, bytes([1, VERSION]))}")
-            cmds_after(proc, device)
-        proc.exec(f"uart_rx {tuya_frame(OTA_BLOCK, (0).to_bytes(4, 'big') + (64).to_bytes(2, 'big'))}")
-        assert OTA_BLOCK not in [cmd for cmd, _ in cmds_after(proc, device)]
+            fail(proc, device)
+        pauses = [15]
+        for _ in range(8):
+            device.step_time(pauses[-1] * MINUTE)
+            assert served(proc, device)
+            fail(proc, device)
+            assert not served(proc, device)
+            pauses.append(ota_state(device)[1])
+        assert pauses == [15, 30, 60, 120, 240, 480, 960, 1440, 1440]
+        device.step_time(23 * 60 * MINUTE)
+        assert not served(proc, device)
+        device.step_time(60 * MINUTE)
+        assert served(proc, device)
+        proc.exec(f"uart_rx {tuya_frame(OTA_RESULT, bytes([0, VERSION]))}")
+        cmds_after(proc, device)
+        assert ota_state(device) == (0, 0)
+        for _ in range(2):                           # counted from 0 again
+            fail(proc, device)
+            assert served(proc, device)
+    finally:
+        proc.stop()
+
+
+def flagged_stub(tmp_path: Path, flags: int) -> list[str]:
+    """A stub that carries the image with header flags set (CRC still right,
+    so the flags are the only thing wrong with it)."""
+    img = bytearray(IMAGE)
+    img[0xCD] |= flags
+    img[0xC8:0xCC] = bytes(4)
+    img[0xC8:0xCC] = zlib.crc32(bytes(img)).to_bytes(4, "little")
+    body = ",\n".join(", ".join(f"0x{b:02x}" for b in img[i:i + 16]) for i in range(0, len(img), 16))
+    src = tmp_path / "secondary_mcu_image.c"
+    src.write_text('#include "zigbee/secondary_mcu_image.h"\n'
+                   f"const uint8_t secondary_mcu_image[] = {{\n{body}\n}};\n"
+                   "const uint32_t secondary_mcu_image_size = sizeof(secondary_mcu_image);\n")
+    binary = tmp_path / "stub_device"
+    subprocess.run(["make", "-s", "-C", str(ROOT / "src/stub"), "build", f"BINARY={binary}",
+                    f"MCU_IMAGE_SRC={src}"], check=True, capture_output=True)
+    return [str(binary)]
+
+
+@pytest.mark.parametrize("flags", [IMAGE_FLAG_SIM, IMAGE_FLAG_MEASURE])
+def test_a_bench_or_measurement_image_is_never_offered_or_served(tmp_path, flags):
+    proc = StubProc(cmd=flagged_stub(tmp_path, flags), device_config=ZDMS16_2,
+                    dp_config=ZDMS16_2_DP_CONFIG).start()
+    device = Device(proc)
+    try:
+        pump(proc)
+        take_tx(proc)
+        cmds, frames = contact_as_own(proc, device, older_version())
+        assert OTA_IDENT in cmds                     # asked who it is: ours
+        assert OTA_NOTIFY not in [cmd for cmd, _ in frames]
+        assert shown_version(device).endswith(" own")
+        assert not served(proc, device)              # nor to a bootloader that asks
     finally:
         proc.stop()
 

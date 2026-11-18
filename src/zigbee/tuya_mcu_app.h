@@ -36,7 +36,8 @@ void tuya_mcu_app_query_all(void);
 void tuya_mcu_app_mcu_restarted(void);
 
 /* The MCU identified itself as our own firmware: its version is shown as
- * "x.y.z own" (the Z2M converter shows the own firmware's settings by it). */
+ * "x.y.z own" (the Z2M converter shows the own firmware's settings by it),
+ * and on a dimmer all DPs are read again, now as the own firmware's. */
 void tuya_mcu_app_set_mcu_own(void);
 
 /* The MCU answered the identity query: it runs our own PY32 firmware. */
