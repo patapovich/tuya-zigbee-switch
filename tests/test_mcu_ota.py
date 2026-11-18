@@ -40,7 +40,6 @@ IMAGE = carried_image()
 SIZE = int.from_bytes(IMAGE[0xC4:0xC8], "little")
 CRC = int.from_bytes(IMAGE[0xC8:0xCC], "little")
 VERSION = IMAGE[0xCC]
-BUILD = int.from_bytes(IMAGE[0xCE:0xD0], "little")
 
 
 def offer(image: bytes = IMAGE) -> bytes:
@@ -683,16 +682,33 @@ def test_a_2_1_x_app_is_offered_a_v2_image_by_the_byte_rule(stub_300, running, o
         proc.stop()
 
 
+IMAGE_0 = variant(build=0)
+
+
+@pytest.fixture(scope="module")
+def stub_0(tmp_path_factory) -> list[str]:
+    """Carries an image without a build, as a 2.1.x one (a rollback)."""
+    return built(tmp_path_factory, "b0", IMAGE_0)
+
+
 @pytest.mark.parametrize("build", [0, 256, 299])
-def test_a_carried_image_without_a_build_is_never_offered_to_a_v2_app(build):
-    """The carried 2.1.x image (build 0) is served for a rollback, but a v2
-    app compares builds, and 0 is never newer: not even with an older byte."""
-    assert BUILD == 0
-    proc, device = start()
+def test_a_carried_image_without_a_build_is_never_offered_to_a_v2_app(stub_0, build):
+    """A 2.1.x image (build 0) is served for a rollback, but a v2 app compares
+    builds, and 0 is never newer: not even with an older byte."""
+    proc, device = start_with(stub_0)
     try:
         _, frames = contact_as_own(proc, device, older_version(), build=build, boot=2)
         assert OTA_NOTIFY not in [cmd for cmd, _ in frames]
-        assert request(proc, device, 0xC0, 16) == IMAGE[0xC0:0xD0]          # served
+        assert answers(proc, device, block_request(0xC0, 16, MODE_PROBE)) == [header_answer(IMAGE_0)]
+    finally:
+        proc.stop()
+
+
+def test_a_carried_image_without_a_build_is_offered_to_a_2_1_x_app_by_its_byte(stub_0):
+    proc, device = start_with(stub_0)
+    try:
+        _, frames = contact_as_own(proc, device, older_version())
+        assert [d for cmd, d in frames if cmd == OTA_NOTIFY] == [offer(IMAGE_0)]
     finally:
         proc.stop()
 
@@ -727,6 +743,7 @@ def test_a_2_1_x_identity_leaves_build_and_bootloader_at_0():
 
 RESET = int.from_bytes(IMAGE[4:8], "little")
 OVER_12K = 12 * 1024 + 128
+LAST_ODD = (APP_BASE + len(IMAGE) - 1) | 1 if len(IMAGE) % 2 == 0 else APP_BASE + len(IMAGE) - 2
 
 REFUSED = {
     "diag": variant(flags=APP_FLAG_DIAG),
@@ -740,7 +757,7 @@ REFUSED = {
     "sp in the mailbox": variant(sp=0x20000BF0),
     "sp below the mailbox": variant(sp=0x20000BD0),
     "reset vector even": variant(reset=RESET & ~1),
-    "reset vector past the image": variant(reset=APP_BASE + len(IMAGE) + 1),
+    "reset vector past the image": variant(reset=(APP_BASE + len(IMAGE)) | 1),
     "reset vector in the bootloader": variant(reset=APP_BASE - 0xF00 + 1),
     "over 12 KB": variant(pad_to=OVER_12K),
     "over 12 KB with RING_HIGH": variant(flags=APP_FLAG_RING_HIGH, pad_to=OVER_12K),
@@ -751,7 +768,7 @@ SERVED = {
     "build 0xFFFD": variant(flags=APP_FLAG_CONFIRMS, build=0xFFFD),
     "RING_HIGH within 12 KB": variant(flags=APP_FLAG_CONFIRMS | APP_FLAG_RING_HIGH, build=300),
     "12 KB": variant(flags=APP_FLAG_CONFIRMS, build=300, pad_to=12 * 1024),
-    "last byte is the reset vector": variant(reset=APP_BASE + len(IMAGE) - 1),
+    "last odd address is the reset vector": variant(reset=LAST_ODD),
 }
 
 
@@ -792,9 +809,9 @@ def test_an_image_the_bootloader_may_take_is_served_and_offered(variant_stubs, n
         proc.stop()
 
 
-def test_the_carried_2_1_x_image_is_served():
-    """Build 0 stays valid: a rollback image, and a unit without an app
-    recovers from it."""
+def test_the_carried_image_is_served():
+    """Whatever py32-bump carries (2.1.12 at build 0 today: valid, a unit
+    without an app recovers from it)."""
     proc, device = start()
     try:
         assert answers(proc, device, block_request(0xC0, 16, MODE_NO_APP)) == [header_answer()]
