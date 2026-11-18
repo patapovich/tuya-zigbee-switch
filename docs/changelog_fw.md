@@ -16,6 +16,8 @@ Please describe what you are working on, under ## Upcoming
   - MCU firmware version shown in Z2M (`mcu_version`)
   - An on/off the MCU answers late or with the other state: Zigbee shows the MCU's state and
     does not take the answer for a key press
+  - A lost version answer is asked again (twice, 2 s apart); routers receive bursts of up to
+    508 bytes from the MCU (was 252)
 - **AVATTO ZDMS16-2 2-gang dimmer module** (`TS0601`, `_TZE284_jtbgusdc`, `_TZE204_jtbgusdc`)
   - Level Control (on, off, move, step, move to level, OnLevel), levels scaled to the MCU's
     min/max brightness, wall switch type and power-on behaviour
@@ -26,6 +28,10 @@ Please describe what you are working on, under ## Upcoming
   touch switches with a secondary MCU
 - Telink: an attribute write the stack refused (read-only, unknown attribute, wrong type) is no
   longer acted on as if it had been written
+- Time checks no longer go wrong once per wrap of the system timer (every 268 s on Telink,
+  36.4 h on Silabs): long and multi presses, cover travel times, the end of fast polling
+- Telink: the build refuses an OTA file over the SDK's OTA size limit (0x34000 bytes), and
+  release builds leave out printf (no console there), 3.7 KB less flash
 
 ## 1.1.3
 
