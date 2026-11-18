@@ -1058,18 +1058,19 @@ const definitions = [
             // Right after a module restart the module answers with defaults (0) until the MCU
             // has sent its values; reading then would leave 0 on the page. Wait for a real MCU
             // version (a few seconds, longer while the module updates the MCU), then read.
-            // A module that does not answer at all is offline: stop after two timeouts.
+            // A module that does not answer at all is offline: stop after two failed reads
+            // in a row, 2 s apart (a single failure, e.g. while routes re-form after a
+            // restart, only costs one more try).
             const mcuEndpoint = device.getEndpoint(1);
             let mcuVersion;
-            for (let attempt = 0, timeouts = 0; attempt < 15 && timeouts < 2; attempt++) {
+            for (let attempt = 0, failures = 0; attempt < 15; attempt++) {
                 try {
                     const result = await mcuEndpoint.read("genBasic", [0xff12]); // mcu_version
                     mcuVersion = result?.[0xff12];
-                    timeouts = 0;
+                    failures = 0;
                 } catch (error) {
                     mcuVersion = undefined; // not answered
-                    timeouts++;
-                    continue;
+                    if (++failures >= 2) break;
                 }
                 if (realMcuVersion(mcuVersion)) {
                     await new Promise((resolve) => setTimeout(resolve, 1500)); // the rest of its DP dump

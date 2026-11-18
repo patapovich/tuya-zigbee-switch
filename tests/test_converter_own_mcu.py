@@ -204,13 +204,28 @@ def test_configure_reads_own_settings_only_from_an_own_mcu():
 
 
 def test_configure_stops_waiting_for_a_module_that_does_not_answer():
-    """An offline module: two timeouts and configure goes on (was ~3 min of reads)."""
+    """An offline module: two failed reads 2 s apart and configure goes on (15 reads
+    with a pause after each took ~3 min)."""
     out = json.loads(run_node(CONFIGURE + """
 (async () => console.log(JSON.stringify(await configure([new Error("timeout")]))))();
 """))
     assert out["versionReads"] == 2
     assert out["ownReads"] == []
-    assert 2000 not in out["delays"]
+    assert out["delays"] == [2000]
+    assert len(out["dimmerReads"]) == 8
+
+
+def test_configure_keeps_waiting_after_single_failed_reads():
+    """A failed read now and then (delivery failures while routes re-form after a
+    restart) neither ends the wait nor skips the pause before the next try; only two
+    failures in a row do."""
+    out = json.loads(run_node(CONFIGURE + """
+const e = () => new Error("Delivery failed");
+(async () => console.log(JSON.stringify(await configure([e(), "", e(), "", e(), "2.1.10 own"]))))();
+"""))
+    assert out["versionReads"] == 6
+    assert out["delays"][:6] == [2000, 2000, 2000, 2000, 2000, 1500]
+    assert out["ownReads"] == [f"ff{a:02x}" for a in range(0x30, 0x3C)]
 
 
 def test_gestures_are_reported_on_change_only():
