@@ -173,14 +173,14 @@ console.log(JSON.stringify({
     newWins: [n("2.1.10 own", {open_dimmer_settings: "auto", own_mcu_settings: "hide"}),
               n("1.0.7", {open_dimmer_settings: "hide", own_mcu_settings: "show"})],
     oldShowStored: fz(ver("1.0.7"), 1, {[0xff30]: 0}, {own_mcu_settings: "show"}),
-    options: def.extend.flatMap((x) => x.options ?? []).map((o) => [o.name, o.values]),
+    options: def.extend.flatMap((x) => x.options ?? []).map((o) => [o.name, o.values, o.label]),
 }));
 """))
     assert out["oldHide"] == 2                  # as a stock MCU: shared power_on_behavior, mcu_firmware
     assert out["oldShow"] == 16
     assert out["newWins"] == [16, 2]
     assert out["oldShowStored"] == [{"dimming_curve_dimmer_left": "linear"}]
-    assert out["options"] == [["open_dimmer_settings", ["auto", "show", "hide"]]]
+    assert out["options"] == [["open_dimmer_settings", ["auto", "show", "hide"], "Open Dimmer settings"]]
 
 
 # Every genBasic fromZigbee of the definition in Zigbee2MQTT's order, mcu_version's

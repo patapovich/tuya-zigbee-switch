@@ -14,6 +14,7 @@ const fakeExpose = (type, name, access, values) => {
     const set = (key) => (v) => { x[key] = v; return x; };
     Object.assign(x, {
         withEndpoint: set("endpoint"), withDescription: set("description"), withCategory: set("category"),
+        withLabel: set("label"),
         withValueMin: set("value_min"), withValueMax: set("value_max"), withUnit: set("unit"),
     });
     return x;

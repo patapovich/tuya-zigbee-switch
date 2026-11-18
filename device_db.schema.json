@@ -180,7 +180,7 @@
         },
         "secondary_mcu_image": {
           "type": "boolean",
-          "description": "Carry the Open Dimmer secondary-MCU firmware (src/zigbee/secondary_mcu_image.c) and update the MCU with it when it runs another Open Dimmer version (never the stock MCU); the Z2M converter adds mcu_firmware"
+          "description": "Carry the Open Dimmer firmware for the secondary MCU (src/zigbee/secondary_mcu_image.c) and update an MCU that runs an older Open Dimmer version (never the stock MCU); the Z2M converter adds mcu_firmware (dimmer boards)"
         },
         "dp_attributes": {
           "oneOf": [

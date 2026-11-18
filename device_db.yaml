@@ -508,7 +508,7 @@ MODULE_AVATTO_ZDMS16_2:
   # Tuya dimmer DPs (1..6, 7..12, power-on 14). No GPIO LED/switch on this
   # board: everything goes through the MCU, so there are no L/S tokens.
   config_str: jtbgusdc;TS0601-ZDMS16-2;DM2;M;
-  # Carries the Open Dimmer firmware (PY32) and updates an MCU that runs another
+  # Carries the Open Dimmer firmware (PY32) and updates an MCU that runs an older
   # Open Dimmer version over the UART (tuya_mcu_ota.c); the stock MCU is never
   # touched.
   secondary_mcu_image: true
@@ -555,7 +555,7 @@ MODULE_AVATTO_ZDMS16_2_TZE204:
   mcu: TLSR8258
   # Same board as MODULE_AVATTO_ZDMS16_2, other stock manufacturer name.
   config_str: jtbgusdc;TS0601-ZDMS16-2;DM2;M;
-  # Carries the Open Dimmer firmware (PY32) and updates an MCU that runs another
+  # Carries the Open Dimmer firmware (PY32) and updates an MCU that runs an older
   # Open Dimmer version over the UART (tuya_mcu_ota.c); the stock MCU is never
   # touched.
   secondary_mcu_image: true

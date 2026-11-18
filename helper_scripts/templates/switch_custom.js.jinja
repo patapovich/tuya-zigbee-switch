@@ -337,6 +337,7 @@ const romasku = {
         isModernExtend: true,
         options: [
             e.enum("open_dimmer_settings", ea.SET, ["auto", "show", "hide"])
+                .withLabel("Open Dimmer settings")
                 .withDescription("Settings that only the Open Dimmer firmware has (dimming curve, fade and hold, per-channel power-on behavior, wall switch gestures). auto (default): shown once the module has identified the dimming MCU as Open Dimmer (mcu_firmware); show: always; hide: never"),
         ],
     }),
