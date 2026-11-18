@@ -7,7 +7,7 @@ the firmware ends up showing what the MCU reported last, without fighting it.
 """
 import pytest
 from conftest import Device
-from zcl_consts import ZCL_CMD_ONOFF_OFF
+from zcl_consts import ZCL_CMD_ONOFF_OFF, ZCL_CMD_ONOFF_ON
 from test_dimmer_mcu import (
     DP_LEVEL_L1,
     DP_ON_L1,
@@ -164,7 +164,9 @@ def test_wall_switch_change_is_reported_to_coordinator():
 # 0x05. An answer can come after the 150 ms ack timeout, or while a newer
 # write of the same DP waits in the queue. Such an answer is outdated: it must
 # neither be applied as the current state nor count as a wall switch press
-# (which would replace the requested level with OnLevel).
+# (which would replace the requested level with OnLevel). A report with the
+# other value that answers no write of ours is the MCU's last word: shown
+# when our write times out, as no wall switch press either.
 
 ACK_TIMEOUT_MS = 150  # firmware TX_ACK_TIMEOUT_MS
 ANSWER_CMDS = [pytest.param(TUYA_CMD_REPORT, id="0x06"),
@@ -325,6 +327,137 @@ def test_on_off_answer_must_carry_the_value_written():
                                ZCL_CMD_LEVEL_MOVE_TO_LEVEL, bytes([100, 0, 0, 0, 0]))
         mcu_report(proc, value_dp(DP_LEVEL_L1, level_write[0][1] - 3))
         assert dp_writes(take_tx(proc)) == [(DP_LEVEL_L1, scaled_to_tuya(100, 276, 591))]
+    finally:
+        proc.stop()
+
+
+@pytest.mark.parametrize("written", [pytest.param(1, id="on-answered-with-off"),
+                                     pytest.param(0, id="off-answered-with-on")])
+@pytest.mark.parametrize("answer", ANSWER_CMDS)
+def test_answer_with_the_other_value_is_shown_after_the_timeout(answer, written):
+    """The MCU answers our on with off, or our off with on: it kept its state,
+    or the wall switch was used and the answer to our write is lost. Held
+    back while our write may still be answered, then shown when it times
+    out (the stock MCU reports nothing more by itself, Zigbee must not keep
+    showing our value), and never as the wall switch (no OnLevel write)."""
+    proc, device = start()
+    try:
+        _lit_with_on_level(proc, device)
+        if written:
+            device.call_zigbee_cmd(1, ZCL_CLUSTER_ON_OFF, ZCL_CMD_ONOFF_OFF)
+            _answer_writes(proc, device, answer)
+            assert onoff(device) == 0
+        device.call_zigbee_cmd(1, ZCL_CLUSTER_ON_OFF,
+                               ZCL_CMD_ONOFF_ON if written else ZCL_CMD_ONOFF_OFF)
+        pump(proc)
+        assert dp_writes(take_tx(proc)) == [(DP_ON_L1, written)]
+        mcu_report(proc, bool_dp(DP_ON_L1, 1 - written), cmd=answer)   # not the answer
+        assert onoff(device) == written, "shown before our write could be answered"
+        later = _writes_after(proc, device, ACK_TIMEOUT_MS + 50, steps=1)
+        assert onoff(device) == 1 - written, "the MCU's state was never shown"
+        later += _writes_after(proc, device, 2500)                # 10 s
+        assert onoff(device) == 1 - written
+        # On from off goes to OnLevel 60 by itself (queued behind the on).
+        expected = [(DP_LEVEL_L1, scaled_to_tuya(60, 276, 591))] if written else []
+        assert later == expected, f"fights the MCU or took it for the wall switch: {later}"
+    finally:
+        proc.stop()
+
+
+@pytest.mark.parametrize("answer", ANSWER_CMDS)
+def test_late_answer_after_the_mcu_said_off_is_not_a_wall_press(answer):
+    """As above, but the answer to our on at 200 comes after all, after the
+    off was shown: the light is on again, and as the answer to our own on it
+    is not the wall switch (no OnLevel 60 instead of 200)."""
+    proc, device = start()
+    try:
+        _lit_with_on_level(proc, device)
+        device.call_zigbee_cmd(1, ZCL_CLUSTER_ON_OFF, ZCL_CMD_ONOFF_OFF)
+        _answer_writes(proc, device, answer)
+        device.call_zigbee_cmd(1, ZCL_CLUSTER_LEVEL_CONTROL,
+                               ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF, bytes([200, 0, 0]))
+        pump(proc)
+        tx_on = take_tx(proc)
+        assert dp_writes(tx_on) == [(DP_ON_L1, 1)]
+        mcu_report(proc, bool_dp(DP_ON_L1, 0), cmd=answer)       # not the answer
+        device.step_time(ACK_TIMEOUT_MS + 50)
+        pump(proc)
+        tx_level = take_tx(proc)
+        assert dp_writes(tx_level) == [(DP_LEVEL_L1, scaled_to_tuya(200, 276, 591))]
+        assert onoff(device) == 0
+
+        for unit in dp_units(tx_on):                             # the late answer
+            mcu_report(proc, unit, cmd=answer)
+        assert onoff(device) == 1
+        writes = _answer_writes(proc, device, answer, dp_units(tx_level))
+        device.step_time(HOLDOFF_MS + 200)
+        pump(proc)
+        assert writes == [], f"late answer taken for the wall switch: {writes}"
+        assert (onoff(device), level(device)) == (1, 200)
+    finally:
+        proc.stop()
+
+
+def test_report_held_back_is_dropped_when_a_newer_write_of_that_dp_waits():
+    """On, off and on again in a row. While the first on waits for its
+    answer the MCU reports off; the on that waits in the queue is newer than
+    that report, so it is not shown when the first on times out."""
+    proc, device = start()
+    try:
+        _lit_with_on_level(proc, device)
+        device.call_zigbee_cmd(1, ZCL_CLUSTER_ON_OFF, ZCL_CMD_ONOFF_OFF)
+        _answer_writes(proc, device, TUYA_CMD_REPORT)
+        device.call_zigbee_cmd(1, ZCL_CLUSTER_ON_OFF, ZCL_CMD_ONOFF_ON)
+        pump(proc)
+        assert dp_writes(take_tx(proc)) == [(DP_ON_L1, 1)]
+        device.call_zigbee_cmd(1, ZCL_CLUSTER_ON_OFF, ZCL_CMD_ONOFF_OFF)
+        device.call_zigbee_cmd(1, ZCL_CLUSTER_ON_OFF, ZCL_CMD_ONOFF_ON)
+        pump(proc)
+        mcu_report(proc, bool_dp(DP_ON_L1, 0))                   # not the answer
+        device.step_time(ACK_TIMEOUT_MS + 50)
+        pump(proc)
+        assert onoff(device) == 1, "a report older than our newest on was shown"
+        _answer_writes(proc, device, TUYA_CMD_REPORT, dp_units(take_tx(proc)))
+        assert onoff(device) == 1
+    finally:
+        proc.stop()
+
+
+@pytest.mark.parametrize("wait_ms,wall_press", [
+    pytest.param(1000, False, id="late-answer"),
+    pytest.param(3500, True, id="wall-switch-after-3s"),
+])
+def test_late_answer_to_an_on_that_timed_out(wait_ms, wall_press):
+    """An on gets no answer in time; the off that follows does. An "on"
+    report (0x06) up to 3 s after the timeout is the late answer to our on:
+    shown, but not the wall switch. One later is the wall switch again and
+    goes to OnLevel."""
+    proc, device = start()
+    try:
+        _lit_with_on_level(proc, device)
+        device.call_zigbee_cmd(1, ZCL_CLUSTER_ON_OFF, ZCL_CMD_ONOFF_OFF)
+        _answer_writes(proc, device, TUYA_CMD_REPORT)
+        device.step_time(HOLDOFF_MS + 200)
+        pump(proc)
+        take_tx(proc)
+        device.call_zigbee_cmd(1, ZCL_CLUSTER_LEVEL_CONTROL,
+                               ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF, bytes([200, 0, 0]))
+        assert dp_writes(_until_sent(proc, device, (DP_ON_L1, 1))) == [(DP_ON_L1, 1)]
+        device.step_time(ACK_TIMEOUT_MS + 50)                    # no answer in time
+        tx_level = _until_sent(proc, device, (DP_LEVEL_L1, scaled_to_tuya(200, 276, 591)))
+        device.call_zigbee_cmd(1, ZCL_CLUSTER_ON_OFF, ZCL_CMD_ONOFF_OFF)
+        writes = _answer_writes(proc, device, TUYA_CMD_REPORT, dp_units(tx_level))
+        assert writes == [(DP_ON_L1, 0)]
+        assert onoff(device) == 0
+        device.step_time(wait_ms)
+        pump(proc)
+        take_tx(proc)
+
+        mcu_report(proc, bool_dp(DP_ON_L1, 1))
+        assert onoff(device) == 1
+        writes = _answer_writes(proc, device, TUYA_CMD_REPORT)
+        on_level = [(DP_LEVEL_L1, scaled_to_tuya(60, 276, 591))]
+        assert writes == (on_level if wall_press else []), writes
     finally:
         proc.stop()
 

@@ -80,18 +80,25 @@ int tuya_secondary_mcu_send_long_reply(uint8_t cmd, uint16_t seq,
                                        const uint8_t *data, uint16_t data_len);
 
 /** True while a passive report (0x05) is being dispatched: the MCU answering
- *  something we sent, never a fresh key press. */
+ *  something we sent, never a fresh key press. Also while a report held back
+ *  during an on/off or enum write is handed on after that write timed out
+ *  (see tuya_secondary_mcu_report_is_superseded). */
 uint8_t tuya_secondary_mcu_report_is_passive(void);
 
 /** True while a DP is being dispatched that answers our DP write in flight
- *  (same DP; on/off and enum DPs also the same value), whether the MCU sent
- *  it as 0x05 or 0x06 (the stock ZDMS16-2 answers with 0x06): our own
- *  change coming back, never a fresh key press. */
+ *  (same DP; on/off and enum DPs also the same value), or comes late as the
+ *  answer to our last on/off or enum write that timed out (within 3 s),
+ *  whether the MCU sent it as 0x05 or 0x06 (the stock ZDMS16-2 answers with
+ *  0x06): our own change coming back, never a fresh key press. */
 uint8_t tuya_secondary_mcu_report_acks_write(void);
 
 /** True while an on/off or enum DP is being dispatched whose value our newest
  *  write of that DP (still queued, or in flight and not answered) changes
- *  again: outdated already, e.g. the late answer to an earlier write. */
+ *  again: outdated already, e.g. the late answer to an earlier write. With an
+ *  MCU that has no fast acks, such a report of the write in flight that is
+ *  not a late answer of ours is handed on again (passive, not superseded)
+ *  when that write times out with no newer write of the DP queued: it may be
+ *  the MCU's last word (it kept its value, or our answer was lost). */
 uint8_t tuya_secondary_mcu_report_is_superseded(void);
 
 /** Every DP the MCU reports is given to every listener; each one picks the DPs

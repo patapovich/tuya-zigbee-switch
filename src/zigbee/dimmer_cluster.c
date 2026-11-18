@@ -466,7 +466,9 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
 
     /* A newer write of ours sets this on/off or enum DP to another value:
      * the report (e.g. the late answer to an earlier write, off before our
-     * on) is outdated already. Our write's own answer settles it. */
+     * on) is outdated already. Our write's own answer settles it; if none
+     * comes, the stock MCU's report is handed on again (passive) when our
+     * write times out. */
     if (tuya_secondary_mcu_report_is_superseded())
         return;
 
