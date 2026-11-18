@@ -200,6 +200,19 @@ def _onoff_changes(device) -> int:
                 and int(e.payload["attr"], 16) == ZCL_ATTR_ONOFF])
 
 
+def _until_sent(proc, device, write, max_ms: int = 1000):
+    """Step time until `write` (dpid, value) has gone out on the line: a frame
+    of the link to the MCU (e.g. a version question) may hold it back for an
+    ack timeout. Returns what went out with it."""
+    for _ in range(max_ms // 50):
+        pump(proc)
+        tx = take_tx(proc)
+        if write in dp_writes(tx):
+            return tx
+        device.step_time(50)
+    raise AssertionError(f"{write} was not sent")
+
+
 def _lit_with_on_level(proc, device):
     dump_range(proc, 276, 591)
     set_on_level(device, 60)
@@ -329,8 +342,8 @@ def test_wall_switch_while_the_other_channel_waits_for_its_answer():
         pump(proc)
         assert onoff(device) == 0
         device.call_zigbee_cmd(2, ZCL_CLUSTER_ON_OFF, 0x01)      # channel 2: on
-        pump(proc)
-        assert dp_writes(take_tx(proc)) == [(DP_ON_L2, 1)]       # waits for its answer
+        tx = _until_sent(proc, device, (DP_ON_L2, 1))            # waits for its answer
+        assert dp_writes(tx) == [(DP_ON_L2, 1)]
         mcu_report(proc, bool_dp(DP_ON_L1, 1))                   # wall switch, channel 1
         assert onoff(device) == 1
         mcu_report(proc, bool_dp(DP_ON_L2, 1))                   # channel 2's answer
