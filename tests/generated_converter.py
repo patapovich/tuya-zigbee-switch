@@ -42,7 +42,7 @@ def run_node(script: str, z2m_v1: bool = False) -> str:
     """Run a node script that has `h` (converter_harness.js), `definitions`
     (the generated converter, loaded through the harness's stand-ins for the
     Zigbee2MQTT packages) and `c` (those plus some of the converter's internals:
-    romasku, mcuVersionOf, ownMcuMajorOf, ownMcuShown). Returns its output.
+    romasku, shownMcuVersion, mcuVersionOf, ownMcuMajorOf, ownMcuShown). Returns its output.
     Skips the test without node."""
     if shutil.which("node") is None:
         pytest.skip("node not installed")

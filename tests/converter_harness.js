@@ -2,7 +2,8 @@
 // zigbee-herdsman-converters, so the tests can run the converter's own code
 // (romasku.* extends, configure, onEvent) with plain node. The stand-ins only
 // record what they are given: what zigbee-herdsman-converters does with it is
-// not tested here.
+// not tested here. One exception: text() publishes a report the way the real
+// one does, so what a romasku extend makes of that value can be tested.
 //
 //   const h = require("./converter_harness.js");
 //   const definitions = h.load("/path/to/switch_custom.js");
@@ -18,13 +19,27 @@ const fakeExpose = (type, name, access, values) => {
     return x;
 };
 
+// What a fake extend publishes from a report: nothing, except text(): the
+// attribute's value under name[_endpoint] when it comes from that endpoint (the
+// real text() in zigbee-herdsman-converters' modernExtend).
+const fakeConvert = (fn, args) => {
+    if (fn !== "text") return () => undefined;
+    const id = typeof args.attribute === "string" ? args.attribute : args.attribute.ID;
+    const property = args.endpointName ? `${args.name}_${args.endpointName}` : args.name;
+    return (model, msg) => {
+        const map = typeof model.endpoint === "function" ? model.endpoint(msg.device) : {};
+        if (msg.data?.[id] === undefined || (args.endpointName && map[args.endpointName] !== msg.endpoint.ID)) return undefined;
+        return {[property]: msg.data[id]};
+    };
+};
+
 const modernExtend = {};
 for (const fn of ["numeric", "enumLookup", "deviceEndpoints", "onOff", "light", "text", "binary", "windowCovering"]) {
     modernExtend[fn] = (args) => ({
         isModernExtend: true,
         fake: fn,
         args,
-        fromZigbee: [{cluster: args?.cluster, convert: () => undefined}],
+        fromZigbee: [{cluster: args?.cluster, type: ["attributeReport", "readResponse"], convert: fakeConvert(fn, args)}],
         toZigbee: [{key: [args?.name]}],
         exposes: [],
     });
@@ -45,6 +60,7 @@ const fakes = {
         presets: {
             enum: (name, access, values) => fakeExpose("enum", name, access, values),
             numeric: (name, access) => fakeExpose("numeric", name, access),
+            text: (name, access) => fakeExpose("text", name, access),
             action: (values) => fakeExpose("enum", "action", 1, values),
         },
         access: {STATE: 1, SET: 2, STATE_SET: 3, STATE_GET: 5, ALL: 7},
@@ -95,7 +111,7 @@ const loadConverter = (path) => {
     m.filename = path;
     m.paths = Module._nodeModulePaths(require("path").dirname(path));
     m._compile(fs.readFileSync(path, "utf8") +
-        "\nmodule.exports = {definitions, romasku, realMcuVersion, mcuVersionOf, ownMcuMajorOf, ownMcuShown};\n", path);
+        "\nmodule.exports = {definitions, romasku, realMcuVersion, shownMcuVersion, mcuVersionOf, ownMcuMajorOf, ownMcuShown};\n", path);
     return m.exports;
 };
 

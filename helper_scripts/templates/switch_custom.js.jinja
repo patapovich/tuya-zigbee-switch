@@ -16,16 +16,21 @@ const exposesLib = require("zigbee-herdsman-converters/lib/exposes");
 const e = exposesLib.presets;
 const ea = exposesLib.access;
 
-/* A secondary-MCU version as the module reports it ("x.y.z", or "x.y.z own"
- * once it has identified our own firmware), not the "" or "0.0.0" it
- * answers right after a restart, before the MCU has told it. */
+/* A secondary-MCU version as the module reports it in Basic 0xff12 ("x.y.z",
+ * or "x.y.z own" once it has identified the MCU as Open Dimmer: " own" is the
+ * module's marker for it), not the "" or "0.0.0" it answers right after a
+ * restart, before the MCU has told it. Users see the version without the
+ * marker (mcu_version) and the firmware's name (mcu_firmware). */
 const realMcuVersion = (v) => typeof v === "string" && /^\d+\.\d+\.\d+( own)?$/.test(v) && !v.startsWith("0.0.0");
 
+// A version as mcu_version shows it: "x.y.z own" -> "x.y.z", others as they are.
+const shownMcuVersion = (v) => (typeof v === "string" ? v.replace(/^(\d+\.\d+\.\d+) own$/, "$1") : v);
+
 /* The version that says what the MCU is: the newest real one (latest), else
- * the last one kept (kept, device.meta). "own" is sticky: a bare 2.x or later
- * does not replace a kept "own" one, because the module reports ours without
- * the suffix when it could not identify it (a lost identity answer). Only a
- * version below 2.x (a stock MCU) means the MCU really changed. */
+ * the last one kept (kept, device.meta). Open Dimmer is sticky: a bare 2.x or
+ * later does not replace a kept "x.y.z own", because the module reports Open
+ * Dimmer without the marker when it could not identify it (a lost identity
+ * answer). Only a version below 2.x (a stock MCU) means the MCU really changed. */
 const mcuVersionOf = (latest, kept) => {
     if (!realMcuVersion(latest)) return realMcuVersion(kept) ? kept : undefined;
     const bareOwnMajor = !latest.endsWith(" own") && Number(latest.split(".")[0]) >= 2;
@@ -33,11 +38,12 @@ const mcuVersionOf = (latest, kept) => {
     return latest;
 };
 
-/* Major version of our own secondary-MCU firmware, as last seen: the module
- * shows ours as "x.y.z own" (only ours answers its identity query; a stock
- * MCU never gets the suffix, whatever its version number). Kept in
- * the endpoint's attribute cache, else in device.meta (romasku.mcuVersionMeta).
- * undefined if the MCU is not ours or not known yet. */
+/* Major version of the Open Dimmer firmware on the secondary MCU, as last
+ * seen: the module reports it as "x.y.z own" (only Open Dimmer answers its
+ * identity query; a stock MCU never gets the marker, whatever its version
+ * number). Kept in the endpoint's attribute cache, else in device.meta
+ * (romasku.mcuVersionMeta). undefined if the MCU does not run Open Dimmer or
+ * is not known yet. */
 const ownMcuMajorOf = (device) => {
     if (!device) return undefined;
     let cached;
@@ -51,10 +57,11 @@ const ownMcuMajorOf = (device) => {
     return m ? Number(m[1]) : undefined;
 };
 
-// Whether the settings of an own MCU firmware (major >= minMcu) are shown:
-// device option own_mcu_settings auto (identified as ours) / show / hide.
+// Whether the settings of Open Dimmer (major >= minMcu) are shown: device
+// option open_dimmer_settings auto (identified as Open Dimmer) / show / hide.
+// own_mcu_settings is its old name, still read when the new one is not set.
 const ownMcuShown = (device, options, minMcu) => {
-    const mode = options?.own_mcu_settings ?? "auto";
+    const mode = options?.open_dimmer_settings ?? options?.own_mcu_settings ?? "auto";
     if (!device || device.isDummyDevice || mode === "show") return true;
     if (mode === "hide") return false;
     const major = ownMcuMajorOf(device);
@@ -260,8 +267,8 @@ const romasku = {
                 }
             },
         }),
-    mcuVersion: (name, endpointName) =>
-        text({
+    mcuVersion: (name, endpointName) => {
+        const result = text({
             name,
             endpointName,
             access: "STATE_GET",
@@ -269,7 +276,40 @@ const romasku = {
             attribute:  { ID: 0xff12, type: 0x42 }, // char str
             description: "Firmware version of the secondary MCU (the chip that drives the outputs)",
             entityCategory: "diagnostic",
-        }),
+        });
+        // The version alone, without the module's Open Dimmer marker (that is
+        // mcu_firmware). Only the published value changes: msg.data, which the
+        // other converters read, keeps the raw "x.y.z own".
+        result.fromZigbee = result.fromZigbee.map((converter) => ({
+            ...converter,
+            convert: (model, msg, publish, options, meta) => {
+                const r = converter.convert(model, msg, publish, options, meta);
+                if (r) for (const key of Object.keys(r)) r[key] = shownMcuVersion(r[key]);
+                return r;
+            },
+        }));
+        return result;
+    },
+    // Which firmware the secondary MCU runs (device level), from the same
+    // version reports as mcu_version: Open Dimmer when the module has
+    // identified it (sticky as in mcuVersionOf), else the stock Tuya firmware.
+    // Nothing while the version is not known ("" or 0.0.0).
+    mcuFirmware: () => ({
+        isModernExtend: true,
+        exposes: [e.text("mcu_firmware", ea.STATE)
+            .withDescription("Firmware of the dimming MCU: Open Dimmer or the stock Tuya firmware")
+            .withCategory("diagnostic")],
+        fromZigbee: [{
+            cluster: "genBasic",
+            type: ["attributeReport", "readResponse"],
+            convert: (model, msg) => {
+                const raw = msg.data?.[0xff12];
+                if (msg.endpoint?.ID !== 1 || !realMcuVersion(raw)) return;
+                const v = mcuVersionOf(raw, msg.device?.meta?.mcuVersion);
+                return {mcu_firmware: v.endsWith(" own") ? "Open Dimmer" : "Tuya (stock)"};
+            },
+        }],
+    }),
     mcuVersionMeta: () => ({
         isModernExtend: true,
         fromZigbee: [{
@@ -278,8 +318,8 @@ const romasku = {
             convert: (model, msg) => {
                 // Keep the last real version: right after a restart the module
                 // answers "" until the MCU has told it, and a bare 2.x may be
-                // ours not yet identified (mcuVersionOf). Neither must hide the
-                // own firmware's settings.
+                // Open Dimmer not yet identified (mcuVersionOf). Neither must
+                // hide the Open Dimmer settings.
                 if (!msg.device) return;
                 const v = mcuVersionOf(msg.data?.[0xff12], msg.device.meta?.mcuVersion);
                 if (v !== undefined && msg.device.meta?.mcuVersion !== v) {
@@ -289,14 +329,15 @@ const romasku = {
             },
         }],
     }),
-    // Settings only an own secondary-MCU firmware has. auto shows them once the
-    // MCU has reported a new enough version (exposes are rebuilt when
-    // Zigbee2MQTT restarts or this option changes).
+    // Settings only the Open Dimmer firmware has. auto shows them once the MCU
+    // has reported a new enough Open Dimmer version (exposes are rebuilt when
+    // Zigbee2MQTT restarts or this option changes). Read with the fallback to
+    // the old option name own_mcu_settings (ownMcuShown).
     ownMcuOption: () => ({
         isModernExtend: true,
         options: [
-            e.enum("own_mcu_settings", ea.SET, ["auto", "show", "hide"])
-                .withDescription("Settings of an own secondary-MCU firmware (e.g. dimming curve). auto (default): shown when the module has identified the MCU as ours (mcu_version \"x.y.z own\"); show / hide: always / never"),
+            e.enum("open_dimmer_settings", ea.SET, ["auto", "show", "hide"])
+                .withDescription("Settings that only the Open Dimmer firmware has (dimming curve, fade and hold, per-channel power-on behavior, wall switch gestures). auto (default): shown once the module has identified the dimming MCU as Open Dimmer (mcu_firmware); show: always; hide: never"),
         ],
     }),
     // Enum datapoint attribute (Basic 0xffXX on endpoint 1) exposed on the
@@ -310,7 +351,7 @@ const romasku = {
         return {
             isModernExtend: true,
             exposes: [(device, options) => {
-                if (!minMcu) return [expose];      // not tied to an own MCU firmware
+                if (!minMcu) return [expose];      // not tied to Open Dimmer
                 return ownMcuShown(device, options, minMcu) ? [expose] : [];
             }],
             fromZigbee: [{
@@ -737,7 +778,7 @@ const romasku = {
         }));
         return extend;
     },
-    // Power-on behaviour of an MCU dimmer that may run the own firmware: per
+    // Power-on behaviour of an MCU dimmer that may run Open Dimmer: per
     // channel with it (DPs 103/104), else one setting for all channels (the
     // shared DP 14: a write on any endpoint sets every channel).
     dimmerPowerOnPerChannel: (dimmerNames) => {
@@ -748,7 +789,7 @@ const romasku = {
             .withCategory("config");
         return {
             isModernExtend: true,
-            // Per channel with the own MCU: in each channel's group (dimmerPowerOnChannel).
+            // Per channel with Open Dimmer: in each channel's group (dimmerPowerOnChannel).
             exposes: [(device, options) => (ownMcuShown(device, options, 2) ? [] : [shared])],
             fromZigbee: [{
                 cluster: "genOnOff",
@@ -768,12 +809,12 @@ const romasku = {
                 convertSet: async (entity, key, value, meta) => {
                     if (!Object.prototype.hasOwnProperty.call(lookup, value)) throw new Error(`${key}: one of ${names.join(", ")}`);
                     if (meta.endpoint_name) {
-                        // One channel (own MCU): its own power-on DP.
+                        // One channel (Open Dimmer): its own power-on DP.
                         await entity.write("genOnOff", {startUpOnOff: lookup[value]});
                         return {state: {[key]: value}};
                     }
                     // The shared setting: written on every channel, so it also
-                    // sets every channel of an own MCU, which keeps one per
+                    // sets every channel of Open Dimmer, which keeps one per
                     // channel (a stock MCU just gets the same value again).
                     const map = typeof meta.mapped?.endpoint === "function" ? meta.mapped.endpoint(meta.device) : {};
                     const channels = dimmerNames.map((name) => [name, map[name] !== undefined ? meta.device.getEndpoint(map[name]) : undefined])
@@ -791,25 +832,25 @@ const romasku = {
             }],
         };
     },
-    // The per-channel power-on expose of one channel (own MCU); its converters
+    // The per-channel power-on expose of one channel (Open Dimmer); its converters
     // are in dimmerPowerOnPerChannel.
     dimmerPowerOnChannel: (endpointName) => {
         const expose = e.enum("power_on_behavior", ea.ALL, ["off", "on", "previous"])
             .withEndpoint(endpointName)
-            .withDescription("Behavior of this channel when power is restored (previous = memory; own MCU firmware)")
+            .withDescription("Behavior of this channel when power is restored (previous = memory; Open Dimmer firmware)")
             .withCategory("config");
         return {
             isModernExtend: true,
             exposes: [(device, options) => (ownMcuShown(device, options, 2) ? [expose] : [])],
         };
     },
-    // Wall switch gestures of the own MCU firmware (momentary switch type):
+    // Wall switch gestures of the Open Dimmer firmware (momentary switch type):
     // genMultistateInput presentValue on the dimmer endpoint = sequence << 4 |
     // gesture. The light itself acts on every press regardless.
     dimmerGestures: (dimmerNames) => {
         const kinds = ["single", "double", "triple", "hold", "release"];
         const expose = e.action(dimmerNames.flatMap((n) => kinds.map((k) => `${k}_${n}`)))
-            .withDescription("Wall switch gesture (own MCU firmware, momentary switch type); the light acts on every press anyway");
+            .withDescription("Wall switch gesture (Open Dimmer firmware, momentary switch type); the light acts on every press anyway");
         return {
             isModernExtend: true,
             exposes: [(device, options) => (ownMcuShown(device, options, 2) ? [expose] : [])],
@@ -1037,6 +1078,9 @@ const definitions = [
             // Device: technical settings last.
             {% if device.has_secondary_mcu %}
             romasku.mcuVersion("mcu_version", "{{first_endpoint}}"),
+            {% if device.secondary_mcu_image %}
+            romasku.mcuFirmware(),
+            {% endif %}
             {% endif %}
             romasku.multiPressResetCount("multi_press_reset_count", "{{first_endpoint}}"),
             {% if device.has_dedicated_net_led %}
@@ -1079,7 +1123,7 @@ const definitions = [
                 await new Promise((resolve) => setTimeout(resolve, 2000));
             }
             {% if device.dp_attributes | selectattr("min_mcu") | list %}
-            // Settings only an own MCU firmware has: a stock MCU's module answers 0 for them.
+            // Settings only Open Dimmer has ("x.y.z own"): a stock MCU's module answers 0 for them.
             if (typeof mcuVersion === "string" && mcuVersion.endsWith(" own")) {
                 {% for dp in device.dp_attributes if dp.min_mcu %}
                 try {
@@ -1192,7 +1236,7 @@ const definitions = [
             }
             {% if device.secondary_mcu_image %}
             try {
-                // Wall switch gestures (own MCU firmware); older module builds lack the cluster.
+                // Wall switch gestures (Open Dimmer firmware); older module builds lack the cluster.
                 // Each gesture is an event: report changes only (maximum interval 0), else
                 // the stack repeats the last gesture every maximum interval (and Z2M with it).
                 await reporting.bind(dimmer{{loop.index}}, coordinatorEndpoint, ["genMultistateInput"]);

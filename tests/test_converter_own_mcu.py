@@ -1,6 +1,8 @@
-"""The generated Z2M converter's own-MCU-firmware settings for the ZDMS16-2
-(dimming curve, fade and hold per dimmer, shown per the device option
-own_mcu_settings), and how it follows the MCU version the module reports."""
+"""The generated Z2M converter's Open Dimmer settings for the ZDMS16-2 (dimming
+curve, fade and hold per dimmer, shown per the device option open_dimmer_settings,
+old name own_mcu_settings), how it follows the MCU version the module reports
+(Basic 0xff12, "x.y.z own" for an MCU it has identified as Open Dimmer), and what
+it publishes from it: mcu_version without the marker, mcu_firmware."""
 
 import json
 import re
@@ -45,6 +47,7 @@ def test_curves_are_on_each_dimmer_endpoint_with_their_own_attribute():
     assert curves == [("dimmer_left", "0xff30"), ("dimmer_right", "0xff31")]
     assert "romasku.ownMcuOption()" in block
     assert "romasku.mcuVersionMeta()" in block
+    assert "romasku.mcuFirmware()" in block
 
 
 def test_own_firmware_is_told_by_the_suffix_only():
@@ -81,11 +84,11 @@ for (const v of ["2.1.10 own", "2.1.10", "", "2.1.10 own", "1.0.7"]) {
 }
 console.log(JSON.stringify(steps));
 """))
-    own = ["2.1.10 own", 15, True]
+    own = ["2.1.10 own", 16, True]                  # 15 Open Dimmer exposes and mcu_firmware
     assert out["2.1.10 own"] == own
     assert out["2.1.10"] == own
     assert out["empty"] == own
-    assert out["1.0.7"] == ["1.0.7", 1, False]      # the shared power_on_behavior only
+    assert out["1.0.7"] == ["1.0.7", 2, False]      # the shared power_on_behavior and mcu_firmware
 
 
 def test_power_on_per_channel_and_gestures_follow_the_own_mcu():
@@ -96,8 +99,8 @@ const pick = (list) => list.filter((n) => n.startsWith("power_on") || n === "act
 console.log(JSON.stringify({
   own: pick(shown(ver("2.1.1 own"))),
   stock: pick(shown(ver("1.0.7"))),
-  hide: pick(shown(ver("2.1.1 own"), { own_mcu_settings: "hide" })),
-  show: pick(shown(ver("1.0.7"), { own_mcu_settings: "show" })),
+  hide: pick(shown(ver("2.1.1 own"), { open_dimmer_settings: "hide" })),
+  show: pick(shown(ver("1.0.7"), { open_dimmer_settings: "show" })),
   gestures: [fz(ver("2.1.1 own"), 2, { presentValue: 0x32 }), fz(ver("2.1.1 own"), 1, { presentValue: 0x15 }),
              fz(ver("2.1.1 own"), 1, { presentValue: 0x10 }), fz(ver("2.1.1 own"), 3, { presentValue: 0x11 })],
   power: [fz(ver("1.0.7"), 1, { startUpOnOff: 255 }), fz(ver("1.0.7"), 2, { startUpOnOff: 0 }), fz(ver("1.0.7"), 2, { onOff: 1 })],
@@ -149,13 +152,130 @@ console.log(JSON.stringify({
     own: fz(ver("2.1.10 own"), 1, data),
     stock: fz(ver("1.0.7"), 1, data),
     unknown: fz(ver(""), 1, data),
-    show: fz(ver("1.0.7"), 1, data, {own_mcu_settings: "show"}),
+    show: fz(ver("1.0.7"), 1, data, {open_dimmer_settings: "show"}),
 }));
 """))
     assert out["own"] == [{"dimming_curve_dimmer_left": "linear"}, {"hold_time_dimmer_left": 950}]
     assert out["stock"] == []
     assert out["unknown"] == []
     assert out["show"] == out["own"]
+
+
+def test_the_old_option_name_still_works():
+    """The device option open_dimmer_settings was own_mcu_settings: a value set under
+    the old name keeps working, and the new name wins when both are set."""
+    out = json.loads(run_node(ZDMS + """
+const ver = (v) => { const d = h.device(); d.getEndpoint(1).clusters.genBasic.attributes[0xff12] = v; return d; };
+const n = (v, options) => shown(ver(v), options).length;
+console.log(JSON.stringify({
+    oldHide: n("2.1.10 own", {own_mcu_settings: "hide"}),
+    oldShow: n("1.0.7", {own_mcu_settings: "show"}),
+    newWins: [n("2.1.10 own", {open_dimmer_settings: "auto", own_mcu_settings: "hide"}),
+              n("1.0.7", {open_dimmer_settings: "hide", own_mcu_settings: "show"})],
+    oldShowStored: fz(ver("1.0.7"), 1, {[0xff30]: 0}, {own_mcu_settings: "show"}),
+    options: def.extend.flatMap((x) => x.options ?? []).map((o) => [o.name, o.values]),
+}));
+"""))
+    assert out["oldHide"] == 2                  # as a stock MCU: shared power_on_behavior, mcu_firmware
+    assert out["oldShow"] == 16
+    assert out["newWins"] == [16, 2]
+    assert out["oldShowStored"] == [{"dimming_curve_dimmer_left": "linear"}]
+    assert out["options"] == [["open_dimmer_settings", ["auto", "show", "hide"]]]
+
+
+# Every genBasic fromZigbee of the definition in Zigbee2MQTT's order, mcu_version's
+# text() included (the harness's text() publishes a report as the real one does).
+PUBLISH = ZDMS + """
+const publish = (dev, v, ep = 1) => {
+    if (ep === 1) dev.getEndpoint(1).clusters.genBasic.attributes[0xff12] = v;
+    const out = {};
+    for (const f of def.extend.flatMap((x) => x.fromZigbee ?? []).filter((f) => f.cluster === "genBasic")) {
+        Object.assign(out, f.convert(model, {device: dev, endpoint: {ID: ep}, data: {[0xff12]: v}}, () => {}, {}, {device: dev}) ?? {});
+    }
+    return out;
+};
+"""
+
+
+def test_mcu_version_and_mcu_firmware_payloads():
+    """mcu_version shows the version without the module's Open Dimmer marker, under the
+    key it always had (mcu_version_dimmer_left, so Home Assistant's entity keeps its
+    state); mcu_firmware says which firmware it is. Open Dimmer is sticky as for the
+    settings: a bare 2.x after it is still Open Dimmer, only a stock version ends it.
+    mcu_firmware publishes nothing while the version is not known ("" or 0.0.0). The
+    kept version stays raw ("x.y.z own"): the detection reads the marker."""
+    out = json.loads(run_node(PUBLISH + """
+const dev = h.device();
+const steps = [];
+for (const v of ["2.1.10 own", "2.1.10", "", "0.0.0", "2.1.11", "1.0.7", "2.1.10", "2.1.11 own"]) {
+    steps.push([v, publish(dev, v), dev.meta.mcuVersion]);
+}
+console.log(JSON.stringify({
+    steps,
+    fresh: [publish(h.device(), "2.1.10"), publish(h.device(), "1.0.7"), publish(h.device(), ""),
+            publish(h.device(), "2.1.10 own", 2)],
+    shown: ["2.1.10 own", "2.1.10", "1.0.7", "", "0.0.0", "2.1.10 own x", undefined].map(c.shownMcuVersion),
+}));
+"""))
+    od, stock = "Open Dimmer", "Tuya (stock)"
+
+    def v(version, firmware=None):
+        return {"mcu_version_dimmer_left": version, **({"mcu_firmware": firmware} if firmware else {})}
+
+    assert out["steps"] == [
+        ["2.1.10 own", v("2.1.10", od), "2.1.10 own"],
+        ["2.1.10", v("2.1.10", od), "2.1.10 own"],          # identity answer lost: still Open Dimmer
+        ["", v(""), "2.1.10 own"],                          # module restart: mcu_firmware keeps its value
+        ["0.0.0", v("0.0.0"), "2.1.10 own"],
+        ["2.1.11", v("2.1.11", od), "2.1.10 own"],
+        ["1.0.7", v("1.0.7", stock), "1.0.7"],              # a stock MCU now
+        ["2.1.10", v("2.1.10", stock), "2.1.10"],           # bare, nothing to stick to
+        ["2.1.11 own", v("2.1.11", od), "2.1.11 own"],
+    ]
+    assert out["fresh"] == [v("2.1.10", stock), v("1.0.7", stock), v(""), {}]
+    assert out["shown"] == ["2.1.10", "2.1.10", "1.0.7", "", "0.0.0", "2.1.10 own x", None]
+
+
+def test_mcu_firmware_is_a_device_level_diagnostic_on_open_dimmer_boards_only():
+    """Only boards that carry the Open Dimmer image (secondary_mcu_image) get it; other
+    boards with a secondary MCU keep mcu_version alone. mcu_version itself is the
+    text() it was (name, endpoint, access, category, attribute; its get is text()'s)."""
+    out = json.loads(run_node("""
+const dev = h.device();
+const firmware = (model) => definitions.filter((d) => d.model === model).map((d) => d.extend.filter((x) => !x.fake)
+    .flatMap((x) => x.exposes ?? []).flatMap((x) => (typeof x === "function" ? x(dev, {}) : [x]))
+    .filter((x) => x.name === "mcu_firmware")
+    .map(({type, name, access, endpoint, category, description}) => ({type, name, access, endpoint: endpoint ?? null, category, description})));
+const version = (model) => definitions.filter((d) => d.model === model)
+    .map((d) => h.fakeExtends(d).filter((x) => x.args?.name === "mcu_version").map((x) => [x.args, x.toZigbee]));
+console.log(JSON.stringify({
+    firmware: ["ZDMS16-2", "SFL02-Z-2", "TS0601_switch_8"].map(firmware),
+    version: version("ZDMS16-2"),
+}));
+"""))
+    expose = {"type": "text", "name": "mcu_firmware", "access": 1, "endpoint": None, "category": "diagnostic",
+              "description": "Firmware of the dimming MCU: Open Dimmer or the stock Tuya firmware"}
+    assert out["firmware"] == [[[expose], [expose]], [[]], [[]]]
+    text_args = {"name": "mcu_version", "endpointName": "dimmer_left", "access": "STATE_GET", "cluster": "genBasic",
+                 "attribute": {"ID": 0xFF12, "type": 0x42},
+                 "description": "Firmware version of the secondary MCU (the chip that drives the outputs)",
+                 "entityCategory": "diagnostic"}
+    assert out["version"] == [[[text_args, [{"key": ["mcu_version"]}]]]] * 2
+
+
+def test_no_user_visible_text_says_own():
+    """The firmware is called Open Dimmer: no expose, option or setting description
+    of the ZDMS16-2 says "own" or "ours" (the module's " own" marker stays inside)."""
+    out = json.loads(run_node(ZDMS + """
+const exposes = (x) => (x.exposes ?? []).flatMap((e) => (typeof e === "function"
+    ? [...e(h.device(), {open_dimmer_settings: "show"}), ...e(h.device(), {open_dimmer_settings: "hide"})] : [e]));
+console.log(JSON.stringify(def.extend.flatMap((x) => [
+    ...exposes(x).map((e) => e.description), ...(x.options ?? []).map((o) => o.description), x.args?.description,
+]).filter((t) => typeof t === "string")));
+"""))
+    assert len(out) >= 20
+    assert sum("Open Dimmer" in t for t in out) >= 17     # option, the 15 Open Dimmer exposes, mcu_firmware
+    assert [t for t in out if re.search(r"\b(own|ours)\b", t, re.I)] == []
 
 
 CONFIGURE = ZDMS + """

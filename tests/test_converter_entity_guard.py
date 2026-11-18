@@ -41,6 +41,7 @@ ZDMS16_2_EXTENDS = [
     "romasku.dimmerGestures(dimmer_left, dimmer_right)",
     "romasku.dimmerPowerOnPerChannel(dimmer_left, dimmer_right)",
     "romasku.mcuVersion(mcu_version, dimmer_left)",
+    "romasku.mcuFirmware()",
     "romasku.multiPressResetCount(multi_press_reset_count, dimmer_left)",
     "romasku.deviceConfig(device_config, dimmer_left)",
     "romasku.deviceConfigExt(device_config_ext, dimmer_left)",

@@ -258,8 +258,9 @@ if __name__ == "__main__":
                 "has_dedicated_net_led": has_dedicated_net_led,
                 "has_battery_cluster": has_battery_cluster,
                 "has_secondary_mcu": has_secondary_mcu,
-                # Carries the own PY32 firmware: its per-channel power-on and
-                # wall switch gestures (shown per own_mcu_settings).
+                # Carries the Open Dimmer firmware (PY32): its per-channel
+                # power-on and wall switch gestures (shown per the device option
+                # open_dimmer_settings) and mcu_firmware.
                 "secondary_mcu_image": bool(device.get("secondary_mcu_image")),
             }
         )

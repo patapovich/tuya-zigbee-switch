@@ -508,24 +508,25 @@ MODULE_AVATTO_ZDMS16_2:
   # Tuya dimmer DPs (1..6, 7..12, power-on 14). No GPIO LED/switch on this
   # board: everything goes through the MCU, so there are no L/S tokens.
   config_str: jtbgusdc;TS0601-ZDMS16-2;DM2;M;
-  # Carries the own PY32 firmware and updates an MCU that runs another own
-  # version over the UART (tuya_mcu_ota.c); the stock MCU is never touched.
+  # Carries the Open Dimmer firmware (PY32) and updates an MCU that runs another
+  # Open Dimmer version over the UART (tuya_mcu_ota.c); the stock MCU is never
+  # touched.
   secondary_mcu_image: true
-  # Dimming curve per channel: DPs of the own PY32 firmware (2.x), the stock MCU
-  # has none. Shown in Z2M per the device option own_mcu_settings.
+  # Dimming curve, fade and hold per channel: DPs of Open Dimmer (2.x), the stock
+  # MCU has none. Shown in Z2M per the device option open_dimmer_settings.
   dp_attributes:
-    - {dp: "65", type: E, attr: "30", name: dimming_curve, dimmer: 1, min_mcu: 2, label: "Dimming curve (own MCU firmware). led_soft (default): gentle, suits most LED lamps. led: even perceived steps (CIE lightness). led_deep / led_deeper: more room at the dim end, for LED lamps that get bright soon above their minimum. incandescent: filament and halogen lamps. linear: as the stock firmware, conduction time follows the level.", values: {incandescent: 3, led: 1, led_deep: 4, led_deeper: 5, led_soft: 2, linear: 0}}
-    - {dp: "66", type: E, attr: "31", name: dimming_curve, dimmer: 2, min_mcu: 2, label: "Dimming curve (own MCU firmware). led_soft (default): gentle, suits most LED lamps. led: even perceived steps (CIE lightness). led_deep / led_deeper: more room at the dim end, for LED lamps that get bright soon above their minimum. incandescent: filament and halogen lamps. linear: as the stock firmware, conduction time follows the level.", values: {incandescent: 3, led: 1, led_deep: 4, led_deeper: 5, led_soft: 2, linear: 0}}
-    - {dp: "96", type: V, attr: "32", name: fade_on_time, dimmer: 1, min_mcu: 2, min: 0, max: 10000, unit: "ms", label: "Fade from dark to full when switched on (own MCU firmware)"}
-    - {dp: "97", type: V, attr: "33", name: fade_off_time, dimmer: 1, min_mcu: 2, min: 0, max: 10000, unit: "ms", label: "Fade from full to dark when switched off (own MCU firmware)"}
-    - {dp: "98", type: V, attr: "34", name: soft_dim_end, dimmer: 1, min_mcu: 2, min: 0, max: 100, unit: "%", label: "Switching off: the lowest part above the minimum slows down to an even end (own MCU firmware)"}
-    - {dp: "99", type: V, attr: "35", name: hold_time, dimmer: 1, min_mcu: 2, min: 100, max: 10000, unit: "ms", label: "Wall switch hold over the whole range (own MCU firmware)"}
-    - {dp: "9A", type: V, attr: "36", name: hold_dim_end, dimmer: 1, min_mcu: 2, min: 0, max: 100, unit: "%", label: "Wall switch hold slows down in the lowest part above the minimum (to pick a very dim level) (own MCU firmware)"}
-    - {dp: "9B", type: V, attr: "37", name: fade_on_time, dimmer: 2, min_mcu: 2, min: 0, max: 10000, unit: "ms", label: "Fade from dark to full when switched on (own MCU firmware)"}
-    - {dp: "9C", type: V, attr: "38", name: fade_off_time, dimmer: 2, min_mcu: 2, min: 0, max: 10000, unit: "ms", label: "Fade from full to dark when switched off (own MCU firmware)"}
-    - {dp: "9D", type: V, attr: "39", name: soft_dim_end, dimmer: 2, min_mcu: 2, min: 0, max: 100, unit: "%", label: "Switching off: the lowest part above the minimum slows down to an even end (own MCU firmware)"}
-    - {dp: "9E", type: V, attr: "3a", name: hold_time, dimmer: 2, min_mcu: 2, min: 100, max: 10000, unit: "ms", label: "Wall switch hold over the whole range (own MCU firmware)"}
-    - {dp: "9F", type: V, attr: "3b", name: hold_dim_end, dimmer: 2, min_mcu: 2, min: 0, max: 100, unit: "%", label: "Wall switch hold slows down in the lowest part above the minimum (to pick a very dim level) (own MCU firmware)"}
+    - {dp: "65", type: E, attr: "30", name: dimming_curve, dimmer: 1, min_mcu: 2, label: "Dimming curve (Open Dimmer firmware). led_soft (default): gentle, suits most LED lamps. led: even perceived steps (CIE lightness). led_deep / led_deeper: more room at the dim end, for LED lamps that get bright soon above their minimum. incandescent: filament and halogen lamps. linear: as the stock firmware, conduction time follows the level.", values: {incandescent: 3, led: 1, led_deep: 4, led_deeper: 5, led_soft: 2, linear: 0}}
+    - {dp: "66", type: E, attr: "31", name: dimming_curve, dimmer: 2, min_mcu: 2, label: "Dimming curve (Open Dimmer firmware). led_soft (default): gentle, suits most LED lamps. led: even perceived steps (CIE lightness). led_deep / led_deeper: more room at the dim end, for LED lamps that get bright soon above their minimum. incandescent: filament and halogen lamps. linear: as the stock firmware, conduction time follows the level.", values: {incandescent: 3, led: 1, led_deep: 4, led_deeper: 5, led_soft: 2, linear: 0}}
+    - {dp: "96", type: V, attr: "32", name: fade_on_time, dimmer: 1, min_mcu: 2, min: 0, max: 10000, unit: "ms", label: "Fade from dark to full when switched on (Open Dimmer firmware)"}
+    - {dp: "97", type: V, attr: "33", name: fade_off_time, dimmer: 1, min_mcu: 2, min: 0, max: 10000, unit: "ms", label: "Fade from full to dark when switched off (Open Dimmer firmware)"}
+    - {dp: "98", type: V, attr: "34", name: soft_dim_end, dimmer: 1, min_mcu: 2, min: 0, max: 100, unit: "%", label: "Switching off: the lowest part above the minimum slows down to an even end (Open Dimmer firmware)"}
+    - {dp: "99", type: V, attr: "35", name: hold_time, dimmer: 1, min_mcu: 2, min: 100, max: 10000, unit: "ms", label: "Wall switch hold over the whole range (Open Dimmer firmware)"}
+    - {dp: "9A", type: V, attr: "36", name: hold_dim_end, dimmer: 1, min_mcu: 2, min: 0, max: 100, unit: "%", label: "Wall switch hold slows down in the lowest part above the minimum (to pick a very dim level) (Open Dimmer firmware)"}
+    - {dp: "9B", type: V, attr: "37", name: fade_on_time, dimmer: 2, min_mcu: 2, min: 0, max: 10000, unit: "ms", label: "Fade from dark to full when switched on (Open Dimmer firmware)"}
+    - {dp: "9C", type: V, attr: "38", name: fade_off_time, dimmer: 2, min_mcu: 2, min: 0, max: 10000, unit: "ms", label: "Fade from full to dark when switched off (Open Dimmer firmware)"}
+    - {dp: "9D", type: V, attr: "39", name: soft_dim_end, dimmer: 2, min_mcu: 2, min: 0, max: 100, unit: "%", label: "Switching off: the lowest part above the minimum slows down to an even end (Open Dimmer firmware)"}
+    - {dp: "9E", type: V, attr: "3a", name: hold_time, dimmer: 2, min_mcu: 2, min: 100, max: 10000, unit: "ms", label: "Wall switch hold over the whole range (Open Dimmer firmware)"}
+    - {dp: "9F", type: V, attr: "3b", name: hold_dim_end, dimmer: 2, min_mcu: 2, min: 0, max: 100, unit: "%", label: "Wall switch hold slows down in the lowest part above the minimum (to pick a very dim level) (Open Dimmer firmware)"}
   alt_config_str: null
   old_manufacturer_names: null
   old_zb_models: null
@@ -554,24 +555,25 @@ MODULE_AVATTO_ZDMS16_2_TZE204:
   mcu: TLSR8258
   # Same board as MODULE_AVATTO_ZDMS16_2, other stock manufacturer name.
   config_str: jtbgusdc;TS0601-ZDMS16-2;DM2;M;
-  # Carries the own PY32 firmware and updates an MCU that runs another own
-  # version over the UART (tuya_mcu_ota.c); the stock MCU is never touched.
+  # Carries the Open Dimmer firmware (PY32) and updates an MCU that runs another
+  # Open Dimmer version over the UART (tuya_mcu_ota.c); the stock MCU is never
+  # touched.
   secondary_mcu_image: true
-  # Dimming curve per channel: DPs of the own PY32 firmware (2.x), the stock MCU
-  # has none. Shown in Z2M per the device option own_mcu_settings.
+  # Dimming curve, fade and hold per channel: DPs of Open Dimmer (2.x), the stock
+  # MCU has none. Shown in Z2M per the device option open_dimmer_settings.
   dp_attributes:
-    - {dp: "65", type: E, attr: "30", name: dimming_curve, dimmer: 1, min_mcu: 2, label: "Dimming curve (own MCU firmware). led_soft (default): gentle, suits most LED lamps. led: even perceived steps (CIE lightness). led_deep / led_deeper: more room at the dim end, for LED lamps that get bright soon above their minimum. incandescent: filament and halogen lamps. linear: as the stock firmware, conduction time follows the level.", values: {incandescent: 3, led: 1, led_deep: 4, led_deeper: 5, led_soft: 2, linear: 0}}
-    - {dp: "66", type: E, attr: "31", name: dimming_curve, dimmer: 2, min_mcu: 2, label: "Dimming curve (own MCU firmware). led_soft (default): gentle, suits most LED lamps. led: even perceived steps (CIE lightness). led_deep / led_deeper: more room at the dim end, for LED lamps that get bright soon above their minimum. incandescent: filament and halogen lamps. linear: as the stock firmware, conduction time follows the level.", values: {incandescent: 3, led: 1, led_deep: 4, led_deeper: 5, led_soft: 2, linear: 0}}
-    - {dp: "96", type: V, attr: "32", name: fade_on_time, dimmer: 1, min_mcu: 2, min: 0, max: 10000, unit: "ms", label: "Fade from dark to full when switched on (own MCU firmware)"}
-    - {dp: "97", type: V, attr: "33", name: fade_off_time, dimmer: 1, min_mcu: 2, min: 0, max: 10000, unit: "ms", label: "Fade from full to dark when switched off (own MCU firmware)"}
-    - {dp: "98", type: V, attr: "34", name: soft_dim_end, dimmer: 1, min_mcu: 2, min: 0, max: 100, unit: "%", label: "Switching off: the lowest part above the minimum slows down to an even end (own MCU firmware)"}
-    - {dp: "99", type: V, attr: "35", name: hold_time, dimmer: 1, min_mcu: 2, min: 100, max: 10000, unit: "ms", label: "Wall switch hold over the whole range (own MCU firmware)"}
-    - {dp: "9A", type: V, attr: "36", name: hold_dim_end, dimmer: 1, min_mcu: 2, min: 0, max: 100, unit: "%", label: "Wall switch hold slows down in the lowest part above the minimum (to pick a very dim level) (own MCU firmware)"}
-    - {dp: "9B", type: V, attr: "37", name: fade_on_time, dimmer: 2, min_mcu: 2, min: 0, max: 10000, unit: "ms", label: "Fade from dark to full when switched on (own MCU firmware)"}
-    - {dp: "9C", type: V, attr: "38", name: fade_off_time, dimmer: 2, min_mcu: 2, min: 0, max: 10000, unit: "ms", label: "Fade from full to dark when switched off (own MCU firmware)"}
-    - {dp: "9D", type: V, attr: "39", name: soft_dim_end, dimmer: 2, min_mcu: 2, min: 0, max: 100, unit: "%", label: "Switching off: the lowest part above the minimum slows down to an even end (own MCU firmware)"}
-    - {dp: "9E", type: V, attr: "3a", name: hold_time, dimmer: 2, min_mcu: 2, min: 100, max: 10000, unit: "ms", label: "Wall switch hold over the whole range (own MCU firmware)"}
-    - {dp: "9F", type: V, attr: "3b", name: hold_dim_end, dimmer: 2, min_mcu: 2, min: 0, max: 100, unit: "%", label: "Wall switch hold slows down in the lowest part above the minimum (to pick a very dim level) (own MCU firmware)"}
+    - {dp: "65", type: E, attr: "30", name: dimming_curve, dimmer: 1, min_mcu: 2, label: "Dimming curve (Open Dimmer firmware). led_soft (default): gentle, suits most LED lamps. led: even perceived steps (CIE lightness). led_deep / led_deeper: more room at the dim end, for LED lamps that get bright soon above their minimum. incandescent: filament and halogen lamps. linear: as the stock firmware, conduction time follows the level.", values: {incandescent: 3, led: 1, led_deep: 4, led_deeper: 5, led_soft: 2, linear: 0}}
+    - {dp: "66", type: E, attr: "31", name: dimming_curve, dimmer: 2, min_mcu: 2, label: "Dimming curve (Open Dimmer firmware). led_soft (default): gentle, suits most LED lamps. led: even perceived steps (CIE lightness). led_deep / led_deeper: more room at the dim end, for LED lamps that get bright soon above their minimum. incandescent: filament and halogen lamps. linear: as the stock firmware, conduction time follows the level.", values: {incandescent: 3, led: 1, led_deep: 4, led_deeper: 5, led_soft: 2, linear: 0}}
+    - {dp: "96", type: V, attr: "32", name: fade_on_time, dimmer: 1, min_mcu: 2, min: 0, max: 10000, unit: "ms", label: "Fade from dark to full when switched on (Open Dimmer firmware)"}
+    - {dp: "97", type: V, attr: "33", name: fade_off_time, dimmer: 1, min_mcu: 2, min: 0, max: 10000, unit: "ms", label: "Fade from full to dark when switched off (Open Dimmer firmware)"}
+    - {dp: "98", type: V, attr: "34", name: soft_dim_end, dimmer: 1, min_mcu: 2, min: 0, max: 100, unit: "%", label: "Switching off: the lowest part above the minimum slows down to an even end (Open Dimmer firmware)"}
+    - {dp: "99", type: V, attr: "35", name: hold_time, dimmer: 1, min_mcu: 2, min: 100, max: 10000, unit: "ms", label: "Wall switch hold over the whole range (Open Dimmer firmware)"}
+    - {dp: "9A", type: V, attr: "36", name: hold_dim_end, dimmer: 1, min_mcu: 2, min: 0, max: 100, unit: "%", label: "Wall switch hold slows down in the lowest part above the minimum (to pick a very dim level) (Open Dimmer firmware)"}
+    - {dp: "9B", type: V, attr: "37", name: fade_on_time, dimmer: 2, min_mcu: 2, min: 0, max: 10000, unit: "ms", label: "Fade from dark to full when switched on (Open Dimmer firmware)"}
+    - {dp: "9C", type: V, attr: "38", name: fade_off_time, dimmer: 2, min_mcu: 2, min: 0, max: 10000, unit: "ms", label: "Fade from full to dark when switched off (Open Dimmer firmware)"}
+    - {dp: "9D", type: V, attr: "39", name: soft_dim_end, dimmer: 2, min_mcu: 2, min: 0, max: 100, unit: "%", label: "Switching off: the lowest part above the minimum slows down to an even end (Open Dimmer firmware)"}
+    - {dp: "9E", type: V, attr: "3a", name: hold_time, dimmer: 2, min_mcu: 2, min: 100, max: 10000, unit: "ms", label: "Wall switch hold over the whole range (Open Dimmer firmware)"}
+    - {dp: "9F", type: V, attr: "3b", name: hold_dim_end, dimmer: 2, min_mcu: 2, min: 0, max: 100, unit: "%", label: "Wall switch hold slows down in the lowest part above the minimum (to pick a very dim level) (Open Dimmer firmware)"}
   alt_config_str: null
   old_manufacturer_names: null
   old_zb_models: null

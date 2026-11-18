@@ -180,7 +180,7 @@
         },
         "secondary_mcu_image": {
           "type": "boolean",
-          "description": "Carry the own secondary-MCU firmware (src/zigbee/secondary_mcu_image.c) and update the MCU with it when it runs another own version (never the stock MCU)"
+          "description": "Carry the Open Dimmer secondary-MCU firmware (src/zigbee/secondary_mcu_image.c) and update the MCU with it when it runs another Open Dimmer version (never the stock MCU); the Z2M converter adds mcu_firmware"
         },
         "dp_attributes": {
           "oneOf": [
@@ -200,7 +200,7 @@
                   "min": {"type": "number"},
                   "max": {"type": "number"},
                   "dimmer": {"type": "integer", "minimum": 1, "description": "Expose on this dimmer's endpoint (1-based) instead of the first one; the attribute stays on endpoint 1"},
-                  "min_mcu": {"type": "integer", "minimum": 1, "description": "Only an own secondary-MCU firmware of this major version or later has the DP: the expose follows the device option own_mcu_settings (auto/show/hide)"}
+                  "min_mcu": {"type": "integer", "minimum": 1, "description": "Only Open Dimmer of this major version or later has the DP: the expose follows the device option open_dimmer_settings (auto/show/hide)"}
                 },
                 "required": ["dp", "type", "attr", "name", "label"],
                 "additionalProperties": false
