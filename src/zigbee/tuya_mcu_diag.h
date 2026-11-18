@@ -34,6 +34,16 @@ typedef enum {
     TUYA_MCU_DIAG_TX_DROP       = 9,  /* queue full, id = dpid or cmd         */
     TUYA_MCU_DIAG_TX_FAIL       = 10, /* UART write failed, id = dpid or cmd  */
     TUYA_MCU_DIAG_UART_REINIT   = 11,
+    TUYA_MCU_DIAG_IDENT         = 12, /* Open Dimmer said who it is: id = version
+                                       * byte, value = answer length << 24 |
+                                       * bootloader version << 16 | build */
+    TUYA_MCU_DIAG_BOOT_REQUEST  = 13, /* a bootloader started asking (first
+                                       * block request, or another bootloader
+                                       * or mode, or 10 s after the last one):
+                                       * id = mode (0: a v1 bootloader),
+                                       * value = request length << 24 |
+                                       * bootloader version << 16 | installed
+                                       * build */
 } tuya_mcu_diag_kind_t;
 
 typedef struct __attribute__((packed)) {
@@ -63,6 +73,28 @@ typedef struct __attribute__((packed)) {
      * image is served). */
     uint16_t ota_failures;
     uint16_t ota_pause_min;
+
+    /* State, kept by a clear. What Open Dimmer said who it is (0 until then,
+     * and for an answer without them): its build and bootloader version. */
+    uint16_t mcu_build;
+    uint16_t mcu_boot;
+
+    /* Boot timing of this firmware (contract item 3), ms since its start:
+     * the UART up (end of the MCU link's init), and the first block request
+     * answered (0: none yet). */
+    uint16_t uart_up_ms;
+    uint16_t first_answer_ms;
+
+    /* The last block request: bootloader version << 8 | mode (0x0100: a v1
+     * bootloader's 6 bytes), and the installed build it named. */
+    uint16_t request_boot_mode;
+    uint16_t request_build;
+
+    /* Counters: block requests that started a rescue (try counter or module
+     * button) and a link probe (the app's link watchdog), each counted once
+     * per run of requests (see TUYA_MCU_DIAG_BOOT_REQUEST). */
+    uint16_t rescues;
+    uint16_t link_probes;
 } tuya_mcu_diag_counters_t;
 
 /* Counters, updated in place by the link. */
@@ -77,6 +109,10 @@ void tuya_mcu_diag_clear(void);
  *  as tuya_mcu_diag_number() builds them). */
 void tuya_mcu_diag_log(uint8_t kind, uint8_t id, uint32_t value);
 uint32_t tuya_mcu_diag_number(const uint8_t *data, uint16_t len);
+
+/** A time for a 16-bit field: saturated at 0xFFFF and at least 1, since 0
+ *  there means "not yet". */
+uint16_t tuya_mcu_diag_ms(uint32_t ms);
 
 /** Append the attributes to a Basic cluster table; returns how many. */
 uint8_t tuya_mcu_diag_register(hal_zigbee_attribute *table, uint8_t start_index);

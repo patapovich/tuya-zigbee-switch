@@ -271,7 +271,10 @@ def test_dp_inits_reach_the_mcu():
         take_tx(proc)
         proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_QUERY_NETWORK)}")
         pump(proc)
-        assert _wrote_dp(take_tx(proc), 0x13), "IT never reached the MCU"
+        tx = take_tx(proc)
+        Device(proc).step_time(2)       # behind the reply: 2 ms apart (burst gate)
+        pump(proc)
+        assert _wrote_dp(tx + take_tx(proc), 0x13), "IT never reached the MCU"
     finally:
         proc.stop()
 

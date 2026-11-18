@@ -21,13 +21,23 @@ COUNTER_FIELDS = (
     "ack_latency_last_ms", "ack_latency_max_ms", "log_total",
     # appended later: older firmware sends fewer fields
     "ota_failures", "ota_pause_min",
+    # phase 3: Open Dimmer's build and bootloader version (identity answer),
+    # boot timing (ms since the module's start), the last block request
+    # (bootloader version << 8 | mode, the installed build), rescues and link
+    # probes asked for
+    "mcu_build", "mcu_boot", "uart_up_ms", "first_answer_ms",
+    "request_boot_mode", "request_build", "rescues", "link_probes",
 )
 
 KINDS = {
     1: "TX_DP", 2: "TX_CMD", 3: "RX_DP", 4: "RX_DP_PASSIVE", 5: "RX_CMD",
     6: "ACK", 7: "ACK_TIMEOUT", 8: "RX_BAD", 9: "TX_DROP", 10: "TX_FAIL",
-    11: "UART_REINIT",
+    11: "UART_REINIT", 12: "IDENT", 13: "BOOT_REQUEST",
 }
+
+# Block request modes of the v2 bootloader (zdms16-py32 src/ota_proto.h).
+MODES = {0: "v1 bootloader", 1: "asked update", 2: "no app", 3: "power-on probe",
+         4: "rescue (crash loop)", 5: "rescue (module button)", 6: "link probe"}
 
 ENTRY = struct.Struct("<HBBI")
 
@@ -64,6 +74,18 @@ def decode_log(pages: list[bytes]) -> list[dict]:
     return out
 
 
+def describe(e: dict) -> str:
+    """The packed values of the phase-3 entries, spelled out."""
+    v = e["value"]
+    length, boot, build = v >> 24, (v >> 16) & 0xFF, v & 0xFFFF
+    if e["kind"] == "IDENT":
+        return f"  ({length} B: build {build}, bootloader {boot})"
+    if e["kind"] == "BOOT_REQUEST":
+        return (f"  ({MODES.get(e['id'], e['id'])}, {length} B, bootloader {boot}, "
+                f"installed build {build})")
+    return ""
+
+
 def format_log(entries: list[dict]) -> str:
     lines = []
     prev = None
@@ -71,7 +93,7 @@ def format_log(entries: list[dict]) -> str:
         dt = "" if prev is None else f"+{(e['t_ms'] - prev) % 65536} ms"
         prev = e["t_ms"]
         lines.append(f"{e['t_ms']:5d} {dt:>10} {e['kind']:<14} id=0x{e['id']:02X} "
-                     f"value={e['value']}")
+                     f"value={e['value']}{describe(e)}")
     return "\n".join(lines)
 
 

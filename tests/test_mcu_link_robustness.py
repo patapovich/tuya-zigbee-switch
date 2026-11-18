@@ -138,6 +138,10 @@ def test_it_inits_follow_the_mcus_first_network_query():
         device.step_time(200)      # the timer's unanswered IT write times out first
         pump(proc)
         tx += take_tx(proc)
+        for _ in range(2):         # frames written less than 2 ms apart wait (burst gate)
+            device.step_time(2)
+            pump(proc)
+            tx += take_tx(proc)
         assert any(dp == 0x13 for dp, _ in dp_writes(tx)), "IT not sent after the MCU's 0x20"
     finally:
         proc.stop()
@@ -234,5 +238,107 @@ def test_no_time_cluster_and_time_sync_answered_with_zeros():
         pump(proc)
         replies = [(cmd, data) for cmd, data in parse_frames(take_tx(proc)) if cmd == 0x24]
         assert replies == [(0x24, bytes(8))]
+    finally:
+        proc.stop()
+
+
+# ---------------------------------------------------------------- burst gate
+
+def _quiet_stock_link(proc, device) -> None:
+    """First contact done with a stock MCU (1.0.7), then its first query
+    (the contact once more): from here on a query gets only its reply."""
+    from test_dimmer_mcu import TUYA_CMD_MCU_VERSION, bool_dp
+    device.step_time(2100)
+    pump(proc)
+    take_tx(proc)
+    proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_MCU_VERSION, bytes([0x47]))} "
+              f"{tuya_frame(0x06, bool_dp(1, 0))}")
+    for seq in (1, 2):
+        proc.exec(f"uart_rx {tuya_frame(0x20, seq=seq)}")
+        for _ in range(3):
+            device.step_time(200)
+            pump(proc)
+            take_tx(proc)
+            proc.exec(f"uart_rx {tuya_frame(0x0B, bytes([0x47]))} "
+                      f"{tuya_frame(0x06, bool_dp(1, 0))}")
+
+
+def _replies(proc, device, steps_ms: list[int]) -> list[list[tuple[int, int]]]:
+    """(cmd, seq) of what went out at once, then after each step."""
+    out = []
+    for ms in [0] + steps_ms:
+        if ms:
+            device.step_time(ms)
+        pump(proc)
+        raw = take_tx(proc)
+        frames, i = [], 0
+        for cmd, data in parse_frames(raw):
+            frames.append((cmd, int.from_bytes(raw[i + 3:i + 5], "big")))
+            i += 9 + len(data)
+        out.append(frames)
+    return out
+
+
+def test_two_replies_to_a_factory_mcu_go_2_ms_apart():
+    """Contract item 6: the network and time queries in one burst get 10 + 17
+    bytes back, more than a stock MCU's 23-byte ring: the second reply waits
+    2 ms, the order and the sequence numbers stay."""
+    from test_dimmer_mcu import ZDMS16_2
+    proc = StubProc(device_config=ZDMS16_2).start()
+    try:
+        device = Device(proc)
+        pump(proc)
+        _quiet_stock_link(proc, device)
+        proc.exec(f"uart_rx {tuya_frame(0x20, seq=5)} {tuya_frame(0x24, seq=6)}")
+        assert _replies(proc, device, [1, 1]) == [[(0x20, 5)], [], [(0x24, 6)]]
+        device.step_time(5)
+        proc.exec(f"uart_rx {tuya_frame(0x20, seq=7)} {tuya_frame(0x25, seq=8)}")
+        assert _replies(proc, device, []) == [[(0x20, 7), (0x25, 8)]]     # 20 bytes: at once
+    finally:
+        proc.stop()
+
+
+def test_three_held_replies_keep_their_order():
+    from test_dimmer_mcu import ZDMS16_2
+    proc = StubProc(device_config=ZDMS16_2).start()
+    try:
+        device = Device(proc)
+        pump(proc)
+        _quiet_stock_link(proc, device)
+        proc.exec("uart_rx " + " ".join(tuya_frame(cmd, seq=seq) for cmd, seq in
+                                        ((0x24, 1), (0x24, 2), (0x20, 3), (0x24, 4))))
+        got = [f for step in _replies(proc, device, [2, 2, 2, 2]) for f in step]
+        assert got == [(0x24, 1), (0x24, 2), (0x20, 3), (0x24, 4)]
+    finally:
+        proc.stop()
+
+
+def test_open_dimmer_gets_its_replies_at_once():
+    """It said who it is: its UART takes any burst."""
+    from test_mcu_ota import VERSION, contact_as_own, start
+    proc, device = start()
+    try:
+        contact_as_own(proc, device, VERSION)
+        take_tx(proc)
+        proc.exec(f"uart_rx {tuya_frame(0x20, seq=5)} {tuya_frame(0x24, seq=6)}")
+        assert _replies(proc, device, []) == [[(0x20, 5), (0x24, 6)]]
+    finally:
+        proc.stop()
+
+
+def test_the_queued_frame_a_reply_starts_waits_2_ms():
+    """The burst the stock-compatibility gate found (a touch switch's factory
+    MCU): its first network query gets the reply (10 bytes) and starts the
+    first contact, whose IT write (14 bytes) now leaves 2 ms later."""
+    cfg = "hktk6hze;TS0601-TPZ2;Y9600;ST18;ST19;RT181E;RT191F;IT13400;M;"
+    proc = StubProc(device_config=cfg).start()
+    try:
+        device = Device(proc)
+        pump(proc)
+        take_tx(proc)
+        proc.exec(f"uart_rx {tuya_frame(0x20, seq=0)}")
+        steps = _replies(proc, device, [1, 1])
+        assert [cmd for cmd, _ in steps[0]] == [0x20]
+        assert steps[1] == [] and [cmd for cmd, _ in steps[2]] == [0x04]
     finally:
         proc.stop()

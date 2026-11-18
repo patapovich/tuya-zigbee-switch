@@ -1,5 +1,6 @@
 #include "zigbee/tuya_secondary_mcu.h"
 #include "zigbee/tuya_mcu_diag.h"
+#include "zigbee/tuya_mcu_ota.h"
 #include "hal/printf_selector.h"
 #include "hal/tasks.h"
 #include "hal/timer.h"
@@ -56,15 +57,92 @@ static int uart_send(const uint8_t *buf, uint16_t len) {
     return -1;
 }
 
+/* ---- burst gate (contract item 6, tuya_mcu_ota.h) --------------------------
+ *
+ * The UART writes a frame byte by byte as it is built, so frames we write in
+ * one pass (a reply and the queued frame it starts, two replies) are back to
+ * back on the wire. A factory MCU's USART ring holds 23 bytes: frames less
+ * than BURST_GAP_MS apart must not add up to more. A frame that would is held
+ * back, in order with what follows it, and goes out BURST_GAP_MS after the
+ * last one, well within the 50 ms of phase 1's timing that the factory MCUs
+ * are kept to. An answer of the MCU (a DP report, its echo of our command)
+ * ends a burst: it has read what it answers, and the next frame (the queued
+ * one its answer lets go) starts a new one. Open Dimmer (fast acks: it said
+ * who it is) takes any burst.
+ */
+#define BURST_GAP_MS    2
+#define GATE_FRAMES     3       /* when full, a frame goes out at once */
+
+static uint8_t    g_fast_acks;
+static uint32_t   g_burst_ms;   /* when the last frame was written */
+static uint16_t   g_burst_len;  /* bytes written since the last gap */
+static uint8_t    g_gate[GATE_FRAMES][TUYA_MCU_FACTORY_FRAME_MAX];
+static uint8_t    g_gate_len[GATE_FRAMES];
+static uint8_t    g_gate_count;
+static hal_task_t g_gate_timer;
+
+static void burst_written(uint16_t len) {
+    uint32_t now = hal_millis();
+
+    if (now - g_burst_ms >= BURST_GAP_MS) {
+        g_burst_len = 0;
+    }
+    g_burst_len = (uint16_t)(g_burst_len + len);
+    g_burst_ms  = now;
+}
+
+static uint8_t burst_too_long(uint16_t len) {
+    return !g_fast_acks && g_burst_len > 0 && hal_millis() - g_burst_ms < BURST_GAP_MS &&
+           g_burst_len + len > TUYA_MCU_FACTORY_BURST_MAX;
+}
+
+static int gate_send(const uint8_t *buf, uint16_t len) {
+    if ((g_gate_count > 0 || burst_too_long(len)) && g_gate_count < GATE_FRAMES) {
+        memcpy(g_gate[g_gate_count], buf, len);
+        g_gate_len[g_gate_count++] = (uint8_t)len;
+        if (g_gate_count == 1) {
+            hal_tasks_schedule(&g_gate_timer, BURST_GAP_MS);
+        }
+        return 0;
+    }
+    if (uart_send(buf, len) != 0) {
+        return -1;
+    }
+    burst_written(len);
+    return 0;
+}
+
+static void gate_fired(void *arg) {
+    (void)arg;
+    while (g_gate_count > 0) {
+        if (burst_too_long(g_gate_len[0])) {
+            hal_tasks_schedule(&g_gate_timer, BURST_GAP_MS);
+            return;
+        }
+        if (uart_send(g_gate[0], g_gate_len[0]) == 0) {
+            burst_written(g_gate_len[0]);
+        } else {
+            tuya_mcu_diag.tx_fail++;
+        }
+        g_gate_count--;
+        memmove(g_gate[0], g_gate[1], g_gate_count * sizeof(g_gate[0]));
+        memmove(g_gate_len, g_gate_len + 1, g_gate_count);
+    }
+}
+
 /* Builds and sends one frame. For a DP write `data` is the DP value and the
- * DP unit header is added here. */
+ * DP unit header is added here. Every frame but a block answer (send_long_reply)
+ * is built here, so none is longer than a factory MCU takes (contract item 6,
+ * tuya_mcu_ota.h): its parser wedges on a frame of 32..38 bytes. */
 static int send_frame(uint8_t cmd, uint16_t seq, uint8_t dpid, uint8_t dp_type,
                       const uint8_t *data, uint16_t data_len) {
-    uint8_t  buf[FRAME_HEADER_LEN + 4 + 32 + 1];
+    uint8_t  buf[TUYA_MCU_FACTORY_FRAME_MAX];
     uint16_t body = (uint16_t)(cmd == TUYA_MCU_CMD_WRITE ? data_len + 4 : data_len);
     uint16_t idx  = 0;
 
-    if (data_len > 32 || (data_len > 0 && data == NULL)) {
+    if (data_len > TUYA_MCU_FACTORY_FRAME_MAX ||
+        FRAME_HEADER_LEN + body + 1 > TUYA_MCU_FACTORY_FRAME_MAX ||
+        (data_len > 0 && data == NULL)) {
         return -1;
     }
     buf[idx++] = 0x55;
@@ -88,7 +166,7 @@ static int send_frame(uint8_t cmd, uint16_t seq, uint8_t dpid, uint8_t dp_type,
     buf[idx] = checksum(buf, idx);
     idx++;
 
-    int     ok = uart_send(buf, idx) == 0;
+    int     ok = gate_send(buf, idx) == 0;
     uint8_t id = cmd == TUYA_MCU_CMD_WRITE ? dpid : cmd;
     if (!ok) {
         tuya_mcu_diag.tx_fail++;
@@ -149,6 +227,7 @@ int tuya_secondary_mcu_send_long_reply(uint8_t cmd, uint16_t seq,
         tuya_mcu_diag.tx_fail++;
         return -1;
     }
+    burst_written(idx);         /* a direct reply: never held back, but counted */
     tuya_mcu_diag.tx_cmd++;
     return 0;
 }
@@ -173,6 +252,12 @@ typedef struct {
     uint8_t value[16];
 } tx_item_t;
 
+/* The longest queued frame, a DP write of 16 bytes, is what a factory MCU
+ * takes. A negative array size stops the build. */
+typedef char tx_item_fits_a_factory_mcu[
+        FRAME_HEADER_LEN + 4 + sizeof(((tx_item_t *) 0)->value) + 1 <=
+        TUYA_MCU_FACTORY_FRAME_MAX ? 1 : -1];
+
 static tx_item_t  g_txq[TX_QUEUE_LEN];
 static uint8_t    g_txq_head  = 0;
 static uint8_t    g_txq_count = 0;
@@ -195,7 +280,6 @@ static void tx_arm_timer(void) {
 
 #define TX_RETRIES    2
 
-static uint8_t g_fast_acks;
 static uint8_t g_tx_retries;
 static void    (*g_resync)(void);
 
@@ -418,7 +502,8 @@ static void tx_note_command_answer(uint8_t cmd) {
     if (!g_tx_busy || g_tx_in_flight.cmd == TUYA_MCU_CMD_WRITE || g_tx_in_flight.cmd != cmd) {
         return;
     }
-    g_tx_busy = 0;
+    g_burst_len = 0;
+    g_tx_busy   = 0;
     hal_tasks_unschedule(&g_tx_timer);
 }
 
@@ -550,9 +635,20 @@ static uint8_t rx_drop_if_stale(void) {
     return 1;
 }
 
+static uint16_t g_reports = 0;
+
+uint16_t tuya_secondary_mcu_reports(void) {
+    return g_reports;
+}
+
 static void rx_dispatch_report(uint8_t cmd, uint16_t frame_len) {
     uint16_t off = FRAME_HEADER_LEN;
     uint16_t end = (uint16_t)(frame_len - 1);
+
+    if (off + 4 <= end) {
+        g_reports++;
+    }
+    g_burst_len = 0;            /* an answer: see the burst gate */
 
     /* One report may carry several DPs back to back. */
     g_report_is_passive = cmd == TUYA_MCU_CMD_REPORT_PASSIVE;
@@ -647,8 +743,14 @@ static void rx_process(void) {
         } else {
             uint16_t seq = (uint16_t)((g_rx[3] << 8) | g_rx[4]);
             tx_note_command_answer(cmd);
-            tuya_mcu_diag_log(TUYA_MCU_DIAG_RX_CMD, cmd,
-                              tuya_mcu_diag_number(&g_rx[FRAME_HEADER_LEN], dlen));
+
+            /* Block requests come in runs of hundreds (a rescue window asks
+             * every 500 ms): tuya_mcu_ota.c logs each run once, so they do
+             * not push everything else out of the log. */
+            if (cmd != TUYA_MCU_CMD_OTA_BLOCK) {
+                tuya_mcu_diag_log(TUYA_MCU_DIAG_RX_CMD, cmd,
+                                  tuya_mcu_diag_number(&g_rx[FRAME_HEADER_LEN], dlen));
+            }
             if (g_command_callback != NULL) {
                 g_command_callback(cmd, seq, &g_rx[FRAME_HEADER_LEN], dlen);
             }
@@ -684,6 +786,9 @@ void tuya_secondary_mcu_init(const hal_uart_config_t *cfg) {
     g_tx_timer.handler = tx_timer_fired;
     g_tx_timer.arg     = NULL;
     hal_tasks_init(&g_tx_timer);
+    g_gate_timer.handler = gate_fired;
+    g_gate_timer.arg     = NULL;
+    hal_tasks_init(&g_gate_timer);
     hal_uart_init(cfg);
     g_enabled = 1;
 }

@@ -81,6 +81,9 @@ RAMP_STEP = 12
 
 # Longer than any ack wait or fade hold-off the firmware may use.
 SETTLE_MS = 6000
+# A first-contact dump without any DP report is asked again after this
+# (tuya_mcu_app.c).
+DUMP_RETRY_MS = 1000
 HOLDOFF_MS = 3000  # firmware DIMMER_FADE_HOLDOFF_MS
 
 
@@ -159,11 +162,15 @@ def set_level(proc: StubProc, device: Device, lvl: int) -> None:
     ack_writes(proc, device)
     device.step_time(SETTLE_MS)
     pump(proc)
-    # The first-contact frames (2 s after boot: version query, query-all) are
-    # still going out: no MCU here answers them, so let both acks time out
-    # before the test goes on.
-    for _ in range(2):
-        device.step_time(200)
+    # The first contact (2 s after boot: version query, query-all) is still
+    # going out. The version is answered as the stock MCU does, which ends its
+    # retries; the query-all gets no DP report here, so let its ack time out,
+    # and that of the query-all that follows 1 s later because no report came
+    # (DUMP_RETRY_MS in tuya_mcu_app.c), before the test goes on.
+    take_tx(proc)
+    proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_MCU_VERSION, bytes([0x47]))}")
+    for ms in (200, 200, DUMP_RETRY_MS, 200):
+        device.step_time(ms)
         pump(proc)
         take_tx(proc)
 

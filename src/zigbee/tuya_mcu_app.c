@@ -4,6 +4,7 @@
 #include "hal/printf_selector.h"
 #include "hal/system.h"
 #include "hal/tasks.h"
+#include "hal/timer.h"
 #include "hal/uart.h"
 #include "hal/zigbee.h"
 #include "zigbee/consts.h"
@@ -155,8 +156,40 @@ static void version_answered(void) {
 #define CONTACT_MCU               2
 #define FIRST_CONTACT_DELAY_MS    2000
 
+/* A stock MCU reads its UART only some time after its power-up (1.5 s and its
+ * init on the ZDMS16-2): the contact timer must never come sooner (contract
+ * item 3, tuya_mcu_ota.h). A negative array size stops the build; the Telink
+ * gcc 4.5 has no _Static_assert. */
+typedef char first_contact_after_the_stock_mcu_listens[
+        FIRST_CONTACT_DELAY_MS >= TUYA_MCU_FIRST_CONTACT_MIN_MS ? 1 : -1];
+
 static uint8_t    g_contact = CONTACT_NONE;
 static hal_task_t g_contact_timer;
+
+/* ---- dump retry -------------------------------------------------------------
+ *
+ * The first-contact dump is the only way to learn a dimmer's min, max, switch
+ * type and power-on, and the stock ZDMS16-2 MCU sends no network query that
+ * would repeat the contact. It goes out at app init + 2 s, about 0.5 s after
+ * a stock MCU powered up with us starts to listen: one that starts later loses
+ * it (min and max then stay unknown until the next restart of ours, and low
+ * levels drive the lamp below its minimum). So when no DP report has come
+ * DUMP_RETRY_MS after the contact, the dump is asked once more: a command the
+ * MCU already gets, and the only frame the stock MCU gets that phase 1 did not
+ * send it (zdms16-py32 docs/BOOTLOADER.md section 10, change 6).
+ */
+#define DUMP_RETRY_MS    1000
+
+static hal_task_t g_dump_timer;
+static uint16_t   g_dump_reports;   /* DP reports so far when the dump was asked */
+
+static void dump_retry(void *arg) {
+    (void)arg;
+    if (tuya_secondary_mcu_reports() == g_dump_reports) {
+        printf("No DP report after the dump query: asked again\r\n");
+        dp_attr_query_all();
+    }
+}
 
 /* Returns 1 if it made the contact (asked the version). */
 static uint8_t first_contact(uint8_t source) {
@@ -178,6 +211,9 @@ static uint8_t first_contact(uint8_t source) {
      * only way to learn them after a reboot. */
     if (dp_attrs_cnt > 0 || dimmer_clusters_cnt > 0) {
         dp_attr_query_all();
+        g_dump_reports = tuya_secondary_mcu_reports();
+        hal_tasks_unschedule(&g_dump_timer);
+        hal_tasks_schedule(&g_dump_timer, DUMP_RETRY_MS);
     }
     return 1;
 }
@@ -190,7 +226,8 @@ void tuya_mcu_app_mcu_restarted(void) {
     g_contact = CONTACT_NONE;
     g_mcu_own = 0;
     tuya_secondary_mcu_set_fast_acks(0, NULL);
-    version_answered();                 /* asked again at the next contact */
+    version_answered();                  /* asked again at the next contact */
+    hal_tasks_unschedule(&g_dump_timer); /* and so is the dump */
     tuya_mcu_ota_mcu_restarted();
 }
 
@@ -198,10 +235,9 @@ void tuya_mcu_app_mcu_restarted(void) {
  * seq 0 again means it restarted alone (reflash, watchdog, update), unless it
  * follows 0xFFFF: then the counter wrapped (every ~23 days). A 2.x MCU that
  * has not said who it is yet may be ours too (its identity answer lost, or it
- * restarted while it was asked); a few times only, as a stock MCU may number
- * every query 0. */
-#define UNIDENTIFIED_RESTARTS_MAX    3
-
+ * restarted while it was asked); UNIDENTIFIED_RESTARTS_MAX times per run only
+ * (contract item 4, tuya_mcu_ota.h), as a stock MCU may number every query 0.
+ * Only an identity answer resets the count, and a stock MCU never gives one. */
 static uint16_t g_last_query_seq;
 static uint8_t  g_unidentified_restarts;
 
@@ -365,10 +401,18 @@ void tuya_mcu_app_init(void) {
     g_version_timer.arg     = NULL;
     hal_tasks_init(&g_version_timer);
 
+    g_dump_timer.handler = dump_retry;
+    g_dump_timer.arg     = NULL;
+    hal_tasks_init(&g_dump_timer);
+
     g_contact_timer.handler = first_contact_timer;
     g_contact_timer.arg     = NULL;
     hal_tasks_init(&g_contact_timer);
     hal_tasks_schedule(&g_contact_timer, FIRST_CONTACT_DELAY_MS);
+
+    /* Boot timing (contract item 3): from here on a block request is
+     * answered, from the first poll of the main loop. */
+    tuya_mcu_diag.uart_up_ms = tuya_mcu_diag_ms(hal_millis());
 }
 
 void tuya_mcu_app_task(void) {

@@ -2,6 +2,7 @@
 #include "zigbee/consts.h"
 #include "hal/timer.h"
 
+#include <stddef.h>
 #include <string.h>
 
 #define DIAG_FORMAT          1
@@ -20,16 +21,19 @@ static uint8_t g_log[DIAG_LOG_ENTRIES * DIAG_ENTRY_SIZE];
 static uint8_t g_log_count = 0;
 static uint8_t g_control   = 0;
 
-void tuya_mcu_diag_clear(void) {
-    /* State, not counters: kept. */
-    uint16_t ota_failures  = tuya_mcu_diag.ota_failures;
-    uint16_t ota_pause_min = tuya_mcu_diag.ota_pause_min;
+/* The fields from ota_failures up to rescues are state, not counters: a clear
+ * keeps them. */
+#define DIAG_STATE_START    offsetof(tuya_mcu_diag_counters_t, ota_failures)
+#define DIAG_STATE_END      offsetof(tuya_mcu_diag_counters_t, rescues)
 
+void tuya_mcu_diag_clear(void) {
+    uint8_t state[DIAG_STATE_END - DIAG_STATE_START];
+
+    memcpy(state, (uint8_t *)&tuya_mcu_diag + DIAG_STATE_START, sizeof(state));
     memset(&tuya_mcu_diag, 0, sizeof(tuya_mcu_diag));
-    tuya_mcu_diag.len           = (uint8_t)(sizeof(tuya_mcu_diag) - 1);
-    tuya_mcu_diag.format        = DIAG_FORMAT;
-    tuya_mcu_diag.ota_failures  = ota_failures;
-    tuya_mcu_diag.ota_pause_min = ota_pause_min;
+    tuya_mcu_diag.len    = (uint8_t)(sizeof(tuya_mcu_diag) - 1);
+    tuya_mcu_diag.format = DIAG_FORMAT;
+    memcpy((uint8_t *)&tuya_mcu_diag + DIAG_STATE_START, state, sizeof(state));
     memset(g_pages, 0, sizeof(g_pages));
     g_log_count = 0;
 }
@@ -41,6 +45,10 @@ uint32_t tuya_mcu_diag_number(const uint8_t *data, uint16_t len) {
         value = (value << 8) | data[i];
     }
     return value;
+}
+
+uint16_t tuya_mcu_diag_ms(uint32_t ms) {
+    return ms > 0xFFFF ? 0xFFFF : ms == 0 ? 1 : (uint16_t)ms;
 }
 
 void tuya_mcu_diag_log(uint8_t kind, uint8_t id, uint32_t value) {

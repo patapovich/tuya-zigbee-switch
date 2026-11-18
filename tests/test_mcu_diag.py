@@ -157,21 +157,19 @@ def _sent_cmds(proc: StubProc) -> list[int]:
 
 def test_query_all_sent_after_boot_without_mcu_contact():
     """The ZDMS16-2 MCU never asks for the network status on its own, so the
-    module has to start the conversation: query-all ~2 s after boot."""
+    module has to start the conversation: query-all ~2 s after boot. Nothing
+    answers it here, so it is asked once more 1 s later (a stock MCU that
+    started to listen late), and then never again."""
     with StubProc(device_config=ZDMS16_2) as proc:
         device = Device(proc)
         pump(proc)
         assert TUYA_CMD_QUERY_ALL not in _sent_cmds(proc)
-        device.step_time(2100)
-        pump(proc)
-        sent = _sent_cmds(proc)
-        device.step_time(200)  # behind the unanswered version query
-        pump(proc)
-        sent += _sent_cmds(proc)
-        assert TUYA_CMD_QUERY_ALL in sent
-        device.step_time(10000)
-        pump(proc)
-        assert TUYA_CMD_QUERY_ALL not in _sent_cmds(proc)  # once only
+        sent = []
+        for t in range(100, 15_100, 100):
+            device.step_time(100)
+            pump(proc)
+            sent += [(t, cmd) for cmd in _sent_cmds(proc)]
+        assert [t for t, cmd in sent if cmd == TUYA_CMD_QUERY_ALL] == [2200, 3000]
 
 
 def test_control_2_sends_query_all():
