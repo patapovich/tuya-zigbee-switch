@@ -14,6 +14,8 @@ Please describe what you are working on, under ## Upcoming
   does the switching or dimming: relays, touch keys, dimmers, power-on behaviour, datapoints
   written at boot. Config tokens are listed in [porting.md](contribute/porting.md#secondary-mcu)
   - MCU firmware version shown in Z2M (`mcu_version`)
+  - An on/off the MCU answers late or with the other state: Zigbee shows the MCU's state and
+    does not take the answer for a key press
 - **AVATTO ZDMS16-2 2-gang dimmer module** (`TS0601`, `_TZE284_jtbgusdc`, `_TZE204_jtbgusdc`)
   - Level Control (on, off, move, step, move to level, OnLevel), levels scaled to the MCU's
     min/max brightness, wall switch type and power-on behaviour
