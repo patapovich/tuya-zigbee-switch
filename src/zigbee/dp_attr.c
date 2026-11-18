@@ -1,4 +1,5 @@
 #include "dp_attr.h"
+#include "basic_cluster.h"
 #include "consts.h"
 #include "device_config/config_parser.h"
 #include "hal/printf_selector.h"
@@ -8,6 +9,16 @@
 
 dp_attr_t dp_attrs[MAX_DP_ATTRS];
 uint8_t   dp_attrs_cnt = 0;
+
+/* Every dp attribute gets a slot in the Basic cluster's attribute table
+ * (basic_cluster_add_to_endpoint): 13 fixed, network LED, dp config, config
+ * ext, the dp attributes, MCU version, MCU diag (counters, log pages,
+ * control). Raise attr_infos together with MAX_DP_ATTRS. A negative array
+ * size stops the build; the Telink gcc 4.5 has no _Static_assert. */
+#define BASIC_ATTRS_BESIDE_DP    (13 + 1 + 2 + 1 + 1 + TUYA_MCU_DIAG_LOG_PAGES + 1)
+typedef char dp_attrs_fit_the_basic_table[
+        (sizeof(((zigbee_basic_cluster *) 0)->attr_infos) / sizeof(hal_zigbee_attribute) >=
+         BASIC_ATTRS_BESIDE_DP + MAX_DP_ATTRS) ? 1 : -1];
 
 /* Window during which reports are assumed to be the answer to our own
  * query-all rather than someone touching the switch. */
@@ -107,10 +118,13 @@ void dp_attr_parse(const char *str, uint16_t len) {
 
     for (i = 0; i <= len; i++) {
         if (i == len || str[i] == ';') {
-            if (i > start && dp_attrs_cnt < MAX_DP_ATTRS) {
-                if (!parse_entry(str + start, (uint8_t)(i - start))) {
-                    printf("dp_attr: bad entry at %d\r\n", (int)start);
-                }
+            if (i > start && dp_attrs_cnt >= MAX_DP_ATTRS) {
+                /* Not mapped, so the setting is missing on the device while
+                 * the converter still shows it. */
+                printf("dp_attr: entry at %d dropped, at most %d\r\n", (int)start,
+                       MAX_DP_ATTRS);
+            } else if (i > start && !parse_entry(str + start, (uint8_t)(i - start))) {
+                printf("dp_attr: bad entry at %d\r\n", (int)start);
             }
             start = i + 1;
         }
