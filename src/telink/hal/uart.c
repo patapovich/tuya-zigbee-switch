@@ -39,7 +39,7 @@
  * 256. One more frame in the same burst (a wall switch report) or one more DP
  * per channel then dropped the whole burst. 512 (508 usable) leaves room for
  * both. End devices keep 256: deep retention bounds their RAM.
- * tests/test_uart_hal.py reads the router value from this file. */
+ * tests/own_mcu.py reads the router value from this file. */
 #ifdef END_DEVICE
 #define UART_RX_DMA_BUF_SIZE    256
 #else

@@ -1,9 +1,7 @@
 """The UART under the secondary-MCU link: how the Telink HAL hands received
 bytes over (DMA chunks), the stub's TX capture, and recovery from a wedged
 UART (src/telink/hal/uart.c, src/stub/hal/uart.c)."""
-import re
-from pathlib import Path
-
+from own_mcu import telink_router_chunk_max
 from test_dimmer_mcu import (
     DP_ON_L1,
     DP_ON_L2,
@@ -30,18 +28,8 @@ from tuya_mcu import (
 )
 from zcl_consts import ZCL_CLUSTER_ON_OFF
 
-UART_C = Path(__file__).resolve().parent.parent / "src/telink/hal/uart.c"
 ATTR_FADE_ON_L2 = 0xFF37        # dp 0x9B in the board's dp config
 ZCL_CMD_ONOFF_OFF = 0x00
-
-
-def telink_router_chunk_max() -> int:
-    """Payload of the Telink RX DMA buffer on routers (the ZDMS16-2 build)."""
-    text = UART_C.read_text()
-    m = re.search(r"#ifdef END_DEVICE\s+#define UART_RX_DMA_BUF_SIZE\s+\d+\s+"
-                  r"#else\s+#define UART_RX_DMA_BUF_SIZE\s+(\d+)\s+#endif", text)
-    assert m, "UART_RX_DMA_BUF_SIZE block not found"
-    return int(m.group(1)) - 4
 
 
 def frame(cmd: int, data: bytes, seq: int) -> bytes:

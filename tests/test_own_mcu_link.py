@@ -3,6 +3,7 @@ the real one uses (own_mcu.py): who it is, what it holds, and how a lost
 answer, a restart of the MCU alone or its query counter wrapping is handled."""
 from own_mcu import CMD_VERSION, OTA_IDENT, OwnMcu, own_mcu_contact
 from test_dimmer_mcu import start
+from test_mcu_diag import counters
 from test_mcu_ota import VERSION, newer_version, shown_version
 from test_own_mcu_dps import STARTUP_OFF, STARTUP_ON, STARTUP_PREVIOUS, startup
 from tuya_mcu import TUYA_CMD_QUERY_ALL, TUYA_CMD_QUERY_NETWORK, parse_frames, pump, take_tx, tuya_frame
@@ -16,9 +17,12 @@ def power_on(device) -> tuple[int, int]:
 
 
 def test_first_contact_runs_in_the_real_order():
+    """Each burst of the MCU as one DMA chunk of the router build: the dump
+    with the version or identity answer behind it gets through whole."""
     proc, device = start()
     try:
         mcu = own_mcu_contact(proc, device)
+        assert counters(device)["rx_hal_dropped"] == 0
         wire = [d if d == "tx" else f"rx{c:02x}" for d, c in mcu.log]
         assert wire == [
             "tx",                                   # its query (seq 1)

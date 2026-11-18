@@ -15,7 +15,13 @@ firmwares:
 The full dump is 5 passive (0x05) frames, 234 bytes: DP 14 (channel 1's
 power-on) first, then per channel DPs 1..6, the curve (101/102) and the
 power-on (103/104), then its five fade/hold settings (150..154/155..159).
+
+Each burst goes to the stub as one DMA chunk of the Telink router build
+(uart_dma): a burst over its RX DMA buffer would be dropped whole there too.
 """
+import re
+from pathlib import Path
+
 from test_mcu_ota import VERSION
 from tuya_mcu import (
     TUYA_CMD_QUERY_ALL,
@@ -43,8 +49,19 @@ DP_CURVE_BASE = 101
 DP_POWER_ON_BASE = 103
 DP_PROFILE_BASE = 150
 PROFILE_KEYS = ("fade_on", "fade_off", "soft_end", "hold", "hold_end")
-UART_BURST_MAX = 252          # Telink RX DMA: a longer burst is dropped whole
-STUB_RX_MAX = 255             # stub RX ring
+UART_C = Path(__file__).resolve().parent.parent / "src/telink/hal/uart.c"
+
+
+def telink_router_chunk_max() -> int:
+    """Payload of the Telink RX DMA buffer on routers (the ZDMS16-2 build)."""
+    text = UART_C.read_text()
+    m = re.search(r"#ifdef END_DEVICE\s+#define UART_RX_DMA_BUF_SIZE\s+\d+\s+"
+                  r"#else\s+#define UART_RX_DMA_BUF_SIZE\s+(\d+)\s+#endif", text)
+    assert m, "UART_RX_DMA_BUF_SIZE block not found"
+    return int(m.group(1)) - 4
+
+
+UART_BURST_MAX = telink_router_chunk_max()   # a longer burst is dropped whole
 
 
 def channel(power_on: int) -> dict:
@@ -68,6 +85,7 @@ class OwnMcu:
         self.lose: dict[int, int] = {}       # cmd -> how many answers to lose
         self.answers_ident = True
         self.log: list[tuple[str, int]] = []  # ("rx"/"tx", cmd) in wire order
+        assert proc.exec(f"uart_dma {UART_BURST_MAX}").ok
 
     # ---- frames ----------------------------------------------------------
 
@@ -113,12 +131,14 @@ class OwnMcu:
     # ---- what the MCU sends by itself ------------------------------------
 
     def send(self, frames: list[str]) -> None:
-        """One burst: all frames injected, then one poll of the module."""
+        """One burst: all frames back to back as one DMA chunk, then one poll
+        of the module."""
         size = sum(len(f) // 2 for f in frames)
-        assert size <= STUB_RX_MAX, f"burst of {size} B does not fit the stub RX ring"
+        assert size <= UART_BURST_MAX, f"burst of {size} B would be dropped whole"
         for f in frames:
             self.log.append(("tx", int(f[10:12], 16)))
-            self.proc.exec(f"uart_rx {f}")
+        res = self.proc.exec("uart_rx " + " ".join(frames))
+        assert res.ok and int(res.payload["injected"]) == size
         pump(self.proc)
 
     def query_network(self, seq: int | None = None) -> None:
@@ -196,7 +216,6 @@ class OwnMcu:
                 sent.append(cmd)
                 answers += self._answer(cmd, data)
             if answers:
-                assert sum(len(f) // 2 for f in answers) <= UART_BURST_MAX
                 self.send(answers)
             else:
                 pump(self.proc)
