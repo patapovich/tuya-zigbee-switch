@@ -109,7 +109,9 @@ void tuya_mcu_app_query_all(void) {
  * in sync. The MCU's own first network status query is the reliable signal.
  * Some MCUs never send one (the ZDMS16-2's does not), so a timer shortly after
  * boot does it too; if the MCU's query still comes later, it is done again,
- * since what the timer sent may have been dropped.
+ * since what the timer sent may have been dropped. Not for our own MCU once it
+ * has said who it is: it got and answered everything (a restart of it shows
+ * in the query, see query_means_restart()).
  */
 #define CONTACT_NONE              0
 #define CONTACT_TIMER             1
@@ -121,6 +123,10 @@ static hal_task_t g_contact_timer;
 
 static void first_contact(uint8_t source) {
     if (g_contact == CONTACT_MCU || (source == CONTACT_TIMER && g_contact != CONTACT_NONE)) {
+        return;
+    }
+    if (source == CONTACT_MCU && g_contact == CONTACT_TIMER && g_mcu_own) {
+        g_contact = CONTACT_MCU;
         return;
     }
     g_contact = source;
@@ -146,6 +152,15 @@ void tuya_mcu_app_mcu_restarted(void) {
     tuya_secondary_mcu_set_fast_acks(0, NULL);
 }
 
+/* Our own MCU firmware numbers its network queries from 0 at every start, so
+ * seq 0 again means it restarted alone (reflash, watchdog, update), unless it
+ * follows 0xFFFF: then the counter wrapped (every ~23 days). */
+static uint16_t g_last_query_seq;
+
+static uint8_t query_means_restart(uint16_t seq) {
+    return seq == 0 && g_last_query_seq != 0xFFFF && g_mcu_own;
+}
+
 void tuya_mcu_app_show_mcu_version(void) {
     if (g_mcu_known) {
         mcu_version_store(g_mcu_packed);
@@ -157,9 +172,19 @@ uint8_t tuya_mcu_app_mcu_is_own(void) {
 }
 
 void tuya_mcu_app_set_mcu_own(void) {
+    uint8_t was_own = g_mcu_own;
+
     g_mcu_own = 1;
     tuya_secondary_mcu_set_fast_acks(1, resync_all);
     tuya_mcu_app_show_mcu_version();
+
+    /* The first-contact dump (and the MCU's own one after its start) comes
+     * before the answer to the identity query, so it was read as a stock
+     * MCU's: shared DP 14 set every channel's power-on and the per-channel
+     * DPs were dropped. Read it all again, now as ours. */
+    if (!was_own && dimmer_clusters_cnt > 0) {
+        dp_attr_query_all();
+    }
 }
 
 static void first_contact_timer(void *arg) {
@@ -228,11 +253,10 @@ static void on_mcu_command(uint8_t cmd, uint16_t seq, const uint8_t *data, uint1
         return;
 
     case TUYA_MCU_CMD_QUERY_NETWORK: {
-        /* Our own MCU firmware numbers its queries from 0 at every start:
-         * seq 0 again means it restarted alone (reflash, watchdog, update). */
-        if (seq == 0 && g_mcu_own) {
+        if (query_means_restart(seq)) {
             tuya_mcu_app_mcu_restarted();
         }
+        g_last_query_seq = seq;
         /* Unanswered, the MCU assumes the link is broken (key LEDs blink). */
         uint8_t status = network_status();
         tuya_secondary_mcu_send_reply(cmd, seq, &status, 1);

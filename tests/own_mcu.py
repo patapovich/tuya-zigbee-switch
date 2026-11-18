@@ -1,0 +1,217 @@
+"""A fake own PY32 MCU (zdms16-py32 fw/src/tuya.c, dimmer.c) for the stub
+tests: it answers what the module sends in the order the real firmware does,
+with the real full dump, and each round of answers back to back (the module's
+UART hands them over as one burst).
+
+What the real MCU does at first contact, as seen in a co-simulation of both
+firmwares:
+
+    MCU  0x20 query network (seq 0, 1, ...: numbered from 0 at every start)
+    ZTU  0x20 answer, 0x0B version query
+    MCU  its own full dump (first answer after its start), 0x0B answer
+    ZTU  0x28 query all, 0xA3 identity query
+    MCU  full dump, 0xA3 answer
+
+The full dump is 5 passive (0x05) frames, 234 bytes: DP 14 (channel 1's
+power-on) first, then per channel DPs 1..6, the curve (101/102) and the
+power-on (103/104), then its five fade/hold settings (150..154/155..159).
+"""
+from test_mcu_ota import VERSION
+from tuya_mcu import (
+    TUYA_CMD_QUERY_ALL,
+    TUYA_CMD_QUERY_NETWORK,
+    TUYA_CMD_REPORT,
+    TUYA_CMD_REPORT_PASSIVE,
+    TUYA_CMD_WRITE,
+    TUYA_TYPE_BOOL,
+    TUYA_TYPE_ENUM,
+    TUYA_TYPE_VALUE,
+    dp_payload,
+    parse_frames,
+    pump,
+    take_tx,
+    tuya_frame,
+)
+
+CMD_NETWORK_STATUS = 0x02
+CMD_VERSION = 0x0B
+OTA_NOTIFY = 0xA0
+OTA_IDENT = 0xA3
+
+DP_POWER_ON = 14
+DP_CURVE_BASE = 101
+DP_POWER_ON_BASE = 103
+DP_PROFILE_BASE = 150
+PROFILE_KEYS = ("fade_on", "fade_off", "soft_end", "hold", "hold_end")
+UART_BURST_MAX = 252          # Telink RX DMA: a longer burst is dropped whole
+STUB_RX_MAX = 255             # stub RX ring
+
+
+def channel(power_on: int) -> dict:
+    """The firmware's defaults (fresh flash), with a given power-on."""
+    return {"on": 0, "level": 1000, "min": 200, "switch_type": 0, "max": 1000,
+            "countdown": 0, "curve": 2, "power_on": power_on, "fade_on": 950,
+            "fade_off": 950, "soft_end": 12, "hold": 3300, "hold_end": 20}
+
+
+class OwnMcu:
+    def __init__(self, proc, device, version: int = VERSION, power_on=(0, 1),
+                 protocol: int = 1, started: bool = True) -> None:
+        self.proc, self.device = proc, device
+        self.version, self.protocol = version, protocol
+        self.ch = [channel(po) for po in power_on]
+        self.query_seq = 0
+        self.report_seq = 0
+        # The module's first answer to a query of ours makes us dump our state
+        # (the module may hold an old one): False = we have just started.
+        self.told_state = not started
+        self.lose: dict[int, int] = {}       # cmd -> how many answers to lose
+        self.answers_ident = True
+        self.log: list[tuple[str, int]] = []  # ("rx"/"tx", cmd) in wire order
+
+    # ---- frames ----------------------------------------------------------
+
+    def _report(self, units: list[bytes], passive: bool = True) -> str:
+        frame = tuya_frame(TUYA_CMD_REPORT_PASSIVE if passive else TUYA_CMD_REPORT,
+                           b"".join(units), seq=self.report_seq)
+        self.report_seq = (self.report_seq + 1) & 0xFFFF
+        return frame
+
+    def _dp(self, dpid: int) -> bytes:
+        if dpid == DP_POWER_ON:
+            return dp_payload(dpid, TUYA_TYPE_ENUM, bytes([self.ch[0]["power_on"]]))
+        if DP_PROFILE_BASE <= dpid < DP_PROFILE_BASE + 10:
+            c = self.ch[(dpid - DP_PROFILE_BASE) // 5]
+            v = c[PROFILE_KEYS[(dpid - DP_PROFILE_BASE) % 5]]
+            return dp_payload(dpid, TUYA_TYPE_VALUE, v.to_bytes(4, "big"))
+        if DP_POWER_ON_BASE <= dpid < DP_POWER_ON_BASE + 2:
+            c = self.ch[dpid - DP_POWER_ON_BASE]
+            return dp_payload(dpid, TUYA_TYPE_ENUM, bytes([c["power_on"]]))
+        if DP_CURVE_BASE <= dpid < DP_CURVE_BASE + 2:
+            return dp_payload(dpid, TUYA_TYPE_ENUM, bytes([self.ch[dpid - DP_CURVE_BASE]["curve"]]))
+        c = self.ch[(dpid - 1) // 6]
+        idx = (dpid - 1) % 6
+        if idx == 0:
+            return dp_payload(dpid, TUYA_TYPE_BOOL, bytes([c["on"]]))
+        if idx == 3:
+            return dp_payload(dpid, TUYA_TYPE_ENUM, bytes([c["switch_type"]]))
+        key = {1: "level", 2: "min", 4: "max", 5: "countdown"}[idx]
+        return dp_payload(dpid, TUYA_TYPE_VALUE, c[key].to_bytes(4, "big"))
+
+    def dump(self) -> list[str]:
+        """dimmer_report_all(): the 5 frames of a full dump."""
+        frames = [self._report([self._dp(DP_POWER_ON)])]
+        for ch in range(2):
+            base = ch * 6 + 1
+            frames.append(self._report([self._dp(base + i) for i in range(6)]
+                                       + [self._dp(DP_CURVE_BASE + ch),
+                                          self._dp(DP_POWER_ON_BASE + ch)]))
+            frames.append(self._report([self._dp(DP_PROFILE_BASE + 5 * ch + k)
+                                        for k in range(5)]))
+        return frames
+
+    # ---- what the MCU sends by itself ------------------------------------
+
+    def send(self, frames: list[str]) -> None:
+        """One burst: all frames injected, then one poll of the module."""
+        size = sum(len(f) // 2 for f in frames)
+        assert size <= STUB_RX_MAX, f"burst of {size} B does not fit the stub RX ring"
+        for f in frames:
+            self.log.append(("tx", int(f[10:12], 16)))
+            self.proc.exec(f"uart_rx {f}")
+        pump(self.proc)
+
+    def query_network(self, seq: int | None = None) -> None:
+        """Its periodic network query (every 30 s once connected)."""
+        if seq is not None:
+            self.query_seq = seq
+        self.send([tuya_frame(TUYA_CMD_QUERY_NETWORK, seq=self.query_seq)])
+        self.query_seq = (self.query_seq + 1) & 0xFFFF
+
+    def restart(self) -> None:
+        """Watchdog, reflash or update: it numbers its queries from 0 again and
+        dumps its state at the module's first answer. The first query comes
+        200 ms after the start."""
+        self.query_seq = 0
+        self.told_state = False
+
+    # ---- answering the module --------------------------------------------
+
+    def _lost(self, cmd: int) -> bool:
+        if self.lose.get(cmd, 0) > 0:
+            self.lose[cmd] -= 1
+            return True
+        return False
+
+    def _answer(self, cmd: int, data: bytes) -> list[str]:
+        """Its answers to one frame of the module (the module does not check
+        the answers' sequence numbers: 0)."""
+        if cmd == TUYA_CMD_QUERY_NETWORK and data:      # the answer to our query
+            if not self.told_state:
+                self.told_state = True
+                return self.dump()
+            return []
+        if cmd == CMD_NETWORK_STATUS:
+            return [tuya_frame(CMD_NETWORK_STATUS, seq=0)]
+        if self._lost(cmd):
+            return []
+        if cmd == CMD_VERSION:
+            return [tuya_frame(CMD_VERSION, bytes([self.version]), seq=0)]
+        if cmd == TUYA_CMD_QUERY_ALL:
+            return self.dump()
+        if cmd == OTA_IDENT and self.answers_ident:
+            ident = b"ZDMS" + bytes([1, self.version, self.protocol])
+            return [tuya_frame(OTA_IDENT, ident, seq=0)]
+        if cmd == OTA_NOTIFY:
+            return [tuya_frame(OTA_NOTIFY, bytes([1]), seq=0)]   # declined
+        if cmd == TUYA_CMD_WRITE:
+            dpid, vlen = data[0], int.from_bytes(data[2:4], "big")
+            value = int.from_bytes(data[4:4 + vlen], "big")
+            if DP_POWER_ON_BASE <= dpid < DP_POWER_ON_BASE + 2:
+                self.ch[dpid - DP_POWER_ON_BASE]["power_on"] = value
+            elif dpid == DP_POWER_ON:
+                for c in self.ch:
+                    c["power_on"] = value
+            return [self._report([self._dp(dpid)], passive=False)]
+        return []
+
+    def serve(self, ms: int = 0, step_ms: int = 50) -> list[int]:
+        """Answer the module until it is quiet, for at least `ms` of time.
+        Returns the commands the module sent."""
+        sent = []
+        elapsed = 0
+        quiet = 0
+        while elapsed < ms or quiet < 2:
+            tx = take_tx(self.proc)
+            if not tx:
+                quiet += 1
+                self.device.step_time(step_ms)
+                elapsed += step_ms
+                pump(self.proc)
+                continue
+            quiet = 0
+            answers = []
+            for cmd, data in parse_frames(tx):
+                self.log.append(("rx", cmd))
+                sent.append(cmd)
+                answers += self._answer(cmd, data)
+            if answers:
+                assert sum(len(f) // 2 for f in answers) <= UART_BURST_MAX
+                self.send(answers)
+            else:
+                pump(self.proc)
+        return sent
+
+
+def own_mcu_contact(proc, device, **kw) -> OwnMcu:
+    """Mains on: both start, the MCU's first query (seq 0, 200 ms) comes before
+    the module listens, its second one (seq 1, 2.2 s) starts the first contact,
+    which then runs in the real order with the real dump."""
+    mcu = OwnMcu(proc, device, **kw)
+    mcu.query_seq = 1
+    device.step_time(1900)          # the module's own contact timer is at 2 s
+    pump(proc)
+    take_tx(proc)
+    mcu.query_network()
+    mcu.serve(1000)
+    return mcu
