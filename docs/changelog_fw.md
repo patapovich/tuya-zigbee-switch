@@ -18,6 +18,10 @@ Please describe what you are working on, under ## Upcoming
     does not take the answer for a key press
   - A lost version answer is asked again (twice, 2 s apart); routers receive bursts of up to
     508 bytes from the MCU (was 252)
+  - The settings dump is asked once more when the first one got no answer (an MCU that
+    started to listen late kept its min/max brightness unknown until the next restart)
+  - Frames to a factory MCU never add up to more than 23 bytes within 2 ms (the later one
+    waits 2 ms), and none is longer than 29 bytes
 - **AVATTO ZDMS16-2 2-gang dimmer module** (`TS0601`, `_TZE284_jtbgusdc`, `_TZE204_jtbgusdc`)
   - Level Control (on, off, move, step, move to level, OnLevel), levels scaled to the MCU's
     min/max brightness, wall switch type and power-on behaviour
@@ -26,6 +30,10 @@ Please describe what you are working on, under ## Upcoming
   - Link diagnostics as Basic cluster attributes
   - Open Dimmer, the open-source firmware for its PY32F002A dimming MCU: carried in the image,
     which updates an MCU that runs an older Open Dimmer version (a stock MCU is never touched)
+  - Open Dimmer bootloader v2: offers by build number, the carried image checked as the
+    bootloader checks it, its power-on probe, rescue and link-probe requests served and shown
+    in the link diagnostics with the MCU's build, bootloader version and boot timing; the
+    promises the frozen bootloader relies on are written down in `tuya_mcu_ota.h`
   - Z2M: `mcu_firmware` says Open Dimmer or Tuya (stock), `mcu_version` shows the version alone;
     the Open Dimmer settings (dimming curve, fade and hold, per-channel power-on behaviour, wall
     switch gestures) follow the device option `open_dimmer_settings` (auto / show / hide; the
