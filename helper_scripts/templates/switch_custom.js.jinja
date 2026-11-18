@@ -809,6 +809,25 @@ const romasku = {
             }],
         };
     },
+    // A definition's onEvent for a dimmer board: OnLevel lives in the module,
+    // not in the MCU, and a module restart can reset it. It has no reporting
+    // (the module's reporting table is small), so read it again when the
+    // module announces itself after a restart; the page then shows the value
+    // the module really uses.
+    dimmerOnLevelRefresh: (endpointIds) => async (...args) => {
+        // Zigbee2MQTT 2.x passes one event, 1.x (type, data, device, ...).
+        const [first] = args;
+        const type = typeof first === "string" ? first : first?.type;
+        const device = typeof first === "string" ? args[2] : first?.data?.device;
+        if (type !== "deviceAnnounce" || !device) return;
+        for (const id of endpointIds) {
+            try {
+                await device.getEndpoint(id)?.read("genLevelCtrl", ["onLevel"]);
+            } catch (error) {
+                // not answered now; read at the next announce, configure or refresh
+            }
+        }
+    },
     dimmerPowerOnBehavior: (name, endpointName) =>
         enumLookup({
             name,
@@ -1013,6 +1032,10 @@ const definitions = [
             {% endif %}
         ],
         meta: { multiEndpoint: true },
+        {% if device.dimmerNames %}
+        {% set dimmer_base = (device.switchNames | length) + (device.relayNames | length) + (device.coverSwitchNames | length) + (device.coverNames | length) %}
+        onEvent: romasku.dimmerOnLevelRefresh([{% for dimmerName in device.dimmerNames %}{{loop.index + dimmer_base}}{{ ", " if not loop.last }}{% endfor %}]),
+        {% endif %}
         configure: async (device, coordinatorEndpoint, logger) => {
             {% if device.dimmerNames or (device.dp_attributes | selectattr("min_mcu") | list) %}
             // Right after a module restart the module answers with defaults (0) until the MCU

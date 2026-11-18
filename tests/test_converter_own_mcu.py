@@ -206,6 +206,29 @@ def test_gestures_are_reported_on_change_only():
     ]
 
 
+def test_on_level_is_read_again_when_the_module_announces_itself():
+    """OnLevel is kept by the module, not the MCU, and has no reporting: after a module
+    restart (it announces itself) the converter reads it again on every dimmer
+    endpoint. Both onEvent signatures: Zigbee2MQTT 2.x (event) and 1.x (type, data, device)."""
+    for v1 in (False, True):
+        out = json.loads(run_node(ZDMS + """
+const dev = h.device();
+const reads = async (...args) => {
+    h.log.length = 0;
+    await def.onEvent(...args);
+    return h.log.filter((l) => l[0] === "read").map((l) => `${l[1]}:${l[2]}:${l[3].join("+")}`);
+};
+(async () => console.log(JSON.stringify({
+    announce: await reads({type: "deviceAnnounce", data: {device: dev}}),
+    announceV1: await reads("deviceAnnounce", {}, dev, {}, {}),
+    start: await reads({type: "start", data: {device: dev}}),
+    stop: await reads({type: "stop", data: {ieeeAddr: dev.ieeeAddr}}),
+})))();
+""", z2m_v1=v1))
+        on_level = ["1:genLevelCtrl:onLevel", "2:genLevelCtrl:onLevel"]
+        assert out == {"announce": on_level, "announceV1": on_level, "start": [], "stop": []}
+
+
 def test_fade_and_hold_settings_are_per_dimmer_with_their_own_attributes():
     block = zdms16_block()
     found = re.findall(
