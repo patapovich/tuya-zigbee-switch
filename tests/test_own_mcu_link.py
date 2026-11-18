@@ -170,6 +170,36 @@ def test_mcu_restart_during_identification_is_noticed():
         proc.stop()
 
 
+def test_restart_late_in_identification_drops_the_old_question():
+    """It restarts just before the last identity question of its previous
+    start runs out, and the version answer after the restart is lost: the old
+    question must not run out into a bare version meanwhile."""
+    proc, device = start()
+    try:
+        mcu = OwnMcu(proc, device, power_on=(0, 1))
+        mcu.answers_ident = False
+        mcu.query_seq = 1
+        device.step_time(1900)
+        pump(proc)
+        take_tx(proc)
+        mcu.query_network()
+        mcu.serve(7000)                 # its last question runs out at 7.5 s
+        assert shown_version(device) == ""
+        mcu.restart()
+        mcu.lose[CMD_VERSION] = 1
+        mcu.answers_ident = True
+        mcu.query_network()
+        seen = set()
+        for _ in range(30):
+            mcu.serve(100)
+            seen.add(shown_version(device))
+        assert seen <= {"", OWN}, seen
+        assert shown_version(device) == OWN
+        assert power_on(device) == (STARTUP_OFF, STARTUP_ON)
+    finally:
+        proc.stop()
+
+
 def test_mcu_that_did_not_say_who_it_is_is_asked_again_after_its_restart():
     """Not identified in time (shown bare): its next start asks again."""
     proc, device = start()

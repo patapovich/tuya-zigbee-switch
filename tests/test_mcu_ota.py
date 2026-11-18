@@ -264,6 +264,27 @@ def test_after_a_good_result_the_next_query_is_a_first_contact():
         proc.stop()
 
 
+def test_a_bootloader_fetching_the_image_is_not_asked_its_version():
+    """A bootloader without an app asks for the image by itself, here right
+    after the module's contact timer asked the version. Its first block
+    request means the MCU restarted: the version question is dropped (asked at
+    the app's first query), not sent again between the blocks."""
+    proc, device = start()
+    try:
+        device.step_time(2100)
+        pump(proc)
+        assert TUYA_CMD_MCU_VERSION in [cmd for cmd, _ in parse_frames(take_tx(proc))]
+        sent = []
+        for k in range(40):                          # 8 s of blocks
+            data = (64 * k).to_bytes(4, "big") + (64).to_bytes(2, "big")
+            proc.exec(f"uart_rx {tuya_frame(OTA_BLOCK, data)}")
+            sent += [cmd for cmd, _ in cmds_after(proc, device, 200)]
+        assert sent.count(OTA_BLOCK) == 40
+        assert TUYA_CMD_MCU_VERSION not in sent
+    finally:
+        proc.stop()
+
+
 def test_after_a_failed_result_nothing_is_reset():
     proc, device = start()
     try:
