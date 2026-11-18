@@ -22,8 +22,9 @@
  * changes over the air, so every later release of it keeps these promises
  * (zdms16-py32 docs/BOOTLOADER.md section 10; the MCU side is its
  * src/ota_proto.h). Pinned by tests/test_mcu_ota.py and
- * tests/test_stock_mcu_compat.py, and checked on a test module for every
- * release (bench test B2) before it goes further:
+ * tests/test_stock_mcu_compat.py (and, for boards without an image, by the
+ * symbol check of every Telink board build), and checked on a test module
+ * for every release (bench test B2) before it goes further:
  *
  *  1. 0xA1 v1 semantics, for ever. A request is offset (4) + max_len (2) + any
  *     number of further bytes, which the serving rule ignores. The answer is

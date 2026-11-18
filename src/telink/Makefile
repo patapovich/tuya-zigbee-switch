@@ -33,6 +33,7 @@ LD := $(TC32_PATH)/tc32-elf-ld
 OBJCOPY := $(TC32_PATH)/tc32-elf-objcopy
 OBJDUMP := $(TC32_PATH)/tc32-elf-objdump
 SIZE := $(TC32_PATH)/tc32-elf-size
+NM := $(TC32_PATH)/tc32-elf-nm
 
 # Flash tool configuration
 TLSRPGM_TTY ?= /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
@@ -243,8 +244,16 @@ $(BUILD_DIR)/common/%.o: $(SRC_DIR)/%.c
 # SDK compilation rules are in sdk.mk
 
 
+# Open Dimmer support (the MCU identity question, treated restarts, the
+# carried image) only in a board whose device_db entry has secondary_mcu_image:
+# the factory MCUs of every other board never see it (tuya_mcu_ota.h,
+# contract items 4 and 6). Read from the linked ELF, every board build.
+check-open-dimmer: $(ELF_FILE)
+	@python3 $(PROJECT_ROOT)/helper_scripts/check_open_dimmer_symbols.py --nm $(NM) \
+	  $(if $(SECONDARY_MCU_IMAGE),--with-image) $(ELF_FILE)
+
 # Build with tools check
-build: all
+build: all check-open-dimmer
 
 ifdef OTA_VERSION
 OTA_VERSION_ARG := --file-version $(OTA_VERSION)
@@ -372,4 +381,4 @@ help:
 	@echo "  BIN: $(BIN_FILE)"
 	@echo "  LST: $(LST_FILE)"
 
-.PHONY: all build clean ota flash restart wipe flasher help
+.PHONY: check-open-dimmer all build clean ota flash restart wipe flasher help
