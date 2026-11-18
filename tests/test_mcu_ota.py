@@ -4,6 +4,7 @@
 import re
 from pathlib import Path
 
+import pytest
 from test_dimmer_mcu import ATTR_MCU_VERSION, TUYA_CMD_MCU_VERSION, start
 from tuya_mcu import (
     TUYA_CMD_QUERY_ALL,
@@ -76,15 +77,31 @@ def shown_version(device) -> str:
     return device.read_zigbee_attr(1, 0x0000, ATTR_MCU_VERSION)
 
 
+# Version bytes: 2 bits major, 2 bits minor, 4 bits patch, compared as one
+# byte (2.1.15 + 1 = 2.2.0). 0xBF is reserved for SIM bench builds, 0xFF is
+# the ceiling.
+VERSION_SIM = 0xBF
+
+
 def older_version() -> int:
     """The carried version minus one (2.1.0 -> 2.0.15): still our own firmware (major 2)."""
     assert VERSION - 1 >= 0x80, "carried 2.0.0: no older own version to test with"
-    return VERSION - 1
+    return VERSION - 1 if VERSION - 1 != VERSION_SIM else VERSION - 2
 
 
 def newer_version() -> int:
-    assert VERSION & 0x0F != 0x0F
-    return VERSION + 1
+    """A version above the carried one, as a bench build may have."""
+    newer = VERSION + 1 if VERSION + 1 != VERSION_SIM else VERSION + 2
+    if newer >= 0xFF:
+        pytest.skip("carried version at the ceiling: none newer")
+    return newer
+
+
+def test_version_helpers_stay_in_the_valid_range():
+    assert older_version() < VERSION < newer_version() < 0xFF
+    assert VERSION_SIM not in (older_version(), newer_version())
+    if VERSION < 0xBE:
+        assert newer_version() == VERSION + 1
 
 
 def test_stock_1x_mcu_is_not_even_asked():
