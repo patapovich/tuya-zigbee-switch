@@ -3,6 +3,7 @@
 #include "hal/tasks.h"
 #include "zigbee/secondary_mcu_image.h"
 #include "zigbee/tuya_mcu_app.h"
+#include "zigbee/tuya_mcu_diag.h"
 #include "zigbee/tuya_secondary_mcu.h"
 
 #ifdef SECONDARY_MCU_IMAGE
@@ -45,13 +46,19 @@ static void put_be32(uint8_t *p, uint32_t v) {
 #define IMAGE_FLAG_SIM        0x01          /* bench build with a virtual zero cross */
 #define IMAGE_FLAG_MEASURE    0x02          /* measurement build: outputs always off */
 #define IMAGE_MAX             (12u * 1024u) /* app area behind the 4 KB bootloader */
-#define FAILURES_MAX          3             /* failed results before giving up until reboot */
+#define FAILURES_MAX          3             /* failed results in a row before a pause */
+#define PAUSE_FIRST_MIN       15            /* then served again; doubles at every */
+#define PAUSE_MAX_MIN         (24u * 60u)   /* further failure, up to a day */
 #define OFFERS_MAX            3             /* offers without a result before giving up */
 #define IDENT_RETRIES         1
 
-static uint8_t g_image_state;   /* 0 not checked, 1 good, 2 unusable */
-static uint8_t g_failures;      /* failed update results since boot */
-static uint8_t g_offers;        /* offers since the last result */
+static uint8_t  g_image_state;              /* 0 not checked, 1 good, 2 unusable */
+static uint8_t  g_failures;                 /* failed update results since the last good one */
+static uint16_t g_pause_min;                /* not served for this long after failures, 0: served */
+static uint8_t  g_offers;                   /* offers since the last result */
+
+static hal_task_t g_pause_timer;
+static uint8_t    g_pause_timer_ready;
 
 static uint32_t crc32_update(uint32_t crc, const uint8_t *p, uint32_t n) {
     crc = ~crc;
@@ -90,7 +97,56 @@ static int image_info(image_info_t *info) {
             return 0;
         }
     }
-    return g_failures < FAILURES_MAX;
+    return g_pause_min == 0;
+}
+
+static void diag_update(void) {
+    tuya_mcu_diag.ota_failures  = g_failures;
+    tuya_mcu_diag.ota_pause_min = g_pause_min;
+}
+
+static void pause_over(void *arg) {
+    (void)arg;
+    g_pause_min = 0;
+    diag_update();
+    printf("Serving the MCU firmware again after the pause\r\n");
+}
+
+/* Every failed result means the app area was already changed: the MCU has no
+ * app until an update succeeds, and its bootloader keeps asking. Stopping for
+ * good would leave the light dark until a power cycle; a pause that doubles
+ * keeps a path that always fails from wearing the MCU's flash all day. */
+static void result_failed(void) {
+    if (g_failures < 0xFF) {
+        g_failures++;
+    }
+    if (g_failures >= FAILURES_MAX) {
+        uint32_t pause = PAUSE_FIRST_MIN;
+        for (uint8_t k = FAILURES_MAX; k < g_failures && pause < PAUSE_MAX_MIN; k++) {
+            pause *= 2;
+        }
+        if (pause > PAUSE_MAX_MIN) {
+            pause = PAUSE_MAX_MIN;
+        }
+        if (!g_pause_timer_ready) {
+            g_pause_timer.handler = pause_over;
+            g_pause_timer.arg     = NULL;
+            hal_tasks_init(&g_pause_timer);
+            g_pause_timer_ready = 1;
+        }
+        g_pause_min = (uint16_t)pause;
+        hal_tasks_schedule(&g_pause_timer, pause * 60000u);
+    }
+    diag_update();
+}
+
+static void result_ok(void) {
+    g_failures = 0;
+    if (g_pause_min) {
+        g_pause_min = 0;
+        hal_tasks_unschedule(&g_pause_timer);
+    }
+    diag_update();
 }
 
 static hal_task_t g_ident_timer;
@@ -213,14 +269,20 @@ uint8_t tuya_mcu_ota_on_command(uint8_t cmd, uint16_t seq, const uint8_t *data,
         g_offers = 0;
         if (len >= 1 && data[0] == 0) {
             printf("Secondary MCU updated to 0x%02x\r\n", len >= 2 ? data[1] : 0);
+            result_ok();
 
             /* It restarts now: treat its next query as a first contact, so
              * the version and the settings dump are read again. */
             tuya_mcu_app_mcu_restarted();
         } else {
-            g_failures++;
-            printf("Secondary MCU update failed (%u), %s\r\n", len >= 1 ? data[0] : 0xFF,
-                   g_failures < FAILURES_MAX ? "it asks again" : "giving up until restart");
+            result_failed();
+            if (g_pause_min) {
+                printf("Secondary MCU update failed (%u), served again in %u min\r\n",
+                       len >= 1 ? data[0] : 0xFF, g_pause_min);
+            } else {
+                printf("Secondary MCU update failed (%u), it asks again\r\n",
+                       len >= 1 ? data[0] : 0xFF);
+            }
         }
         return 1;
 

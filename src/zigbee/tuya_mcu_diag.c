@@ -21,9 +21,15 @@ static uint8_t g_log_count = 0;
 static uint8_t g_control   = 0;
 
 void tuya_mcu_diag_clear(void) {
+    /* State, not counters: kept. */
+    uint16_t ota_failures  = tuya_mcu_diag.ota_failures;
+    uint16_t ota_pause_min = tuya_mcu_diag.ota_pause_min;
+
     memset(&tuya_mcu_diag, 0, sizeof(tuya_mcu_diag));
-    tuya_mcu_diag.len    = (uint8_t)(sizeof(tuya_mcu_diag) - 1);
-    tuya_mcu_diag.format = DIAG_FORMAT;
+    tuya_mcu_diag.len           = (uint8_t)(sizeof(tuya_mcu_diag) - 1);
+    tuya_mcu_diag.format        = DIAG_FORMAT;
+    tuya_mcu_diag.ota_failures  = ota_failures;
+    tuya_mcu_diag.ota_pause_min = ota_pause_min;
     memset(g_pages, 0, sizeof(g_pages));
     g_log_count = 0;
 }

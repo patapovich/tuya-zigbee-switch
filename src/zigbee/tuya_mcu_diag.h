@@ -10,7 +10,9 @@
  * devices that use a secondary MCU (see consts.h for the attribute ids):
  *
  *   counters    octet string, tuya_mcu_diag_counters_t without its length
- *               byte, little-endian
+ *               byte, little-endian; new fields are appended (older
+ *               firmware sends fewer), the format byte changes only if
+ *               existing ones move
  *   log pages   octet strings of 8 byte entries, oldest first across pages:
  *               t_ms (u16, hal_millis() low bits), kind (u8), id (u8, DP id
  *               or command), value (u32)
@@ -55,6 +57,12 @@ typedef struct __attribute__((packed)) {
     uint16_t ack_latency_last_ms;
     uint16_t ack_latency_max_ms;
     uint16_t log_total;
+
+    /* Update of an own MCU firmware (state, kept by a clear): failed results
+     * since the last good one, and the current pause in minutes (0: the
+     * image is served). */
+    uint16_t ota_failures;
+    uint16_t ota_pause_min;
 } tuya_mcu_diag_counters_t;
 
 /* Counters, updated in place by the link. */

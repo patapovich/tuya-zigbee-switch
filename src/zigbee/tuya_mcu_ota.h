@@ -8,7 +8,9 @@
  * offered it (0xA0); it restarts into its bootloader, which asks for the
  * image block by block (0xA1, answered from flash, stateless) and reports the
  * result (0xA2). A bootloader without a
- * valid app (e.g. after a power cut during an update) asks by itself. */
+ * valid app (e.g. after a power cut during an update) asks by itself. After 3
+ * failed results in a row nothing is served for 15 min, then for twice as
+ * long after every further failure (up to a day). */
 #ifndef TUYA_MCU_OTA_H
 #define TUYA_MCU_OTA_H
 

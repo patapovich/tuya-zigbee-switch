@@ -319,19 +319,70 @@ def test_an_identity_with_another_protocol_is_not_ours():
         proc.stop()
 
 
+MINUTE = 60_000
+
+
+def fail(proc, device) -> None:
+    proc.exec(f"uart_rx {tuya_frame(OTA_RESULT, bytes([1, VERSION]))}")
+    cmds_after(proc, device)
+
+
 def served(proc, device) -> bool:
     proc.exec(f"uart_rx {tuya_frame(OTA_BLOCK, (0).to_bytes(4, 'big') + (64).to_bytes(2, 'big'))}")
     return OTA_BLOCK in [cmd for cmd, _ in cmds_after(proc, device)]
 
 
-def test_after_three_failed_results_nothing_is_served():
+def ota_state(device) -> tuple[int, int]:
+    """(failed results since the last good one, current pause in minutes)
+    from the link diagnostics."""
+    from test_mcu_diag import counters
+    c = counters(device)
+    return c["ota_failures"], c["ota_pause_min"]
+
+
+def test_after_three_failed_results_nothing_is_served_for_a_while():
+    proc, device = start()
+    try:
+        for _ in range(2):
+            fail(proc, device)
+            assert served(proc, device)              # the bootloader tries again
+        fail(proc, device)
+        assert not served(proc, device)
+        assert ota_state(device) == (3, 15)
+        device.write_zigbee_attr(1, 0x0000, 0xFF4F, 1)   # clearing the counters keeps it
+        assert ota_state(device) == (3, 15)
+        device.step_time(15 * MINUTE - 100)
+        assert not served(proc, device)
+        device.step_time(200)
+        assert served(proc, device)                  # the MCU has no app: not for good
+        assert ota_state(device) == (3, 0)
+    finally:
+        proc.stop()
+
+
+def test_the_pause_doubles_up_to_a_day_and_a_good_result_ends_it():
     proc, device = start()
     try:
         for _ in range(3):
-            proc.exec(f"uart_rx {tuya_frame(OTA_RESULT, bytes([1, VERSION]))}")
-            cmds_after(proc, device)
-        proc.exec(f"uart_rx {tuya_frame(OTA_BLOCK, (0).to_bytes(4, 'big') + (64).to_bytes(2, 'big'))}")
-        assert OTA_BLOCK not in [cmd for cmd, _ in cmds_after(proc, device)]
+            fail(proc, device)
+        pauses = [15]
+        for _ in range(8):
+            device.step_time(pauses[-1] * MINUTE)
+            assert served(proc, device)
+            fail(proc, device)
+            assert not served(proc, device)
+            pauses.append(ota_state(device)[1])
+        assert pauses == [15, 30, 60, 120, 240, 480, 960, 1440, 1440]
+        device.step_time(23 * 60 * MINUTE)
+        assert not served(proc, device)
+        device.step_time(60 * MINUTE)
+        assert served(proc, device)
+        proc.exec(f"uart_rx {tuya_frame(OTA_RESULT, bytes([0, VERSION]))}")
+        cmds_after(proc, device)
+        assert ota_state(device) == (0, 0)
+        for _ in range(2):                           # counted from 0 again
+            fail(proc, device)
+            assert served(proc, device)
     finally:
         proc.stop()
 
