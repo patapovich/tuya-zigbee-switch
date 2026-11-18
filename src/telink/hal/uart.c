@@ -68,6 +68,15 @@ static uint16_t uart_ring_used(void) {
     return (uint16_t)(head - tail);
 }
 
+/* Interrupts masked: the DMA callback must not push half way through. */
+static void uart_ring_clear(void) {
+    unsigned char r = irq_disable();
+
+    g_uart_rx_head = 0;
+    g_uart_rx_tail = 0;
+    irq_restore(r);
+}
+
 static void uart_ring_push(const uint8_t *data, uint16_t len) {
     for (uint16_t i = 0; i < len; i++) {
         /* Drop bytes if the ring is full rather than corrupting it. */
@@ -122,7 +131,11 @@ void hal_uart_init(const hal_uart_config_t *cfg) {
             g_baud = cfg->baudrate;
         }
     }
-    (void)cfg;
+
+    /* Empty the ring before RX DMA (re)starts: its interrupt may push a chunk
+     * as soon as drv_uart_init returns, and clearing after that would cut
+     * the chunk in half. */
+    uart_ring_clear();
 
     /* drv_uart_init sets up the DMA receive path and registers the ISR
      * callback. It enables both RX and TX DMA; we re-disable TX DMA below so
@@ -149,14 +162,17 @@ void hal_uart_init(const hal_uart_config_t *cfg) {
     }
     uart_dma_enable(1, 0); /* RX DMA on, TX stays NDMA */
 
-    g_uart_rx_head = 0;
-    g_uart_rx_tail = 0;
+    /* uart_reset() (in drv_uart_init, or above) puts the hardware back on
+     * the first of its four TX data registers, but the SDK keeps its own
+     * index into them for uart_ndma_send_byte(). After a re-init with the
+     * index elsewhere the bytes go to the wrong register and the line stays
+     * wedged, so the re-init that is meant to recover TX could not. */
+    uart_ndma_clear_tx_index();
 }
 
 void hal_uart_deinit(void) {
     uart_reset();
-    g_uart_rx_head = 0;
-    g_uart_rx_tail = 0;
+    uart_ring_clear();
 }
 
 uint16_t hal_uart_rx_available(void) {
@@ -164,8 +180,7 @@ uint16_t hal_uart_rx_available(void) {
 }
 
 void hal_uart_flush(void) {
-    g_uart_rx_head = 0;
-    g_uart_rx_tail = 0;
+    uart_ring_clear();
     uart_ndma_clear_tx_index();
 }
 
@@ -175,16 +190,25 @@ void hal_uart_flush(void) {
  * datapoint write passes through this path. Give up instead: a dropped
  * frame is recoverable, a reset is not.
  *
- * The limit is a spin count rather than a timer because this runs with
- * interrupts free and must stay cheap; it is sized far above the ~1 ms a
- * byte needs at 9600 baud and far below the watchdog window. */
-#define UART_TX_SPIN_LIMIT    2000000u
+ * The limit is one time budget for the whole write, from the system timer:
+ * twice the time its bytes need on the line plus 2 ms, at most 200 ms. (It
+ * was a spin count per byte, of the order of the 1 s watchdog per byte at
+ * 24 MHz, so a slow or stuck line could reach the watchdog.) The caller
+ * re-inits the UART after three failed writes in a row. */
+#define UART_TX_BUDGET_SLACK_US    2000u
+#define UART_TX_BUDGET_MAX_US      200000u
 
-static uint8_t uart_tx_wait_idle(void) {
-    uint32_t spins = 0;
+static uint32_t uart_tx_budget_us(uint16_t len) {
+    uint32_t baud    = g_baud ? g_baud : MCU_UART_BAUDRATE;
+    uint32_t byte_us = 10u * 1000000u / baud + 1u; /* 8N1: 87 us at 115200 */
+    uint32_t us      = 2u * byte_us * ((uint32_t)len + 1u) + UART_TX_BUDGET_SLACK_US;
 
+    return us < UART_TX_BUDGET_MAX_US ? us : UART_TX_BUDGET_MAX_US;
+}
+
+static uint8_t uart_tx_wait_idle(uint32_t start, uint32_t budget_us) {
     while (uart_tx_is_busy()) {
-        if (++spins > UART_TX_SPIN_LIMIT) {
+        if (clock_time_exceed(start, budget_us)) {
             return 0;
         }
     }
@@ -197,11 +221,13 @@ hal_uart_status_t hal_uart_write(const uint8_t *data, uint16_t len,
         return HAL_UART_ERR_INVALID_ARG;
     }
 
-    uint16_t actual = 0;
+    uint32_t start     = clock_time();
+    uint32_t budget_us = uart_tx_budget_us(len);
+    uint16_t actual    = 0;
     for (uint16_t i = 0; i < len; i++) {
         // Wait for the previous byte to finish shifting out before writing the
         // next one. NDMA mode cycles through the four TX data registers.
-        if (!uart_tx_wait_idle()) {
+        if (!uart_tx_wait_idle(start, budget_us)) {
             if (written) {
                 *written = actual;
             }
@@ -212,7 +238,7 @@ hal_uart_status_t hal_uart_write(const uint8_t *data, uint16_t len,
     }
     // Wait for the final byte to be fully transmitted before returning, so a
     // subsequent read/command isn't corrupted by an in-flight frame.
-    if (!uart_tx_wait_idle()) {
+    if (!uart_tx_wait_idle(start, budget_us)) {
         if (written) {
             *written = actual;
         }

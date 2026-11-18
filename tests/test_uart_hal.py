@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 from test_dimmer_mcu import (
+    DP_ON_L1,
     DP_ON_L2,
     TUYA_CMD_MCU_VERSION,
     ZCL_ATTR_BALLAST_MIN,
@@ -19,6 +20,7 @@ from tuya_mcu import (
     TUYA_CMD_REPORT,
     TUYA_CMD_REPORT_PASSIVE,
     bool_dp,
+    dp_writes,
     enum_dp,
     parse_frames,
     pump,
@@ -26,9 +28,11 @@ from tuya_mcu import (
     tuya_frame,
     value_dp,
 )
+from zcl_consts import ZCL_CLUSTER_ON_OFF
 
 UART_C = Path(__file__).resolve().parent.parent / "src/telink/hal/uart.c"
 ATTR_FADE_ON_L2 = 0xFF37        # dp 0x9B in the board's dp config
+ZCL_CMD_ONOFF_OFF = 0x00
 
 
 def telink_router_chunk_max() -> int:
@@ -146,6 +150,26 @@ def test_tx_capture_keeps_everything_past_256_bytes():
         for i, block in enumerate(blocks):
             assert block[4:8] == SIZE.to_bytes(4, "big")
             assert block[13:] == IMAGE[64 * i : 64 * (i + 1)]
+    finally:
+        proc.stop()
+
+
+def test_wedged_uart_is_reinitialised_and_the_next_write_goes_out():
+    proc, device = start()
+    try:
+        inits = uart_info(proc)["inits"]
+        assert proc.exec("uart_fail_writes 3").ok
+        for _ in range(3):                  # each off is one DP write, refused
+            device.call_zigbee_cmd(1, ZCL_CLUSTER_ON_OFF, ZCL_CMD_ONOFF_OFF)
+            pump(proc)
+        assert take_tx(proc) == b""
+        assert uart_info(proc)["inits"] == inits + 1
+        c = counters(device)
+        assert (c["tx_fail"], c["uart_reinit"]) == (3, 1)
+        device.call_zigbee_cmd(1, ZCL_CLUSTER_ON_OFF, ZCL_CMD_ONOFF_OFF)
+        pump(proc)
+        assert dp_writes(take_tx(proc)) == [(DP_ON_L1, 0)]
+        assert uart_info(proc)["inits"] == inits + 1
     finally:
         proc.stop()
 
