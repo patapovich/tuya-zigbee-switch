@@ -22,7 +22,7 @@ Please describe what you are working on, under ## Upcoming
     (an MCU that started to listen late kept its min/max brightness unknown until the next
     restart)
   - Frames to a factory MCU never add up to more than 23 bytes within 2 ms (the later one
-    waits 2 ms), and none is longer than 29 bytes
+    waits 2 ms, in order), and none is longer than 29 bytes
 - **AVATTO ZDMS16-2 2-gang dimmer module** (`TS0601`, `_TZE284_jtbgusdc`, `_TZE204_jtbgusdc`)
   - Level Control (on, off, move, step, move to level, OnLevel), levels scaled to the MCU's
     min/max brightness, wall switch type and power-on behaviour

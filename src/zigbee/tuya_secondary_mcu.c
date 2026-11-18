@@ -69,9 +69,17 @@ static int uart_send(const uint8_t *buf, uint16_t len) {
  * ends a burst: it has read what it answers, and the next frame (the queued
  * one its answer lets go) starts a new one. Open Dimmer (fast acks: it said
  * who it is) takes any burst.
+ *
+ * Nothing goes past a held frame: it would overtake it and add to its burst.
+ * So while frames are held, the MCU's frames wait in the RX buffer (each
+ * could start a reply), and a queued frame waits in the TX queue until the
+ * gate has room. That leaves the gate the frames one MCU frame starts (a
+ * reply and the queued frame it lets go) and the one queued frame in flight.
+ * A frame that still finds the gate full is dropped (TX_DROP), never sent.
  */
 #define BURST_GAP_MS    2
-#define GATE_FRAMES     3       /* when full, a frame goes out at once */
+#define GATE_FRAMES     3
+#define GATE_FULL       (-2)    /* gate_send(): dropped, the gate is full */
 
 static uint8_t    g_fast_acks;
 static uint32_t   g_burst_ms;   /* when the last frame was written */
@@ -96,8 +104,17 @@ static uint8_t burst_too_long(uint16_t len) {
            g_burst_len + len > TUYA_MCU_FACTORY_BURST_MAX;
 }
 
+static uint8_t gate_has_room(void) {
+    return g_gate_count < GATE_FRAMES;
+}
+
+static void tx_kick(void);
+
 static int gate_send(const uint8_t *buf, uint16_t len) {
-    if ((g_gate_count > 0 || burst_too_long(len)) && g_gate_count < GATE_FRAMES) {
+    if (g_gate_count > 0 || burst_too_long(len)) {
+        if (!gate_has_room()) {
+            return GATE_FULL;
+        }
         memcpy(g_gate[g_gate_count], buf, len);
         g_gate_len[g_gate_count++] = (uint8_t)len;
         if (g_gate_count == 1) {
@@ -117,7 +134,7 @@ static void gate_fired(void *arg) {
     while (g_gate_count > 0) {
         if (burst_too_long(g_gate_len[0])) {
             hal_tasks_schedule(&g_gate_timer, BURST_GAP_MS);
-            return;
+            break;
         }
         if (uart_send(g_gate[0], g_gate_len[0]) == 0) {
             burst_written(g_gate_len[0]);
@@ -128,6 +145,7 @@ static void gate_fired(void *arg) {
         memmove(g_gate[0], g_gate[1], g_gate_count * sizeof(g_gate[0]));
         memmove(g_gate_len, g_gate_len + 1, g_gate_count);
     }
+    tx_kick();                  /* a queued frame that waited for room */
 }
 
 /* Builds and sends one frame. For a DP write `data` is the DP value and the
@@ -166,9 +184,14 @@ static int send_frame(uint8_t cmd, uint16_t seq, uint8_t dpid, uint8_t dp_type,
     buf[idx] = checksum(buf, idx);
     idx++;
 
-    int     ok = gate_send(buf, idx) == 0;
-    uint8_t id = cmd == TUYA_MCU_CMD_WRITE ? dpid : cmd;
-    if (!ok) {
+    int     sent = gate_send(buf, idx);
+    uint8_t id   = cmd == TUYA_MCU_CMD_WRITE ? dpid : cmd;
+    if (sent == GATE_FULL) {
+        tuya_mcu_diag.tx_drop++;
+        tuya_mcu_diag_log(TUYA_MCU_DIAG_TX_DROP, id, 0);
+        return -1;
+    }
+    if (sent != 0) {
         tuya_mcu_diag.tx_fail++;
         tuya_mcu_diag_log(TUYA_MCU_DIAG_TX_FAIL, id, 0);
         return -1;
@@ -270,8 +293,6 @@ static tuya_secondary_mcu_tx_callback_t g_tx_callback = NULL;
 static uint8_t tx_item_id(const tx_item_t *item) {
     return item->cmd == TUYA_MCU_CMD_WRITE ? item->dpid : item->cmd;
 }
-
-static void tx_kick(void);
 
 static void tx_arm_timer(void) {
     hal_tasks_unschedule(&g_tx_timer);
@@ -376,7 +397,9 @@ static int tx_send_now(const tx_item_t *item) {
 }
 
 static void tx_kick(void) {
-    while (!g_tx_busy && g_txq_count > 0) {
+    /* With the burst gate full the next frame waits here: gate_fired() kicks
+     * again once it has room. */
+    while (!g_tx_busy && g_txq_count > 0 && gate_has_room()) {
         tx_item_t item = g_txq[g_txq_head];
         g_txq_head = (uint8_t)((g_txq_head + 1) % TX_QUEUE_LEN);
         g_txq_count--;
@@ -538,7 +561,7 @@ static int tx_enqueue(uint8_t cmd, uint8_t dpid, uint8_t dp_type,
         }
     }
 
-    if (!g_tx_busy && g_txq_count == 0) {
+    if (!g_tx_busy && g_txq_count == 0 && gate_has_room()) {
         return tx_send_now(&item);
     }
     if (g_txq_count >= TX_QUEUE_LEN) {
@@ -698,6 +721,13 @@ static void tx_write_timed_out(void) {
 
 static void rx_process(void) {
     for (;;) {
+        /* Frames held in the burst gate go first: the MCU's next frame may
+         * start a reply that would overtake them. It waits in the buffer
+         * until the gate is empty (BURST_GAP_MS per held frame). */
+        if (g_gate_count > 0) {
+            return;
+        }
+
         /* Resync on the 55 AA header. */
         while (g_rx_len >= 2 && (g_rx[0] != 0x55 || g_rx[1] != 0xAA)) {
             rx_drop(1);

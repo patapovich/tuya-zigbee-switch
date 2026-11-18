@@ -313,6 +313,101 @@ def test_three_held_replies_keep_their_order():
         proc.stop()
 
 
+def _wire(proc, device, ms: int, t0: int = 0) -> list[tuple[int, int, int, int]]:
+    """(t, cmd, seq, bytes) of every frame written in the next `ms`, stepping
+    1 ms at a time (t from t0)."""
+    out = []
+    for t in range(t0, t0 + ms + 1):
+        if t > t0:
+            device.step_time(1)
+        pump(proc)
+        raw = take_tx(proc)
+        i = 0
+        for cmd, data in parse_frames(raw):
+            out.append((t, cmd, int.from_bytes(raw[i + 3:i + 5], "big"), 9 + len(data)))
+            i += 9 + len(data)
+    return out
+
+
+def _bursts(wire: list[tuple[int, int, int, int]]) -> list[int]:
+    """Bytes per burst: frames less than 2 ms apart (contract item 6)."""
+    sizes, last = [], None
+    for t, _, _, n in wire:
+        if last is None or t - last >= 2:
+            sizes.append(0)
+        sizes[-1] += n
+        last = t
+    return sizes
+
+
+QUERY_REPLY_BYTES = {0x20: 10, 0x24: 17, 0x25: 10}
+
+
+def test_more_held_replies_than_the_gate_holds_keep_their_order_and_limit():
+    """Six queries in one chunk, more replies than the gate holds: the MCU's
+    later frames wait until the held replies are out, so none overtakes
+    another and no burst exceeds 23 bytes (a full gate used to let the next
+    frame out at once, past the held ones)."""
+    from test_dimmer_mcu import ZDMS16_2
+    proc = StubProc(device_config=ZDMS16_2).start()
+    try:
+        device = Device(proc)
+        pump(proc)
+        _quiet_stock_link(proc, device)
+        queries = [(0x24, 1), (0x24, 2), (0x20, 3), (0x24, 4), (0x25, 5), (0x24, 6)]
+        proc.exec("uart_rx " + " ".join(tuya_frame(cmd, seq=seq) for cmd, seq in queries))
+        wire = _wire(proc, device, 20)
+        assert [(cmd, seq) for _, cmd, seq, _ in wire] == queries
+        assert max(_bursts(wire)) <= 23
+        assert wire[-1][0] <= 2 * len(queries)
+    finally:
+        proc.stop()
+
+
+def test_query_bursts_and_zigbee_writes_keep_a_factory_mcus_limits():
+    """Contract item 6 under load: chunks of 1..8 network / time / gateway
+    queries from a stock MCU at random gaps, Zigbee on / off / level commands
+    in between (their DP writes go unanswered and time out). Every query gets
+    its reply, in the order asked, and frames less than 2 ms apart never add up
+    to more than 23 bytes."""
+    import random
+    from test_dimmer_mcu import ZDMS16_2
+    rng = random.Random(20261119)
+    proc = StubProc(device_config=ZDMS16_2).start()
+    try:
+        device = Device(proc)
+        pump(proc)
+        _quiet_stock_link(proc, device)
+        asked, wire, t, seq = [], [], 0, 10
+        for _ in range(120):
+            if rng.random() < 0.4:
+                ep = rng.choice([1, 2])
+                if rng.random() < 0.5:
+                    device.call_zigbee_cmd(ep, ZCL_CLUSTER_ON_OFF, rng.choice([0x00, 0x01]))
+                else:
+                    device.call_zigbee_cmd(ep, ZCL_CLUSTER_LEVEL_CONTROL,
+                                           ZCL_CMD_LEVEL_MOVE_TO_LEVEL,
+                                           bytes([rng.randrange(1, 255), 0, 0, 0, 0]))
+            chunk = []
+            for _ in range(rng.randrange(1, 9)):
+                cmd = rng.choice(list(QUERY_REPLY_BYTES))
+                chunk.append((cmd, seq))
+                seq += 1
+            asked += chunk
+            proc.exec("uart_rx " + " ".join(tuya_frame(cmd, seq=s) for cmd, s in chunk))
+            gap = rng.choice([0, 1, 2, 3, 20, 200])
+            ms = max(gap, 2 * len(chunk) + 4) if rng.random() < 0.7 else gap
+            wire += _wire(proc, device, ms, t)
+            t += ms + 1
+        wire += _wire(proc, device, 2000, t)
+        replies = [(cmd, s) for _, cmd, s, _ in wire if cmd in QUERY_REPLY_BYTES]
+        assert replies == asked
+        assert max(_bursts(wire)) <= 23, _bursts(wire)
+        assert sum(1 for _, cmd, _, _ in wire if cmd == 0x04) > 20
+    finally:
+        proc.stop()
+
+
 def test_open_dimmer_gets_its_replies_at_once():
     """It said who it is: its UART takes any burst."""
     from test_mcu_ota import VERSION, contact_as_own, start
