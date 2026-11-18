@@ -1152,12 +1152,14 @@ const definitions = [
             {% if device.secondary_mcu_image %}
             try {
                 // Wall switch gestures (own MCU firmware); older module builds lack the cluster.
+                // Each gesture is an event: report changes only (maximum interval 0), else
+                // the stack repeats the last gesture every maximum interval (and Z2M with it).
                 await reporting.bind(dimmer{{loop.index}}, coordinatorEndpoint, ["genMultistateInput"]);
                 await dimmer{{loop.index}}.configureReporting("genMultistateInput", [
                     {
                         attribute: {ID: 0x0055 /* presentValue */, type: 0x21}, // uint16
                         minimumReportInterval: 0,
-                        maximumReportInterval: constants.repInterval.MAX,
+                        maximumReportInterval: 0,
                         reportableChange: 1,
                     },
                 ]);

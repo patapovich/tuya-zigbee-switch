@@ -189,6 +189,23 @@ def test_configure_stops_waiting_for_a_module_that_does_not_answer():
     assert 2000 not in out["delays"]
 
 
+def test_gestures_are_reported_on_change_only():
+    """Gestures are events: a maximum report interval repeats the last one (about
+    every 18 h with 65000 s); 0 means changes only (item 16 of the 2026-11-18 review).
+    No reporting is added for anything else (the module's table holds 12 entries)."""
+    out = json.loads(run_node(CONFIGURE + """
+(async () => console.log(JSON.stringify((await configure(["2.1.10 own"])).reporting)))();
+"""))
+    assert out == [
+        [1, "genOnOff", {"min": 0, "max": 65000, "change": 1}],
+        [1, "genLevelCtrl", ["currentLevel", 0, 65000]],
+        [1, "genMultistateInput", [0x55, 0, 0]],
+        [2, "genOnOff", {"min": 0, "max": 65000, "change": 1}],
+        [2, "genLevelCtrl", ["currentLevel", 0, 65000]],
+        [2, "genMultistateInput", [0x55, 0, 0]],
+    ]
+
+
 def test_fade_and_hold_settings_are_per_dimmer_with_their_own_attributes():
     block = zdms16_block()
     found = re.findall(
