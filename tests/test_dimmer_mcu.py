@@ -598,6 +598,7 @@ int main(void) {
     for (int i = 0; i < MAX_COVER_SWITCHES; i++) printf("cover_switch %d\n", NV_ITEM_COVER_SWITCH_CONFIG(i));
     for (int i = 0; i < MAX_COVERS; i++) printf("cover %d\n", NV_ITEM_COVER_CONFIG(i));
     for (int i = 0; i < MAX_SWITCHES; i++) printf("switch %d\n", NV_ITEM_SWITCH_CLUSTER_DATA(i));
+    for (int i = 0; i < NV_LAYOUT_DIMMERS; i++) printf("dimmer %d\n", NV_ITEM_DIMMER_CLUSTER_DATA(i));
     printf("fixed %d\nfixed %d\nfixed %d\nfixed %d\nfixed %d\nfixed %d\nfixed %d\nfixed %d\n",
            NV_ITEM_CURRENT_VERSION_IN_NV, NV_ITEM_DEVICE_CONFIG, NV_ITEM_BASIC_CLUSTER_DATA,
            NV_ITEM_DEVICE_TYPE, NV_ITEM_MULTI_PRESS_RESET_COUNT, NV_ITEM_POLL_CONTROL_CONFIG,
@@ -624,6 +625,15 @@ def test_nv_item_ids_match_released_layout():
     assert ids["relay"][:5] == [9, 10, 11, 12, 13]
     assert ids["cover_switch"] == [14, 15, 16]
     assert ids["cover"] == [17, 18, 19]
+
+
+def test_nv_item_ids_of_the_fork_are_frozen():
+    """Ids the fork added after upstream's 34 (DP config, config ext, relay 6,
+    dimmer OnLevel): devices updated over the air keep them."""
+    ids = _nv_ids()
+    assert ids["fixed"][-2:] == [35, 36]
+    assert ids["relay"][5:] == [37]
+    assert ids["dimmer"] == [38, 39, 40, 41]
 
 
 def test_nv_item_ids_are_unique():
@@ -851,6 +861,113 @@ def test_on_while_on_keeps_level():
             assert ack_writes(proc, device) == [(DP_ON_L1, 1)], hex(cmd)
             assert level(device) == 200
             assert onoff(device) == 1
+    finally:
+        proc.stop()
+
+
+NV_DIR = Path("stub_nvm_data")
+NV_ITEM_ON_LEVEL_L1 = 38  # frozen, see test_nv_item_ids_match_released_layout
+
+
+def on_level(device: Device, ep: int = 1) -> int:
+    return int(device.read_zigbee_attr(ep, ZCL_CLUSTER_LEVEL_CONTROL, ZCL_ATTR_ON_LEVEL))
+
+
+def test_on_level_survives_a_restart():
+    """OnLevel is the Zigbee side's own setting: a power cut, watchdog reset
+    or OTA of the module must not lose it while the coordinator still shows
+    it. The NV is kept between the two runs, as on the device."""
+    proc, device = start()
+    try:
+        set_on_level(device, 60)
+        assert on_level(device) == 60
+    finally:
+        proc.stop()
+
+    proc, device = start()
+    try:
+        assert on_level(device) == 60
+        assert on_level(device, 2) == 0xFF        # per channel
+        dump_range(proc, 276, 591)
+        known_off(proc)
+        device.call_zigbee_cmd(1, ZCL_CLUSTER_ON_OFF, ZCL_CMD_ONOFF_ON)
+        writes = ack_writes(proc, device)
+        assert writes == [(DP_ON_L1, 1), (DP_LEVEL_L1, scaled_to_tuya(60, 276, 591))]
+    finally:
+        proc.stop()
+
+
+def test_on_level_cleared_survives_a_restart():
+    proc, device = start()
+    try:
+        set_on_level(device, 60)
+        set_on_level(device, 0xFF)
+    finally:
+        proc.stop()
+    proc, device = start()
+    try:
+        assert on_level(device) == 0xFF
+    finally:
+        proc.stop()
+
+
+def test_invalid_stored_on_level_reads_as_undefined():
+    """Only 1..254 or 0xFF (undefined) are taken from NV."""
+    proc, device = start()
+    try:
+        set_on_level(device, 0)
+        assert on_level(device) == 0
+    finally:
+        proc.stop()
+    proc, device = start()
+    try:
+        assert on_level(device) == 0xFF
+    finally:
+        proc.stop()
+
+
+def test_on_level_is_stored_only_when_it_changes():
+    """Automations write OnLevel again and again: only a change reaches the
+    flash."""
+    item = NV_DIR / f"item_{NV_ITEM_ON_LEVEL_L1:02x}.bin"
+    proc, device = start()
+    try:
+        set_on_level(device, 60)
+        assert item.read_bytes() == bytes([60])
+        item.unlink()
+        set_on_level(device, 60)
+        assert not item.exists(), "the same OnLevel was written to NV again"
+        set_on_level(device, 61)
+        assert item.read_bytes() == bytes([61])
+    finally:
+        proc.stop()
+
+
+def test_on_level_write_is_not_the_ballast_max():
+    """OnLevel (Level Control) and the ballast max share attribute id 0x0011:
+    an OnLevel write must not write the MCU's maximum brightness."""
+    proc, device = start()
+    try:
+        dump_range(proc, 276, 591)
+        set_on_level(device, 60)
+        assert ack_writes(proc, device) == []
+        device.write_zigbee_attr(1, ZCL_CLUSTER_BALLAST, ZCL_ATTR_BALLAST_MAX, 200)
+        assert ack_writes(proc, device) == [(DP_MAX_L1, zcl_to_tuya(200))]
+        assert on_level(device) == 60
+    finally:
+        proc.stop()
+
+
+def test_onoff_write_is_refused_and_sends_no_switch_type():
+    """OnOff (0x0006/0x0000) is read-only and shares its id with the switch
+    type (0x0007/0x0000): a write of it is refused and must not reach the MCU
+    as a switch type change."""
+    proc, device = start()
+    try:
+        res = proc.exec(f"zcl_write 1 0x{ZCL_CLUSTER_ON_OFF:04X} 0x{ZCL_ATTR_ONOFF:04X} 1")
+        assert not res.ok
+        assert ack_writes(proc, device) == []
+        assert onoff(device) == 0
     finally:
         proc.stop()
 
