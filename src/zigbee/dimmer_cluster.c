@@ -213,9 +213,13 @@ static uint8_t dimmer_on_level_set(const zigbee_dimmer_cluster *cluster) {
     return cluster->on_level >= ZCL_LEVEL_MIN && cluster->on_level <= ZCL_LEVEL_MAX;
 }
 
-/* ZCL On: to OnLevel when one is set, else wherever the MCU left it. */
+/* ZCL On: to OnLevel when one is set, else wherever the MCU left it. A
+ * channel that is already on keeps its level (ZCL: On does nothing to a lit
+ * light); "on" still goes to the MCU, in case it is off after all. (With a
+ * transition Zigbee2MQTT sends MoveToLevelWithOnOff(OnLevel) instead of On,
+ * and that goes to OnLevel whether lit or not.) */
 static void dimmer_turn_on_default(zigbee_dimmer_cluster *cluster) {
-    if (dimmer_on_level_set(cluster))
+    if (!cluster->on && dimmer_on_level_set(cluster))
         dimmer_turn_on_at(cluster, cluster->on_level);
     else
         dimmer_turn_on(cluster);

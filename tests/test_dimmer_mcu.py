@@ -56,6 +56,7 @@ from zcl_consts import (
     ZCL_LEVEL_MOVE_UP,
     ZCL_CMD_ONOFF_ON,
     ZCL_CMD_ONOFF_TOGGLE,
+    ZCL_CMD_ON_WITH_RECALL_GLOBAL_SCENE,
 )
 
 ZDMS16_2 = "jtbgusdc;TS0601-ZDMS16-2;DM2;M;"
@@ -831,6 +832,25 @@ def test_on_command_uses_on_level():
         device.call_zigbee_cmd(1, ZCL_CLUSTER_ON_OFF, ZCL_CMD_ONOFF_ON)
         writes = ack_writes(proc, device)
         assert writes == [(DP_ON_L1, 1), (DP_LEVEL_L1, scaled_to_tuya(60, 276, 591))]
+    finally:
+        proc.stop()
+
+
+def test_on_while_on_keeps_level():
+    """ZCL On to a lit channel does not touch its level (Home Assistant's
+    light.turn_on without brightness sends a bare On, e.g. from a motion
+    automation): only "on" goes out again, to re-sync an MCU that is off."""
+    proc, device = start()
+    try:
+        dump_range(proc, 276, 591)
+        set_on_level(device, 60)
+        known_off(proc)
+        set_level(proc, device, 200)
+        for cmd in (ZCL_CMD_ONOFF_ON, ZCL_CMD_ON_WITH_RECALL_GLOBAL_SCENE):
+            device.call_zigbee_cmd(1, ZCL_CLUSTER_ON_OFF, cmd)
+            assert ack_writes(proc, device) == [(DP_ON_L1, 1)], hex(cmd)
+            assert level(device) == 200
+            assert onoff(device) == 1
     finally:
         proc.stop()
 
