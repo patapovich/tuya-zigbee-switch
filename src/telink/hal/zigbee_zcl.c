@@ -147,17 +147,32 @@ static cluster_forAppCb_t get_cmd_callback_by_cluster_id(u16 cluster_id) {
     return NULL;
 }
 
+/* The stack has written what it accepted: the same checks as its
+ * zcl_attrWrite() tell which records those were. */
+static bool write_record_accepted(u8 endpoint, u16 cluster_id, const zclWriteRec_t *rec) {
+    zclAttrInfo_t *attr = zcl_findAttribute(endpoint, cluster_id, rec->attrID);
+
+    return attr != NULL && attr->data != NULL && attr->type == rec->dataType &&
+           (attr->access & ACCESS_CONTROL_WRITE);
+}
+
 static void zcl_incoming_message_callback(zclIncoming_t *pInHdlrMsg) {
     if (pInHdlrMsg->hdr.cmd == ZCL_CMD_WRITE ||
         pInHdlrMsg->hdr.cmd == ZCL_CMD_WRITE_NO_RSP) {
-        if (attribute_change_callback == NULL) {
-            return;
-        }
         zclWriteCmd_t *writeCmd = (zclWriteCmd_t *)pInHdlrMsg->attrCmd;
+        if (attribute_change_callback == NULL || writeCmd == NULL) {
+            return; /* NULL: the stack could not parse the command */
+        }
+        u8  endpoint   = pInHdlrMsg->msg->indInfo.dst_ep;
+        u16 cluster_id = pInHdlrMsg->msg->indInfo.cluster_id;
         for (u8 i = 0; i < writeCmd->numAttr; i++) {
-            attribute_change_callback(pInHdlrMsg->msg->indInfo.dst_ep,
-                                      pInHdlrMsg->msg->indInfo.cluster_id,
-                                      writeCmd->attrList[i].attrID);
+            /* The stack hands over every record of the command, also the
+             * ones it refused (read-only, unknown, wrong type) and left
+             * unchanged: those are no change to act on. */
+            if (!write_record_accepted(endpoint, cluster_id, &writeCmd->attrList[i])) {
+                continue;
+            }
+            attribute_change_callback(endpoint, cluster_id, writeCmd->attrList[i].attrID);
         }
     }
 }

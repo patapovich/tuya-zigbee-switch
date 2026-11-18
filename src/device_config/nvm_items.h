@@ -37,5 +37,10 @@
 #define NV_ITEM_DEVICE_CONFIG_EXT           36
 // Relays 6.. (MAX_RELAYS - NV_LAYOUT_RELAYS of them)
 #define NV_ITEM_EXTRA_RELAY_CLUSTER_DATA    37
+// Dimmer settings kept by the Zigbee side (OnLevel), one item per dimmer
+// slot: 38..41. Frozen like the ids above; the extra relay block (37) must not
+// grow into it (the NV id tests check that every id is unique).
+#define NV_LAYOUT_DIMMERS    4
+#define NV_ITEM_DIMMER_CLUSTER_DATA(dimmer_idx)    (38 + (dimmer_idx))
 
 #endif /* DEVICE_CONFIG_NVM_ITEMS_H_ */

@@ -205,6 +205,46 @@ void tuya_secondary_mcu_set_fast_acks(uint8_t on, void (*resync)(void)) {
 }
 
 static int tx_send_now(const tx_item_t *item);
+static uint8_t tx_value_matched(const tx_item_t *item);
+static void tx_write_timed_out(void);
+
+/* ---- answers that do not match the write in flight -------------------------
+ *
+ * An on/off or enum DP write is answered with the value written (see
+ * tx_value_matched). A report of that DP with another value while the write
+ * is in flight is, with an MCU that has no fast acks (the stock one), either
+ * the late answer to an earlier write of ours, or the MCU's last word on the
+ * DP: it kept or refused the value, or the wall switch was used and the
+ * answer to our write is lost. The last write that timed out is kept, so its
+ * late answer is still known as ours; any other such report is held back
+ * while our write may still be answered, and handed on as the DP's state
+ * when the write times out (else nothing would show it until the next
+ * report, and the stock MCU sends none by itself).
+ */
+#define TX_LATE_ANSWER_MS    3000 /* the stock MCU's fade takes about 1 s */
+
+typedef struct {
+    uint8_t dpid;    /* 0: empty */
+    uint8_t dp_type;
+    uint8_t len;
+    uint8_t value[4];
+} tx_dp_note_t;
+
+static tx_dp_note_t g_tx_held;         /* report held back, of the write in flight */
+static tx_dp_note_t g_tx_timed_out;    /* our last on/off or enum write that timed out */
+static uint32_t     g_tx_timed_out_ms;
+
+static void tx_dp_note_set(tx_dp_note_t *note, uint8_t dpid, uint8_t dp_type,
+                           const uint8_t *value, uint16_t len) {
+    if (len > sizeof(note->value)) {
+        note->dpid = 0;
+        return;
+    }
+    note->dpid    = dpid;
+    note->dp_type = dp_type;
+    note->len     = (uint8_t)len;
+    memcpy(note->value, value, len);
+}
 
 /* Ack timeout of the frame in flight, or the retry after a failed write. */
 static void tx_timer_fired(void *arg) {
@@ -226,6 +266,9 @@ static void tx_timer_fired(void *arg) {
                 g_tx_retries = 0;
                 g_resync();          /* state may differ now: read it all */
             }
+        } else if (g_tx_in_flight.cmd == TUYA_MCU_CMD_WRITE &&
+                   tx_value_matched(&g_tx_in_flight)) {
+            tx_write_timed_out();
         }
     }
     tx_kick();
@@ -237,6 +280,7 @@ static int tx_send_now(const tx_item_t *item) {
     if (send_frame(item->cmd, seq, item->dpid, item->dp_type, item->value, item->len) != 0) {
         return -1;
     }
+    g_tx_held.dpid = 0;              /* held reports belong to the frame in flight */
     g_tx_in_flight = *item;
     g_tx_busy      = 1;
     g_tx_sent_ms   = hal_millis();
@@ -262,12 +306,96 @@ static void tx_kick(void) {
     }
 }
 
-/* Every reported DP: a report of the DP in flight is the MCU's answer to it;
-* for a command we started (query-all) the first report starts the answer. */
-static void tx_note_report(uint8_t dpid) {
-    if (!g_tx_busy ||
-        (g_tx_in_flight.cmd == TUYA_MCU_CMD_WRITE && dpid != g_tx_in_flight.dpid)) {
-        return;
+/* What the DP unit being dispatched is to us (see the getters in the header). */
+static uint8_t g_report_acks_write = 0;
+static uint8_t g_report_superseded = 0;
+
+/* On/off and enum DPs are answered with the value written, so a report of the
+ * same DP with another value answers something else: an older write whose
+ * answer came late (after its timeout, or while a newer write was queued), or
+ * the wall switch. A brightness write is answered after the MCU's fade, with
+ * wherever the fade ended: the DP alone matches it. */
+static uint8_t tx_value_matched(const tx_item_t *item) {
+    return item->dp_type == TUYA_DP_TYPE_BOOL || item->dp_type == TUYA_DP_TYPE_ENUM;
+}
+
+static uint8_t tx_values_equal(uint8_t dp_type, const uint8_t *written, uint16_t written_len,
+                               const uint8_t *value, uint16_t len) {
+    uint32_t reported = tuya_mcu_diag_number(value, len);
+    uint32_t wrote    = tuya_mcu_diag_number(written, written_len);
+
+    if (dp_type == TUYA_DP_TYPE_BOOL) {
+        return (reported != 0) == (wrote != 0);
+    }
+    return reported == wrote;
+}
+
+static uint8_t tx_same_value(const tx_item_t *item, const uint8_t *value, uint16_t len) {
+    return tx_values_equal(item->dp_type, item->value, item->len, value, len);
+}
+
+/* The late answer to our last on/off or enum write that timed out: our own
+ * change coming back (taken once). */
+static uint8_t tx_late_answer(uint8_t dpid, const uint8_t *value, uint16_t len) {
+    if (g_tx_timed_out.dpid == 0 || g_tx_timed_out.dpid != dpid) {
+        return 0;
+    }
+    if (hal_millis() - g_tx_timed_out_ms > TX_LATE_ANSWER_MS) {
+        g_tx_timed_out.dpid = 0;
+        return 0;
+    }
+    if (!tx_values_equal(g_tx_timed_out.dp_type, g_tx_timed_out.value, g_tx_timed_out.len,
+                         value, len)) {
+        return 0;
+    }
+    g_tx_timed_out.dpid = 0;
+    return 1;
+}
+
+/* Our newest write of `dpid` not answered yet: the queued one (newer; the
+ * queue holds at most one per DP), else the one in flight. */
+static const tx_item_t *tx_pending_write(uint8_t dpid) {
+    for (uint8_t i = 0; i < g_txq_count; i++) {
+        const tx_item_t *queued = &g_txq[(g_txq_head + i) % TX_QUEUE_LEN];
+        if (queued->cmd == TUYA_MCU_CMD_WRITE && queued->dpid == dpid) {
+            return queued;
+        }
+    }
+    if (g_tx_busy && g_tx_in_flight.cmd == TUYA_MCU_CMD_WRITE && g_tx_in_flight.dpid == dpid) {
+        return &g_tx_in_flight;
+    }
+    return NULL;
+}
+
+/* A reported on/off or enum value that our newest write of that DP changes
+ * again: outdated already, whatever it answers. */
+static uint8_t tx_report_superseded(uint8_t dpid, const uint8_t *value, uint16_t len) {
+    const tx_item_t *pending = tx_pending_write(dpid);
+
+    return pending != NULL && tx_value_matched(pending) && !tx_same_value(pending, value, len);
+}
+
+/* Every reported DP: a report of the DP in flight (on/off and enum DPs: with
+ * the value written) is the MCU's answer to it; for a command we started
+ * (query-all) the first report starts the answer. Returns 1 when the report
+ * answers a DP write of ours: the one in flight, or late the last one that
+ * timed out. */
+static uint8_t tx_note_report(uint8_t dpid, uint8_t dp_type, const uint8_t *value,
+                              uint16_t len) {
+    uint8_t write = g_tx_in_flight.cmd == TUYA_MCU_CMD_WRITE;
+
+    if (g_tx_busy && write && dpid == g_tx_in_flight.dpid &&
+        tx_value_matched(&g_tx_in_flight) && !tx_same_value(&g_tx_in_flight, value, len)) {
+        if (tx_late_answer(dpid, value, len)) {
+            return 1;
+        }
+        if (!g_fast_acks) {
+            tx_dp_note_set(&g_tx_held, dpid, dp_type, value, len);
+        }
+        return 0;
+    }
+    if (!g_tx_busy || (write && dpid != g_tx_in_flight.dpid)) {
+        return tx_late_answer(dpid, value, len);
     }
     uint32_t latency = hal_millis() - g_tx_sent_ms;
     if (latency > 0xFFFF) {
@@ -281,6 +409,7 @@ static void tx_note_report(uint8_t dpid) {
     tuya_mcu_diag_log(TUYA_MCU_DIAG_ACK, tx_item_id(&g_tx_in_flight), latency);
     g_tx_busy = 0;
     hal_tasks_unschedule(&g_tx_timer);
+    return write ? 1 : tx_late_answer(dpid, value, len);
 }
 
 /* A command we started that the MCU answers with the same command (e.g. the
@@ -379,6 +508,14 @@ uint8_t tuya_secondary_mcu_report_is_passive(void) {
     return g_report_is_passive;
 }
 
+uint8_t tuya_secondary_mcu_report_acks_write(void) {
+    return g_report_acks_write;
+}
+
+uint8_t tuya_secondary_mcu_report_is_superseded(void) {
+    return g_report_superseded;
+}
+
 /* A full status dump of a two channel dimmer (13 DPs) is ~100 bytes. */
 #define RX_CAPACITY            256
 
@@ -428,11 +565,35 @@ static void rx_dispatch_report(uint8_t cmd, uint16_t frame_len) {
         tuya_mcu_diag.rx_dps++;
         tuya_mcu_diag_log(g_report_is_passive ? TUYA_MCU_DIAG_RX_DP_PASSIVE : TUYA_MCU_DIAG_RX_DP,
                           dpid, tuya_mcu_diag_number(value, vlen));
-        tx_note_report(dpid);
+        g_report_acks_write = tx_note_report(dpid, dtype, value, vlen);
+        g_report_superseded = tx_report_superseded(dpid, value, vlen);
         for (uint8_t i = 0; i < g_listener_cnt; i++) {
             g_listeners[i](dpid, dtype, value, vlen);
         }
         off = (uint16_t)(off + 4 + vlen);
+    }
+    g_report_is_passive = 0;
+    g_report_acks_write = 0;
+    g_report_superseded = 0;
+}
+
+/* The on/off or enum write in flight got no answer in time: keep it, so its
+ * late answer is still taken as ours, and hand on the report of that DP held
+ * back meanwhile as its state, unless a newer write of ours to it waits in
+ * the queue. Handed on as passive: never a key press. */
+static void tx_write_timed_out(void) {
+    tx_dp_note_t held = g_tx_held;
+
+    g_tx_held.dpid = 0;
+    tx_dp_note_set(&g_tx_timed_out, g_tx_in_flight.dpid, g_tx_in_flight.dp_type,
+                   g_tx_in_flight.value, g_tx_in_flight.len);
+    g_tx_timed_out_ms = hal_millis();
+    if (held.dpid == 0 || held.dpid != g_tx_in_flight.dpid || tx_pending_write(held.dpid) != NULL) {
+        return;
+    }
+    g_report_is_passive = 1;
+    for (uint8_t i = 0; i < g_listener_cnt; i++) {
+        g_listeners[i](held.dpid, held.dp_type, held.value, held.len);
     }
     g_report_is_passive = 0;
 }

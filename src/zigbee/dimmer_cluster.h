@@ -35,12 +35,15 @@ typedef struct {
     uint8_t              on;
 
     /* ZCL OnLevel: the level the light comes on at, from the wall switch or
-     * an On command. 0xFF (default) = wherever the MCU left it. */
+     * an On command. 0xFF (default) = wherever the MCU left it. Kept in NV
+     * (NV_ITEM_DIMMER_CLUSTER_DATA); on_level_saved is the value stored
+     * there, so only a real change is written. */
     uint8_t              on_level;
 
     /* Set once the MCU has told us its on/off state, so its first report
      * after boot is not taken for a switch press. */
     uint8_t              state_known;
+    uint8_t              on_level_saved;
 
     /* What the MCU uses: its own min/max brightness (Tuya 10..1000, 0 =
      * not known yet) and the last level value written to or reported by it. */
@@ -74,8 +77,11 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
 
 // Returns HAL_ZIGBEE_CMD_SKIPPED-equivalent behavior: no-op if this endpoint
 // has no registered dimmer cluster (e.g. the write targeted a relay endpoint
-// sharing the same ZCL_CLUSTER_ON_OFF cluster id).
+// sharing the same ZCL_CLUSTER_ON_OFF cluster id). Attribute ids repeat across
+// clusters (OnLevel and the ballast max are both 0x0011, OnOff and the switch
+// type both 0x0000), so the cluster id picks the attribute.
 void dimmer_cluster_callback_attr_write_trampoline(uint8_t endpoint,
+                                                   uint16_t cluster_id,
                                                    uint16_t attribute_id);
 
 #endif

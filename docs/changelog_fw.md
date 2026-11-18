@@ -14,13 +14,18 @@ Please describe what you are working on, under ## Upcoming
   does the switching or dimming: relays, touch keys, dimmers, power-on behaviour, datapoints
   written at boot. Config tokens are listed in [porting.md](contribute/porting.md#secondary-mcu)
   - MCU firmware version shown in Z2M (`mcu_version`)
+  - An on/off the MCU answers late or with the other state: Zigbee shows the MCU's state and
+    does not take the answer for a key press
 - **AVATTO ZDMS16-2 2-gang dimmer module** (`TS0601`, `_TZE284_jtbgusdc`, `_TZE204_jtbgusdc`)
   - Level Control (on, off, move, step, move to level, OnLevel), levels scaled to the MCU's
     min/max brightness, wall switch type and power-on behaviour
+  - OnLevel is kept across restarts; On to a channel that is already on keeps its level
   - The module button resets the device
   - Link diagnostics as Basic cluster attributes
 - **NovaDigital 6 gang** (`_TZE204_tdhnhhiy`) and **TPZ-2 / Moes SFL02-Z-2** (`_TZE200_hktk6hze`)
   touch switches with a secondary MCU
+- Telink: an attribute write the stack refused (read-only, unknown attribute, wrong type) is no
+  longer acted on as if it had been written
 
 ## 1.1.3
 

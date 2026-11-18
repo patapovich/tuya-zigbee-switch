@@ -204,6 +204,15 @@ static int cmd_zcl_write(int argc, char **argv) {
         return -1;
     }
 
+    // Like the real stacks: a read-only attribute is refused (status
+    // READ_ONLY), keeps its value and is not passed on as a change.
+    if (attr->flag == ATTR_READONLY) {
+        fprintf(stderr, "Attribute is read-only (ep=%u, cluster=0x%04X, attr=0x%04X)\n",
+                ep, cl, at);
+        io_res_err("read_only ep=%u cluster=0x%04X attr=0x%04X", ep, cl, at);
+        return -1;
+    }
+
     int ret = stub_app_string_to_attribute_value(attr, argv[4]);
     if (ret != 0) {
         fprintf(stderr, "Failed to parse value for attribute (code %d)\n", ret);

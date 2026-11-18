@@ -1,4 +1,6 @@
 #include "zigbee/dimmer_cluster.h"
+#include "device_config/nvm_items.h"
+#include "hal/nvm.h"
 #include "zigbee/cluster_common.h"
 #include "zigbee/consts.h"
 #include "zigbee/tuya_mcu_app.h"
@@ -213,9 +215,46 @@ static uint8_t dimmer_on_level_set(const zigbee_dimmer_cluster *cluster) {
     return cluster->on_level >= ZCL_LEVEL_MIN && cluster->on_level <= ZCL_LEVEL_MAX;
 }
 
-/* ZCL On: to OnLevel when one is set, else wherever the MCU left it. */
+/* ---- OnLevel in NV --------------------------------------------------------
+ *
+ * OnLevel is the Zigbee side's own setting (the MCU knows nothing of it), so
+ * it is kept in NV: a power cut, watchdog reset or OTA must not lose it while
+ * the coordinator still shows the old value. */
+
+#define DIMMER_ON_LEVEL_UNDEFINED    0xFF
+
+static void dimmer_load_on_level(zigbee_dimmer_cluster *cluster) {
+    uint8_t value = DIMMER_ON_LEVEL_UNDEFINED;
+
+    if (cluster->dimmer_idx >= NV_LAYOUT_DIMMERS ||
+        hal_nvm_read(NV_ITEM_DIMMER_CLUSTER_DATA(cluster->dimmer_idx), sizeof(value),
+                     &value) != HAL_NVM_SUCCESS ||
+        ((value < ZCL_LEVEL_MIN || value > ZCL_LEVEL_MAX) &&
+         value != DIMMER_ON_LEVEL_UNDEFINED)) {
+        value = DIMMER_ON_LEVEL_UNDEFINED;
+    }
+    cluster->on_level       = value;
+    cluster->on_level_saved = value;
+}
+
+static void dimmer_store_on_level(zigbee_dimmer_cluster *cluster) {
+    if (cluster->on_level == cluster->on_level_saved ||
+        cluster->dimmer_idx >= NV_LAYOUT_DIMMERS) {
+        return;
+    }
+    if (hal_nvm_write(NV_ITEM_DIMMER_CLUSTER_DATA(cluster->dimmer_idx),
+                      sizeof(cluster->on_level), &cluster->on_level) == HAL_NVM_SUCCESS) {
+        cluster->on_level_saved = cluster->on_level;
+    }
+}
+
+/* ZCL On: to OnLevel when one is set, else wherever the MCU left it. A
+ * channel that is already on keeps its level (ZCL: On does nothing to a lit
+ * light); "on" still goes to the MCU, in case it is off after all. (With a
+ * transition Zigbee2MQTT sends MoveToLevelWithOnOff(OnLevel) instead of On,
+ * and that goes to OnLevel whether lit or not.) */
 static void dimmer_turn_on_default(zigbee_dimmer_cluster *cluster) {
-    if (dimmer_on_level_set(cluster))
+    if (!cluster->on && dimmer_on_level_set(cluster))
         dimmer_turn_on_at(cluster, cluster->on_level);
     else
         dimmer_turn_on(cluster);
@@ -425,6 +464,14 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
     if (value_len < 1)
         return;
 
+    /* A newer write of ours sets this on/off or enum DP to another value:
+     * the report (e.g. the late answer to an earlier write, off before our
+     * on) is outdated already. Our write's own answer settles it; if none
+     * comes, the stock MCU's report is handed on again (passive) when our
+     * write times out. */
+    if (tuya_secondary_mcu_report_is_superseded())
+        return;
+
     // A single DP report can apply to any registered dimmer endpoint, since
     // DPIDs are assigned per-dimmer, not globally.
     for (int i = 0; i < DIMMER_MAX_ENDPOINTS; i++) {
@@ -437,9 +484,12 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
         if (dp_type == TUYA_DP_TYPE_BOOL && dpid == cluster->onoff_dpid) {
             /* Our own "on" has already set cluster->on, so only the MCU
              * switching on by itself (the wall switch) gets here while off.
-             * Not an answer to our query, not the first report after boot. */
+             * Not an answer to our query or to our write (the stock MCU
+             * answers writes with 0x06 too), not the first report after
+             * boot. */
             uint8_t switched_on = value[0] && cluster->state_known && !cluster->on &&
-                                  !tuya_secondary_mcu_report_is_passive();
+                                  !tuya_secondary_mcu_report_is_passive() &&
+                                  !tuya_secondary_mcu_report_acks_write();
 
             if (!value[0])
                 dimmer_stop_move(cluster);
@@ -547,8 +597,8 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
     cluster->mcu_min         = 0;
     cluster->mcu_max         = 0;
     cluster->level_value     = 0;
-    cluster->on_level        = 0xFF;
     cluster->state_known     = 0;
+    dimmer_load_on_level(cluster);
 
     SETUP_ATTR(0, ZCL_ATTR_ONOFF, ZCL_DATA_TYPE_BOOLEAN, ATTR_READONLY, cluster->on);
     SETUP_ATTR(1, ZCL_ATTR_START_UP_ONOFF, ZCL_DATA_TYPE_ENUM8, ATTR_WRITABLE,
@@ -636,42 +686,58 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
      * anyway: the UART link is enabled only after parse_config().) */
 }
 
+/* Attribute writes, by cluster: attribute ids repeat across clusters
+ * (Level Control OnLevel = ballast max = 0x0011, OnOff = switch type =
+ * 0x0000). Only attributes whose write succeeded get here (the HAL skips the
+ * rest). */
 void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
-                                  uint16_t attribute_id) {
+                                  uint16_t cluster_id, uint16_t attribute_id) {
     if (cluster == NULL)
         return;
 
-    if (attribute_id == ZCL_ATTR_START_UP_ONOFF &&
-        (cluster->power_on_behavior_dpid || dimmer_own_mcu(cluster))) {
-        uint8_t value = tuya_mcu_power_on_from_startup(cluster->startup_mode);
+    switch (cluster_id) {
+    case ZCL_CLUSTER_ON_OFF:
+        if (attribute_id == ZCL_ATTR_START_UP_ONOFF &&
+            (cluster->power_on_behavior_dpid || dimmer_own_mcu(cluster))) {
+            uint8_t value = tuya_mcu_power_on_from_startup(cluster->startup_mode);
 
-        /* Own MCU: this channel only. Another MCU: the shared DP 14 sets
-         * every channel (each endpoint follows its report). */
-        tuya_secondary_mcu_write_dp(dimmer_own_mcu(cluster) ? cluster->own_power_on_dpid
-                                                            : cluster->power_on_behavior_dpid,
-                                    TUYA_DP_TYPE_ENUM, &value, sizeof(value));
-    } else if (attribute_id == ZCL_ATTR_BALLAST_MIN_LEVEL) {
-        if (!cluster->min_level_dpid)
-            return;
+            /* Own MCU: this channel only. Another MCU: the shared DP 14 sets
+             * every channel (each endpoint follows its report). */
+            tuya_secondary_mcu_write_dp(dimmer_own_mcu(cluster) ? cluster->own_power_on_dpid
+                                                                : cluster->power_on_behavior_dpid,
+                                        TUYA_DP_TYPE_ENUM, &value, sizeof(value));
+        }
+        break;
 
-        dimmer_write_tuya_value(cluster->min_level_dpid,
-                                dimmer_zcl_level_to_tuya_value(cluster->min_level));
-    } else if (attribute_id == ZCL_ATTR_BALLAST_MAX_LEVEL) {
-        if (!cluster->max_level_dpid)
-            return;
+    case ZCL_CLUSTER_LEVEL_CONTROL:
+        if (attribute_id == ZCL_ATTR_LEVEL_ON_LEVEL)
+            dimmer_store_on_level(cluster);
+        break;
 
-        dimmer_write_tuya_value(cluster->max_level_dpid,
-                                dimmer_zcl_level_to_tuya_value(cluster->max_level));
-    } else if (attribute_id == ZCL_ATTR_ONOFF_CONFIGURATION_SWITCH_TYPE) {
-        if (!cluster->switch_type_dpid)
-            return;
+    case ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG:
+        if (attribute_id == ZCL_ATTR_BALLAST_MIN_LEVEL && cluster->min_level_dpid) {
+            dimmer_write_tuya_value(cluster->min_level_dpid,
+                                    dimmer_zcl_level_to_tuya_value(cluster->min_level));
+        } else if (attribute_id == ZCL_ATTR_BALLAST_MAX_LEVEL && cluster->max_level_dpid) {
+            dimmer_write_tuya_value(cluster->max_level_dpid,
+                                    dimmer_zcl_level_to_tuya_value(cluster->max_level));
+        }
+        break;
 
-        tuya_secondary_mcu_write_dp(cluster->switch_type_dpid, TUYA_DP_TYPE_ENUM,
-                                    &cluster->switch_type, sizeof(cluster->switch_type));
+    case ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG:
+        if (attribute_id == ZCL_ATTR_ONOFF_CONFIGURATION_SWITCH_TYPE && cluster->switch_type_dpid) {
+            tuya_secondary_mcu_write_dp(cluster->switch_type_dpid, TUYA_DP_TYPE_ENUM,
+                                        &cluster->switch_type, sizeof(cluster->switch_type));
+        }
+        break;
+
+    default:
+        break;
     }
 }
 
 void dimmer_cluster_callback_attr_write_trampoline(uint8_t endpoint,
+                                                   uint16_t cluster_id,
                                                    uint16_t attribute_id) {
-    dimmer_cluster_on_write_attr(dimmer_by_endpoint(endpoint), attribute_id);
+    dimmer_cluster_on_write_attr(dimmer_by_endpoint(endpoint), cluster_id, attribute_id);
 }

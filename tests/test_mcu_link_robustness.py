@@ -2,6 +2,7 @@
 contact, relay echo window, and endpoints that share clusters."""
 from client import StubProc
 from conftest import Device
+from zcl_consts import ZCL_ATTR_ONOFF
 from test_dimmer_mcu import (
     DP_LEVEL_L1,
     DP_ON_L1,
@@ -174,6 +175,36 @@ def test_relay_echo_after_queue_delay_is_not_a_key_press():
         presses = [e for e in device._events if e.kind == "zcl_attr_change"
                    and int(e.payload["ep"]) == 1 and int(e.payload["cluster"], 16) == 0x0012]
         assert not presses, "relay echo became a synthetic key press"
+    finally:
+        proc.stop()
+
+
+def test_report_handed_on_after_a_relay_write_timed_out_is_not_a_key_press():
+    """The MCU answers our relay on with off (0x06) and nothing else comes:
+    the relay shows off, and when that report is handed on again after the
+    write's ack timeout it is no key press either."""
+    proc = StubProc(device_config=TPZ2, dp_config=DP_CONFIG).start()
+    try:
+        device = Device(proc)
+        pump(proc)
+        take_tx(proc)
+        for _ in range(4):                # first-contact frames time out
+            device.step_time(200)
+            pump(proc)
+            take_tx(proc)
+        device.zcl_relay_on(3)            # relay DP 0x18 (= key DP of switch ep 1)
+        pump(proc)
+        assert dp_writes(take_tx(proc)) == [(0x18, 1)]
+        device.clear_events()
+        mcu_report(proc, bool_dp(0x18, 0))
+        for _ in range(4):
+            device.step_time(100)
+            pump(proc)
+            take_tx(proc)
+        assert int(device.read_zigbee_attr(3, ZCL_CLUSTER_ON_OFF, ZCL_ATTR_ONOFF)) == 0
+        presses = [e for e in device._events if e.kind == "zcl_attr_change"
+                   and int(e.payload["ep"]) == 1 and int(e.payload["cluster"], 16) == 0x0012]
+        assert not presses, "report handed on after the timeout became a key press"
     finally:
         proc.stop()
 
