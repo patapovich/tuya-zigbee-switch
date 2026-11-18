@@ -48,8 +48,14 @@ void stub_millis_freeze();
 void stub_millis_unfreeze();
 void stub_millis_step(uint64_t step);
 
-/* UART test hooks, see src/stub/hal/uart.c */
+/* UART test hooks, see src/stub/hal/uart.c. Chunk max 0: injected bytes are
+ * a plain byte stream; N: every injection is one DMA chunk (what the MCU sent
+ * back to back), dropped whole if over N bytes. fail_writes: the next `count`
+ * writes fail as a wedged UART does. */
 void     stub_uart_inject_rx(const uint8_t *data, uint16_t len);
 uint16_t stub_uart_take_tx(uint8_t *out, uint16_t max);
+void     stub_uart_set_dma_chunk_max(uint16_t max);
+void     stub_uart_fail_writes(uint16_t count);
+uint16_t stub_uart_init_count(void);
 
 #endif // _HAL_STUB_H_

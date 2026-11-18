@@ -8,8 +8,9 @@
 #include <sys/select.h>
 #include <unistd.h>
 
+/* Long enough for uart_rx with a whole DMA chunk of the secondary MCU. */
 #ifndef SIMPLE_REPL_MAX_LINE
-#define SIMPLE_REPL_MAX_LINE    256
+#define SIMPLE_REPL_MAX_LINE    8192
 #endif
 
 static const char     kPrompt[] = "> ";

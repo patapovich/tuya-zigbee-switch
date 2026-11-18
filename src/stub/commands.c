@@ -2,6 +2,7 @@
 #include "machine_io.h"
 
 #include "hal/timer.h"
+#include "hal/uart.h"
 #include "hal/zigbee.h"
 
 #include "stub/hal/stub.h"
@@ -236,29 +237,40 @@ static int cmd_read_pin(int argc, char **argv) {
     return 0;
 }
 
+/* One injection: the hex tokens are joined. With uart_dma set, one injection
+ * is one DMA chunk, i.e. bytes the MCU sent back to back. */
+#define UART_RX_INJECT_MAX    2048
+#define UART_TX_TAKE_MAX      4096
+
 static int cmd_uart_rx(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: uart_rx <hexbytes>\n");
+    if (argc < 2) {
+        fprintf(stderr, "Usage: uart_rx <hexbytes> [<hexbytes>...]\n");
         io_res_err("usage");
         return -1;
     }
-    const char *hex = argv[1];
-    size_t      n   = strlen(hex);
-    if (n == 0 || n % 2) {
-        io_res_err("bad_hex");
-        return -1;
-    }
-    uint8_t  buf[128];
-    uint16_t len = 0;
-    for (size_t i = 0; i < n && len < sizeof(buf); i += 2) {
-        char  pair[3] = { hex[i], hex[i + 1], 0 };
-        char *e       = NULL;
-        long  v       = strtol(pair, &e, 16);
-        if (*e) {
+    static uint8_t buf[UART_RX_INJECT_MAX];
+    uint16_t       len = 0;
+    for (int a = 1; a < argc; a++) {
+        const char *hex = argv[a];
+        size_t      n   = strlen(hex);
+        if (n == 0 || n % 2) {
             io_res_err("bad_hex");
             return -1;
         }
-        buf[len++] = (uint8_t)v;
+        if (len + n / 2 > sizeof(buf)) {
+            io_res_err("too_long");
+            return -1;
+        }
+        for (size_t i = 0; i < n; i += 2) {
+            char  pair[3] = { hex[i], hex[i + 1], 0 };
+            char *e       = NULL;
+            long  v       = strtol(pair, &e, 16);
+            if (*e) {
+                io_res_err("bad_hex");
+                return -1;
+            }
+            buf[len++] = (uint8_t)v;
+        }
     }
     stub_uart_inject_rx(buf, len);
     io_res_ok("injected=%u", len);
@@ -268,14 +280,58 @@ static int cmd_uart_rx(int argc, char **argv) {
 static int cmd_uart_tx(int argc, char **argv) {
     (void)argc;
     (void)argv;
-    uint8_t  buf[256];
-    uint16_t len = stub_uart_take_tx(buf, sizeof(buf));
-    char     hex[2 * sizeof(buf) + 1];
+    static uint8_t buf[UART_TX_TAKE_MAX];
+    static char    hex[2 * UART_TX_TAKE_MAX + 1];
+    uint16_t       len = stub_uart_take_tx(buf, sizeof(buf));
     for (uint16_t i = 0; i < len; i++) {
         snprintf(hex + 2 * i, 3, "%02X", buf[i]);
     }
     hex[2 * len] = '\0';
     io_res_ok("tx=%s", hex);
+    return 0;
+}
+
+static int parse_u16_dec(const char *s, uint16_t *out) {
+    char *e = NULL;
+    long  v = strtol(s, &e, 10);
+
+    if (*s == '\0' || *e || v < 0 || v > 0xFFFF) {
+        return -1;
+    }
+    *out = (uint16_t)v;
+    return 0;
+}
+
+static int cmd_uart_dma(int argc, char **argv) {
+    uint16_t max;
+
+    if (argc != 2 || parse_u16_dec(argv[1], &max)) {
+        fprintf(stderr, "Usage: uart_dma <max chunk bytes, 0 = byte stream>\n");
+        io_res_err("usage");
+        return -1;
+    }
+    stub_uart_set_dma_chunk_max(max);
+    io_res_ok("dma_chunk_max=%u", max);
+    return 0;
+}
+
+static int cmd_uart_fail_writes(int argc, char **argv) {
+    uint16_t count;
+
+    if (argc != 2 || parse_u16_dec(argv[1], &count)) {
+        fprintf(stderr, "Usage: uart_fail_writes <count>\n");
+        io_res_err("usage");
+        return -1;
+    }
+    stub_uart_fail_writes(count);
+    io_res_ok("fail_writes=%u", count);
+    return 0;
+}
+
+static int cmd_uart_info(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    io_res_ok("inits=%u rx_dropped=%u", stub_uart_init_count(), hal_uart_rx_dropped());
     return 0;
 }
 
@@ -431,6 +487,9 @@ static const SimpleReplCommand kCmds[] = {
     { "read_pin",            cmd_read_pin            },
     { "uart_rx",             cmd_uart_rx             },
     { "uart_tx",             cmd_uart_tx             },
+    { "uart_dma",            cmd_uart_dma            },
+    { "uart_fail_writes",    cmd_uart_fail_writes    },
+    { "uart_info",           cmd_uart_info           },
     { "zcl_read",            cmd_zcl_read            },
     { "zcl_write",           cmd_zcl_write           },
     { "zcl_list_attrs",      cmd_zcl_list_attrs      },
