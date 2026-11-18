@@ -174,14 +174,19 @@ static hal_task_t g_contact_timer;
  * a stock MCU powered up with us starts to listen: one that starts later loses
  * it (min and max then stay unknown until the next restart of ours, and low
  * levels drive the lamp below its minimum). So when no DP report has come
- * DUMP_RETRY_MS after the contact, the dump is asked once more: a command the
- * MCU already gets, and the only frame the stock MCU gets that phase 1 did not
- * send it (zdms16-py32 docs/BOOTLOADER.md section 10, change 6).
+ * DUMP_RETRY_MS after the first contact's dump, the dump is asked once more:
+ * a command the MCU already gets, and the only frame the stock MCU gets that
+ * phase 1 did not send it (zdms16-py32 docs/BOOTLOADER.md section 10, change
+ * 6). Once per run, for the run's first dump only: later contacts (the MCU's
+ * first network query, a treated restart) send phase 1's dump and nothing
+ * more, so a factory MCU gets at most one 0x28 more than under phase 1
+ * (contract item 6, tuya_mcu_ota.h). A restart before the retry drops it.
  */
 #define DUMP_RETRY_MS    1000
 
 static hal_task_t g_dump_timer;
-static uint16_t   g_dump_reports;   /* DP reports so far when the dump was asked */
+static uint8_t    g_dump_retry_armed; /* this run's retry was scheduled: never again */
+static uint16_t   g_dump_reports;     /* DP reports so far when the dump was asked */
 
 static void dump_retry(void *arg) {
     (void)arg;
@@ -211,9 +216,11 @@ static uint8_t first_contact(uint8_t source) {
      * only way to learn them after a reboot. */
     if (dp_attrs_cnt > 0 || dimmer_clusters_cnt > 0) {
         dp_attr_query_all();
-        g_dump_reports = tuya_secondary_mcu_reports();
-        hal_tasks_unschedule(&g_dump_timer);
-        hal_tasks_schedule(&g_dump_timer, DUMP_RETRY_MS);
+        if (!g_dump_retry_armed) {
+            g_dump_retry_armed = 1;
+            g_dump_reports     = tuya_secondary_mcu_reports();
+            hal_tasks_schedule(&g_dump_timer, DUMP_RETRY_MS);
+        }
     }
     return 1;
 }
@@ -227,7 +234,7 @@ void tuya_mcu_app_mcu_restarted(void) {
     g_mcu_own = 0;
     tuya_secondary_mcu_set_fast_acks(0, NULL);
     version_answered();                  /* asked again at the next contact */
-    hal_tasks_unschedule(&g_dump_timer); /* and so is the dump */
+    hal_tasks_unschedule(&g_dump_timer); /* the dump too, never retried then */
     tuya_mcu_ota_mcu_restarted();
 }
 

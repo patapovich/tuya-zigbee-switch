@@ -74,7 +74,8 @@
  *     and 31 in its frame buffer, and a frame of 32..38 bytes wedges its RX
  *     until a power cut.
  *     Towards a stock MCU this firmware sends exactly what phase 1 sends, apart
- *     from one more dump query when the first one got no DP report.
+ *     from one more dump query per run, when the run's first one got no DP
+ *     report within 1 s.
  *  7. No 0x01 (product query) to any MCU: the Open Dimmer app takes 0x01
  *     queries without any 0xA3 for a stock Tuya Zigbee module.
  *  8. Heard. An MCU identified as Open Dimmer gets a well-formed frame at least

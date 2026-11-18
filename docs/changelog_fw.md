@@ -18,8 +18,9 @@ Please describe what you are working on, under ## Upcoming
     does not take the answer for a key press
   - A lost version answer is asked again (twice, 2 s apart); routers receive bursts of up to
     508 bytes from the MCU (was 252)
-  - The settings dump is asked once more when the first one got no answer (an MCU that
-    started to listen late kept its min/max brightness unknown until the next restart)
+  - The settings dump is asked once more (once per start) when the first one got no answer
+    (an MCU that started to listen late kept its min/max brightness unknown until the next
+    restart)
   - Frames to a factory MCU never add up to more than 23 bytes within 2 ms (the later one
     waits 2 ms), and none is longer than 29 bytes
 - **AVATTO ZDMS16-2 2-gang dimmer module** (`TS0601`, `_TZE284_jtbgusdc`, `_TZE204_jtbgusdc`)

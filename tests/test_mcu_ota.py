@@ -972,15 +972,16 @@ def mcu_query_seq(proc, device, seq: int) -> list[int]:
     return [cmd for cmd, _ in frames]
 
 
-def unidentified_run(version: int, cmd=None, **kw):
+def unidentified_run(version: int, cmd=None, dump=None, **kw):
     """An MCU that never answers 0xA3 and sends a seq-0 network query every
-    30 s for 10 minutes (a stock MCU that numbers every query 0)."""
+    30 s for 10 minutes (a stock MCU that numbers every query 0). `dump=[]`:
+    it answers no dump query either."""
     from tuya_mcu import StockMcu
     proc = StubProc(cmd=cmd or ["./build/stub/stub_device"], **kw).start()
     try:
         device = Device(proc)
         pump(proc)
-        mcu = StockMcu(proc, device, version=version, asked=frozenset({OTA_IDENT}))
+        mcu = StockMcu(proc, device, version=version, asked=frozenset({OTA_IDENT}), dump=dump)
         mcu.run(5000)
         for _ in range(20):
             mcu.send(TUYA_CMD_QUERY_NETWORK, seq=0)
@@ -1004,6 +1005,21 @@ def test_an_unidentified_2x_mcu_gets_bounded_questions_and_restarts():
     assert last < 5000 + 6 * 30_000                     # the 3rd restart and its late questions
     tail = [cmd for t, cmd, _ in mcu.trace if t > last]
     assert tail and set(tail) == {TUYA_CMD_QUERY_NETWORK}
+
+
+@pytest.mark.parametrize("version", [0x80, 0x47])
+def test_lost_dumps_are_asked_once_more_per_run_only(version):
+    """Contract item 6 and section 15, rule 3: a dump query that gets no DP
+    report is retried once per run, after the run's first contact, whatever
+    the number of contacts (4 for class (b), 2 for class (c))."""
+    mcu = unidentified_run(version, device_config=ZDMS16_2, dp_config=ZDMS16_2_DP_CONFIG,
+                           dump=[])
+    contacts = [t for t, cmd, _ in mcu.trace if cmd == TUYA_CMD_MCU_VERSION]  # answered: 1 each
+    dumps = [t for t, cmd, _ in mcu.trace if cmd == TUYA_CMD_QUERY_ALL]
+    assert len(contacts) == (4 if version == 0x80 else 2)
+    assert len(dumps) == len(contacts) + 1
+    assert [t for t in dumps if t not in contacts] == [contacts[0] + 1000]
+    assert mcu.faults == []
 
 
 def test_a_stock_1x_mcu_numbering_every_query_0_is_never_asked_or_restarted():

@@ -13,8 +13,8 @@ It is the phase-1 behaviour and is never recorded again from a later build
 (recording refuses a src/ tree that differs from 51f5c95a): a difference is a
 change towards the factory MCU and must be argued in the design (section 15),
 not re-recorded. The one difference argued there is the dump retry (section
-10, change 6): a first-contact dump that got no DP report is asked once more,
-1 s after the contact (scenario late_ready)."""
+10, change 6): when the run's first-contact dump got no DP report, it is
+asked once more, 1 s after the contact (scenario late_ready), once per run."""
 
 import json
 import os
@@ -322,6 +322,26 @@ def test_the_dump_retry_is_dropped_when_the_mcu_restarts_meanwhile():
         mcu.send(0xA2, bytes([0, 0x47]))
         mcu.run(3000)
         assert [t for t, cmd, _ in mcu.trace if cmd == 0x28] == [2150]
+    finally:
+        proc.stop()
+
+
+@pytest.mark.parametrize("query_ms", [2500, 5000])
+def test_a_dump_that_is_never_answered_is_asked_once_more_per_run(query_ms):
+    """Section 15, rule 3: an MCU that answers no dump query and sends network
+    queries (seq 1, 2, ...). Phase 1 asks the dump at the timer's contact and
+    again at its first query: two dumps. Now three, the one more being the
+    retry of the first contact's dump, whether its first query comes before
+    the retry or after it; later queries add nothing."""
+    proc, device, mcu = stock_run(dump=[])
+    try:
+        mcu.run(query_ms)
+        for _ in range(4):
+            mcu.send(0x20)
+            mcu.run(10_000)
+        dumps = [t for t, cmd, _ in mcu.trace if cmd == 0x28]
+        assert dumps == sorted([CONTACT_MS, CONTACT_MS + DUMP_RETRY_MS, query_ms])
+        assert mcu.faults == []
     finally:
         proc.stop()
 
