@@ -262,12 +262,64 @@ static void tx_kick(void) {
     }
 }
 
-/* Every reported DP: a report of the DP in flight is the MCU's answer to it;
-* for a command we started (query-all) the first report starts the answer. */
-static void tx_note_report(uint8_t dpid) {
+/* What the DP unit being dispatched is to us (see the getters in the header). */
+static uint8_t g_report_acks_write = 0;
+static uint8_t g_report_superseded = 0;
+
+/* On/off and enum DPs are answered with the value written, so a report of the
+ * same DP with another value answers something else: an older write whose
+ * answer came late (after its timeout, or while a newer write was queued), or
+ * the wall switch. A brightness write is answered after the MCU's fade, with
+ * wherever the fade ended: the DP alone matches it. */
+static uint8_t tx_value_matched(const tx_item_t *item) {
+    return item->dp_type == TUYA_DP_TYPE_BOOL || item->dp_type == TUYA_DP_TYPE_ENUM;
+}
+
+static uint8_t tx_same_value(const tx_item_t *item, const uint8_t *value, uint16_t len) {
+    uint32_t reported = tuya_mcu_diag_number(value, len);
+    uint32_t written  = tuya_mcu_diag_number(item->value, item->len);
+
+    if (item->dp_type == TUYA_DP_TYPE_BOOL) {
+        return (reported != 0) == (written != 0);
+    }
+    return reported == written;
+}
+
+/* Our newest write of `dpid` not answered yet: the queued one (newer; the
+ * queue holds at most one per DP), else the one in flight. */
+static const tx_item_t *tx_pending_write(uint8_t dpid) {
+    for (uint8_t i = 0; i < g_txq_count; i++) {
+        const tx_item_t *queued = &g_txq[(g_txq_head + i) % TX_QUEUE_LEN];
+        if (queued->cmd == TUYA_MCU_CMD_WRITE && queued->dpid == dpid) {
+            return queued;
+        }
+    }
+    if (g_tx_busy && g_tx_in_flight.cmd == TUYA_MCU_CMD_WRITE && g_tx_in_flight.dpid == dpid) {
+        return &g_tx_in_flight;
+    }
+    return NULL;
+}
+
+/* A reported on/off or enum value that our newest write of that DP changes
+ * again: outdated already, whatever it answers. */
+static uint8_t tx_report_superseded(uint8_t dpid, const uint8_t *value, uint16_t len) {
+    const tx_item_t *pending = tx_pending_write(dpid);
+
+    return pending != NULL && tx_value_matched(pending) && !tx_same_value(pending, value, len);
+}
+
+/* Every reported DP: a report of the DP in flight (on/off and enum DPs: with
+ * the value written) is the MCU's answer to it; for a command we started
+ * (query-all) the first report starts the answer. Returns 1 when the report
+ * answers our DP write. */
+static uint8_t tx_note_report(uint8_t dpid, const uint8_t *value, uint16_t len) {
+    uint8_t write = g_tx_in_flight.cmd == TUYA_MCU_CMD_WRITE;
+
     if (!g_tx_busy ||
-        (g_tx_in_flight.cmd == TUYA_MCU_CMD_WRITE && dpid != g_tx_in_flight.dpid)) {
-        return;
+        (write && (dpid != g_tx_in_flight.dpid ||
+                   (tx_value_matched(&g_tx_in_flight) &&
+                    !tx_same_value(&g_tx_in_flight, value, len))))) {
+        return 0;
     }
     uint32_t latency = hal_millis() - g_tx_sent_ms;
     if (latency > 0xFFFF) {
@@ -281,6 +333,7 @@ static void tx_note_report(uint8_t dpid) {
     tuya_mcu_diag_log(TUYA_MCU_DIAG_ACK, tx_item_id(&g_tx_in_flight), latency);
     g_tx_busy = 0;
     hal_tasks_unschedule(&g_tx_timer);
+    return write;
 }
 
 /* A command we started that the MCU answers with the same command (e.g. the
@@ -379,6 +432,14 @@ uint8_t tuya_secondary_mcu_report_is_passive(void) {
     return g_report_is_passive;
 }
 
+uint8_t tuya_secondary_mcu_report_acks_write(void) {
+    return g_report_acks_write;
+}
+
+uint8_t tuya_secondary_mcu_report_is_superseded(void) {
+    return g_report_superseded;
+}
+
 /* A full status dump of a two channel dimmer (13 DPs) is ~100 bytes. */
 #define RX_CAPACITY            256
 
@@ -428,13 +489,16 @@ static void rx_dispatch_report(uint8_t cmd, uint16_t frame_len) {
         tuya_mcu_diag.rx_dps++;
         tuya_mcu_diag_log(g_report_is_passive ? TUYA_MCU_DIAG_RX_DP_PASSIVE : TUYA_MCU_DIAG_RX_DP,
                           dpid, tuya_mcu_diag_number(value, vlen));
-        tx_note_report(dpid);
+        g_report_acks_write = tx_note_report(dpid, value, vlen);
+        g_report_superseded = tx_report_superseded(dpid, value, vlen);
         for (uint8_t i = 0; i < g_listener_cnt; i++) {
             g_listeners[i](dpid, dtype, value, vlen);
         }
         off = (uint16_t)(off + 4 + vlen);
     }
     g_report_is_passive = 0;
+    g_report_acks_write = 0;
+    g_report_superseded = 0;
 }
 
 static void rx_process(void) {

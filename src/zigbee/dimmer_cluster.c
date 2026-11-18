@@ -464,6 +464,12 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
     if (value_len < 1)
         return;
 
+    /* A newer write of ours sets this on/off or enum DP to another value:
+     * the report (e.g. the late answer to an earlier write, off before our
+     * on) is outdated already. Our write's own answer settles it. */
+    if (tuya_secondary_mcu_report_is_superseded())
+        return;
+
     // A single DP report can apply to any registered dimmer endpoint, since
     // DPIDs are assigned per-dimmer, not globally.
     for (int i = 0; i < DIMMER_MAX_ENDPOINTS; i++) {
@@ -476,9 +482,12 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
         if (dp_type == TUYA_DP_TYPE_BOOL && dpid == cluster->onoff_dpid) {
             /* Our own "on" has already set cluster->on, so only the MCU
              * switching on by itself (the wall switch) gets here while off.
-             * Not an answer to our query, not the first report after boot. */
+             * Not an answer to our query or to our write (the stock MCU
+             * answers writes with 0x06 too), not the first report after
+             * boot. */
             uint8_t switched_on = value[0] && cluster->state_known && !cluster->on &&
-                                  !tuya_secondary_mcu_report_is_passive();
+                                  !tuya_secondary_mcu_report_is_passive() &&
+                                  !tuya_secondary_mcu_report_acks_write();
 
             if (!value[0])
                 dimmer_stop_move(cluster);

@@ -19,8 +19,9 @@
  *     <dpid> <type> <len:2> <value:len>
  *
  * DP writes and commands we start go out one at a time: the next frame is sent
- * when the MCU has answered the one in flight (a report of that DP; for a
- * command, any report or the same command back) or after a timeout.
+ * when the MCU has answered the one in flight (a report of that DP, for an
+ * on/off or enum DP with the value written; for a command, any report or the
+ * same command back) or after a timeout.
  */
 
 typedef enum {
@@ -81,6 +82,17 @@ int tuya_secondary_mcu_send_long_reply(uint8_t cmd, uint16_t seq,
 /** True while a passive report (0x05) is being dispatched: the MCU answering
  *  something we sent, never a fresh key press. */
 uint8_t tuya_secondary_mcu_report_is_passive(void);
+
+/** True while a DP is being dispatched that answers our DP write in flight
+ *  (same DP; on/off and enum DPs also the same value), whether the MCU sent
+ *  it as 0x05 or 0x06 (the stock ZDMS16-2 answers with 0x06): our own
+ *  change coming back, never a fresh key press. */
+uint8_t tuya_secondary_mcu_report_acks_write(void);
+
+/** True while an on/off or enum DP is being dispatched whose value our newest
+ *  write of that DP (still queued, or in flight and not answered) changes
+ *  again: outdated already, e.g. the late answer to an earlier write. */
+uint8_t tuya_secondary_mcu_report_is_superseded(void);
 
 /** Every DP the MCU reports is given to every listener; each one picks the DPs
  *  it owns. Returns -1 when all listener slots are taken. */
