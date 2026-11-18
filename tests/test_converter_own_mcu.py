@@ -115,6 +115,30 @@ console.log(JSON.stringify({
     ]
 
 
+def test_shared_power_on_sets_every_channel():
+    """The shared power_on_behavior (no endpoint) writes every dimmer endpoint: an own
+    MCU keeps power-on per channel, so a write on endpoint 1 alone changed only L1. A
+    per-channel one writes its own endpoint only."""
+    out = json.loads(run_node(ZDMS + """
+const po = def.extend.find((x) => !x.fake && x.toZigbee?.[0]?.key?.includes("power_on_behavior")).toZigbee[0];
+const dev = h.device();
+const run = async (endpointName, entity) => {
+    h.log.length = 0;
+    const r = await po.convertSet(entity, "power_on_behavior", "on", {endpoint_name: endpointName, device: dev, mapped: model});
+    return [h.log.filter((l) => l[0] === "write").map((l) => [l[1], l[3].startUpOnOff]), r.state];
+};
+(async () => console.log(JSON.stringify({
+    shared: await run(undefined, dev.getEndpoint(1)),
+    right: await run("dimmer_right", dev.getEndpoint(2)),
+})))();
+"""))
+    assert out["shared"] == [
+        [[1, 1], [2, 1]],
+        {"power_on_behavior": "on", "power_on_behavior_dimmer_left": "on", "power_on_behavior_dimmer_right": "on"},
+    ]
+    assert out["right"] == [[[2, 1]], {"power_on_behavior": "on"}]
+
+
 def test_own_settings_from_a_stock_mcu_are_not_stored():
     """The module answers 0 for the own-MCU attributes when the MCU is stock: those
     must not reach the state as 'linear' / 0 (item 23 of the 2026-11-18 review)."""
@@ -227,6 +251,20 @@ const reads = async (...args) => {
 """, z2m_v1=v1))
         on_level = ["1:genLevelCtrl:onLevel", "2:genLevelCtrl:onLevel"]
         assert out == {"announce": on_level, "announceV1": on_level, "start": [], "stop": []}
+
+
+def test_device_level_numeric_has_no_endpoint_filter():
+    """A numeric setting without an endpoint must not filter its reports on
+    [undefined] (which matches no endpoint); with one it filters on that one."""
+    out = json.loads(run_node("""
+const r = c.romasku;
+console.log(JSON.stringify([
+    r.multiPressResetCount("multi_press_reset_count").args.endpointNames,
+    r.multiPressResetCount("multi_press_reset_count", "dimmer_left").args.endpointNames,
+    r.dimmerMinLevel("min_level").args.endpointNames ?? null,
+]));
+"""))
+    assert out == [None, ["dimmer_left"], None]
 
 
 def test_fade_and_hold_settings_are_per_dimmer_with_their_own_attributes():

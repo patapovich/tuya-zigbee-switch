@@ -142,7 +142,7 @@ const romasku = {
     longPressDuration: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "genOnOffSwitchCfg",
             attribute: { ID: 0xff03, type: 0x21 }, // uint16
             description: "What duration is considerd to be long press",
@@ -153,7 +153,7 @@ const romasku = {
     levelMoveRate: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "genOnOffSwitchCfg",
             attribute: { ID: 0xff04, type: 0x20 }, // uint8
             description: "Level (dim) move rate in steps per ms",
@@ -232,7 +232,7 @@ const romasku = {
     multiPressResetCount: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "genBasic",
             attribute: { ID: 0xff02, type: 0x20 }, // uint8
             description: "Number of consecutive presses to trigger factory reset (0 = disabled)",
@@ -391,6 +391,7 @@ const romasku = {
                 if (value.length > 256) throw new Error("Length of device_config_ext is greater than 256");
                 if (value.length && !value.endsWith(";")) throw new Error("Should end with ;");
             },
+            entityCategory: "config",
         }),
     deviceConfig: (name, endpointName) =>
         text({
@@ -579,7 +580,7 @@ const romasku = {
     coverSwitchLongPressDuration: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: 0xFC01,
             attribute: {ID: 0x0005, type: Zcl.DataType.UINT16},
             description: "Threshold in milliseconds to distinguish short press from long press",
@@ -616,7 +617,7 @@ const romasku = {
     coverOpenTime: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "closuresWindowCovering",
             attribute: {ID: 0xff02, type: Zcl.DataType.UINT16},
             description: "Travel time for the OPENING direction (0.1 s precision). " +
@@ -634,7 +635,7 @@ const romasku = {
     coverCloseTime: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "closuresWindowCovering",
             attribute: {ID: 0xff03, type: Zcl.DataType.UINT16},
             description: "Travel time for the CLOSING direction (0.1 s precision). " +
@@ -650,7 +651,7 @@ const romasku = {
     coverOpenDeadzone: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "closuresWindowCovering",
             attribute: {ID: 0xff04, type: Zcl.DataType.UINT16},
             description: "Mechanical deadzone at the OPEN end (100%) as a percentage of " +
@@ -664,7 +665,7 @@ const romasku = {
     coverClosedDeadzone: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "closuresWindowCovering",
             attribute: {ID: 0xff05, type: Zcl.DataType.UINT16},
             description: "Mechanical deadzone at the CLOSED end (0%) as a percentage of " +
@@ -678,7 +679,7 @@ const romasku = {
     dimmerMinLevel: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "lightingBallastCfg",
             attribute: "minLevel",
             description: "Minimum brightness of the dimmer (MCU setting). With level scaling (default) brightness 1 is this level.",
@@ -689,7 +690,7 @@ const romasku = {
     dimmerMaxLevel: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "lightingBallastCfg",
             attribute: "maxLevel",
             description: "Maximum brightness of the dimmer (MCU setting). With level scaling (default) brightness 254 is this level.",
@@ -700,7 +701,7 @@ const romasku = {
     dimmerOnLevel: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "genLevelCtrl",
             attribute: "onLevel",
             description: "Brightness the light comes on at, from the wall switch or an On command, set without a round trip through the network. 255 = the level it had before.",
@@ -766,8 +767,23 @@ const romasku = {
                 key: ["power_on_behavior"],
                 convertSet: async (entity, key, value, meta) => {
                     if (!Object.prototype.hasOwnProperty.call(lookup, value)) throw new Error(`${key}: one of ${names.join(", ")}`);
-                    await entity.write("genOnOff", {startUpOnOff: lookup[value]});
-                    return {state: {[key]: value}};
+                    if (meta.endpoint_name) {
+                        // One channel (own MCU): its own power-on DP.
+                        await entity.write("genOnOff", {startUpOnOff: lookup[value]});
+                        return {state: {[key]: value}};
+                    }
+                    // The shared setting: written on every channel, so it also
+                    // sets every channel of an own MCU, which keeps one per
+                    // channel (a stock MCU just gets the same value again).
+                    const map = typeof meta.mapped?.endpoint === "function" ? meta.mapped.endpoint(meta.device) : {};
+                    const channels = dimmerNames.map((name) => [name, map[name] !== undefined ? meta.device.getEndpoint(map[name]) : undefined])
+                        .filter(([, endpoint]) => endpoint);
+                    const state = {[key]: value};
+                    for (const [name, endpoint] of channels.length ? channels : [[undefined, entity]]) {
+                        await endpoint.write("genOnOff", {startUpOnOff: lookup[value]});
+                        if (name) state[`${key}_${name}`] = value;
+                    }
+                    return {state};
                 },
                 convertGet: async (entity) => {
                     await entity.read("genOnOff", ["startUpOnOff"]);
