@@ -1,4 +1,6 @@
 name: Carry a PY32 release
+# The title names the tag, so zdms16-py32 tools/release/release.sh finds its run.
+run-name: Carry PY32 ${{ inputs.py32_tag || github.event.client_payload.tag || 'latest release' }}
 
 # patapovich fork only. The ZDMS16-2 build of the home-dimmer branch carries the own PY32
 # MCU firmware (src/zigbee/secondary_mcu_image.c). This puts the newest release of
@@ -6,6 +8,9 @@ name: Carry a PY32 release
 # "py32-release" from that repo), tests it, commits it to home-dimmer and builds the module
 # firmware on home-dimmer_build (= home-dimmer + the fork-ci build change). It lives on the
 # default branch because scheduled and dispatched workflows only run from there.
+# A named tag (by hand or dispatched) that cannot be carried fails the run; the hourly check
+# only notes it (home-dimmer ahead of the latest release, or carrying another image of the
+# same version by hand).
 
 on:
   schedule:
@@ -16,7 +21,7 @@ on:
         description: "zdms16-py32 release tag (empty: the latest release)"
         required: false
       force:
-        description: "build even if home-dimmer already carries it, allow an older version"
+        description: "build even if home-dimmer already carries it; allow an older version or replace another image of the same version"
         type: boolean
         default: false
   repository_dispatch:
@@ -48,24 +53,54 @@ jobs:
         run: |
           set -e
           tag="$TAG_IN"
-          [ -n "$tag" ] || tag=$(gh release view --repo patapovich/zdms16-py32 --json tagName --jq .tagName)
+          explicit=false   # a tag named by hand or by the dispatch: failures fail the run
+          if [ -n "$tag" ]; then
+            explicit=true
+          else
+            tag=$(gh release view --repo patapovich/zdms16-py32 --json tagName --jq .tagName)
+          fi
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::not a release tag vX.Y.Z: '${tag//[^A-Za-z0-9._-]/?}'"
+            exit 1
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           gh release download "$tag" --repo patapovich/zdms16-py32 \
             --pattern secondary_mcu_image.c --pattern SHA256SUMS --dir /tmp/py32
-          (cd /tmp/py32 && grep secondary_mcu_image.c SHA256SUMS | sha256sum -c -)
+          (cd /tmp/py32 && grep -E '[ *]secondary_mcu_image\.c$' SHA256SUMS | sha256sum -c -)
           ver() { sed -n 's/.*own MCU firmware: version \([0-9.]*\).*/\1/p' "$1" | head -1; }
+          bytes() { grep -E '^ +0x' "$1" || true; }   # the image itself (C array rows)
           new=$(ver /tmp/py32/secondary_mcu_image.c); cur=$(ver src/zigbee/secondary_mcu_image.c)
+          if ! [[ "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::no version in the secondary_mcu_image.c of $tag"
+            exit 1
+          fi
           echo "release $tag carries $new, home-dimmer carries ${cur:-none}"
+          keep() {  # level, message: home-dimmer stays as it is
+            echo "change=false" >> "$GITHUB_OUTPUT"
+            if [ "$explicit" = true ]; then
+              echo "::error::$2"
+              exit 1
+            fi
+            echo "::$1::$2"
+            exit 0
+          }
           if cmp -s /tmp/py32/secondary_mcu_image.c src/zigbee/secondary_mcu_image.c; then
             echo "change=false" >> "$GITHUB_OUTPUT"
             echo "::notice::home-dimmer already carries $tag"
-          elif [ -n "$cur" ] && [ "$(printf '%s\n%s\n' "$cur" "$new" | sort -V | tail -1)" != "$new" ] && [ "$FORCE" != "true" ]; then
-            echo "::error::$tag ($new) is older than what home-dimmer carries ($cur); use force to go back"
-            exit 1
-          else
-            echo "change=true" >> "$GITHUB_OUTPUT"
-            cp /tmp/py32/secondary_mcu_image.c src/zigbee/secondary_mcu_image.c
+            exit 0
           fi
+          newest=$(printf '%s\n%s\n' "$cur" "$new" | sort -V | tail -1)
+          if [ "$FORCE" = true ] || [ -z "$cur" ] || { [ "$new" != "$cur" ] && [ "$newest" = "$new" ]; }; then
+            :   # newer (or forced)
+          elif [ "$new" = "$cur" ] && [ "$(bytes /tmp/py32/secondary_mcu_image.c)" = "$(bytes src/zigbee/secondary_mcu_image.c)" ]; then
+            :   # the same image, only the generated file's text differs
+          elif [ "$new" = "$cur" ]; then
+            keep warning "home-dimmer carries another image with the same version $cur (carried by hand?): modules that have it are never offered $tag. Bump the version, or use force to replace it"
+          else
+            keep notice "$tag ($new) is older than what home-dimmer carries ($cur); use force to go back"
+          fi
+          echo "change=true" >> "$GITHUB_OUTPUT"
+          cp /tmp/py32/secondary_mcu_image.c src/zigbee/secondary_mcu_image.c
 
       - name: Lint and tests with the image
         if: steps.rel.outputs.change == 'true' || inputs.force
@@ -77,10 +112,12 @@ jobs:
 
       - name: Commit to home-dimmer
         if: steps.rel.outputs.change == 'true'
+        env:
+          TAG: ${{ steps.rel.outputs.tag }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -qam "Carry PY32 ${{ steps.rel.outputs.tag }}"
+          git commit -qam "Carry PY32 $TAG"
           git push origin HEAD:home-dimmer
 
       - name: Build branch and module firmware
