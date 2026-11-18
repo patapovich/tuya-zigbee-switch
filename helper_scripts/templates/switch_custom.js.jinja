@@ -806,55 +806,55 @@ const romasku = {
 {% macro dp_extend(dp, device, first_endpoint) %}
 {% if dp.type == "E" and (dp.min_mcu or dp.dimmer) %}
             romasku.ownMcuEnum({
-                name: "{{dp.name}}",
+                name: {{dp.name|tojson}},
                 endpointName: "{{device.dimmerNames[dp.dimmer - 1] if dp.dimmer else first_endpoint}}",
                 attrId: 0x{{("ff" ~ dp.attr)|lower}},
-                lookup: { {% for k, v in dp["values"].items() %}"{{k}}": {{v}}{{ ", " if not loop.last }}{% endfor %} },
-                description: "{{dp.label}}",
+                lookup: { {% for k, v in dp["values"].items() %}{{k|tojson}}: {{v}}{{ ", " if not loop.last }}{% endfor %} },
+                description: {{dp.label|tojson}},
                 minMcu: {{dp.min_mcu or 0}},
             }),
 {% elif dp.type == "B" %}
             binary({
-                name: "{{dp.name}}",
+                name: {{dp.name|tojson}},
                 endpointName: "{{first_endpoint}}",
                 cluster: "genBasic",
                 attribute: { ID: 0x{{("ff" ~ dp.attr)|lower}}, type: 0x10 }, // boolean
                 valueOn: ["ON", 1],
                 valueOff: ["OFF", 0],
-                description: "{{dp.label}}",
+                description: {{dp.label|tojson}},
                 entityCategory: "config",
             }),
 {% elif dp.type == "E" %}
             enumLookup({
-                name: "{{dp.name}}",
+                name: {{dp.name|tojson}},
                 endpointName: "{{first_endpoint}}",
-                lookup: { {% for k, v in dp["values"].items() %}"{{k}}": {{v}}{{ ", " if not loop.last }}{% endfor %} },
+                lookup: { {% for k, v in dp["values"].items() %}{{k|tojson}}: {{v}}{{ ", " if not loop.last }}{% endfor %} },
                 cluster: "genBasic",
                 attribute: { ID: 0x{{("ff" ~ dp.attr)|lower}}, type: 0x30 }, // enum8
-                description: "{{dp.label}}",
+                description: {{dp.label|tojson}},
                 entityCategory: "config",
             }),
 {% elif dp.type == "V" and (dp.dimmer or dp.min_mcu) %}
             romasku.ownMcuNumeric({
-                name: "{{dp.name}}",
+                name: {{dp.name|tojson}},
                 endpointName: "{{device.dimmerNames[dp.dimmer - 1] if dp.dimmer else first_endpoint}}",
                 attrId: 0x{{("ff" ~ dp.attr)|lower}},
-                description: "{{dp.label}}",
+                description: {{dp.label|tojson}},
                 valueMin: {{dp.min}},
                 valueMax: {{dp.max}},
-                unit: {{ ('"' ~ dp.unit ~ '"') if dp.unit else "undefined" }},
+                unit: {{ dp.unit|tojson if dp.unit else "undefined" }},
                 minMcu: {{dp.min_mcu or 0}},
             }),
 {% elif dp.type == "V" %}
             numeric({
-                name: "{{dp.name}}",
+                name: {{dp.name|tojson}},
                 endpointNames: ["{{first_endpoint}}"],
                 cluster: "genBasic",
                 attribute: { ID: 0x{{("ff" ~ dp.attr)|lower}}, type: 0x23 }, // uint32
-                description: "{{dp.label}}",
+                description: {{dp.label|tojson}},
                 valueMin: {{dp.min}},
                 valueMax: {{dp.max}},
-{% if dp.unit %}                unit: "{{dp.unit}}",
+{% if dp.unit %}                unit: {{dp.unit|tojson}},
 {% endif %}                entityCategory: "config",
             }),
 {% endif %}

@@ -13,11 +13,21 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 @functools.cache
-def custom_converter_js() -> str:
+def custom_converter_js(z2m_v1: bool = False) -> str:
     return subprocess.run(
-        [sys.executable, "helper_scripts/make_z2m_custom_converters.py", "device_db.yaml"],
+        [sys.executable, "helper_scripts/make_z2m_custom_converters.py", "device_db.yaml"]
+        + (["--z2m-v1"] if z2m_v1 else []),
         cwd=ROOT,
         check=True,
         capture_output=True,
         text=True,
     ).stdout
+
+
+@functools.cache
+def custom_converter_file(z2m_v1: bool = False) -> str:
+    """The generated converter in a file (tests/build, not committed)."""
+    path = ROOT / "tests" / "build" / ("switch_custom_v1.js" if z2m_v1 else "switch_custom.js")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(custom_converter_js(z2m_v1))
+    return str(path)
