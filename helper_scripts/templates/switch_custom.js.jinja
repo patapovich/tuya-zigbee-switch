@@ -1035,7 +1035,8 @@ const definitions = [
             {% endif %}
             {% if device.dimmerNames %}
             // Device: technical settings last.
-            {% if device.has_secondary_mcu %}romasku.mcuVersion("mcu_version", "{{first_endpoint}}"),
+            {% if device.has_secondary_mcu %}
+            romasku.mcuVersion("mcu_version", "{{first_endpoint}}"),
             {% endif %}
             romasku.multiPressResetCount("multi_press_reset_count", "{{first_endpoint}}"),
             {% if device.has_dedicated_net_led %}
