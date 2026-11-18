@@ -49,7 +49,7 @@ def test_curves_are_on_each_dimmer_endpoint_with_their_own_attribute():
 
 def test_own_firmware_is_told_by_the_suffix_only():
     """A vendor 2.x is not ours; a bare 2.x after a known "own" one still is (the module
-    could not identify it, item 6 of the 2026-11-18 review); a 1.x stock MCU clears it."""
+    could not identify the own MCU: a lost identity answer); a 1.x stock MCU clears it."""
     out = run_node("""
 const dev = (cached, meta) => ({ meta: { mcuVersion: meta },
   getEndpoint: () => ({ clusters: { genBasic: { attributes: { 65298: cached } } } }) });
@@ -141,7 +141,7 @@ const run = async (endpointName, entity) => {
 
 def test_own_settings_from_a_stock_mcu_are_not_stored():
     """The module answers 0 for the own-MCU attributes when the MCU is stock: those
-    must not reach the state as 'linear' / 0 (item 23 of the 2026-11-18 review)."""
+    must not reach the state as 'linear' / 0, values a stock MCU does not have."""
     out = json.loads(run_node(ZDMS + """
 const ver = (v) => { const d = h.device(); d.getEndpoint(1).clusters.genBasic.attributes[0xff12] = v; return d; };
 const data = {[0xff30]: 0, [0xff35]: 950};
@@ -215,7 +215,7 @@ def test_configure_stops_waiting_for_a_module_that_does_not_answer():
 
 def test_gestures_are_reported_on_change_only():
     """Gestures are events: a maximum report interval repeats the last one (about
-    every 18 h with 65000 s); 0 means changes only (item 16 of the 2026-11-18 review).
+    every 18 h with 65000 s) and fires its action again; 0 means changes only.
     No reporting is added for anything else (the module's table holds 12 entries)."""
     out = json.loads(run_node(CONFIGURE + """
 (async () => console.log(JSON.stringify((await configure(["2.1.10 own"])).reporting)))();

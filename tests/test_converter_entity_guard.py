@@ -1,8 +1,9 @@
 """Guards against Home Assistant entity loss through the generated Z2M converter.
 
-Home Assistant deletes an entity when its expose disappears from a definition
-(2026-11-17: a template whitespace slip put a light() behind a // comment, and
-five modules lost their lights). A rename or a dropped extend does the same.
+Home Assistant deletes an entity when its expose disappears from a definition:
+a template whitespace slip once put a light() behind a // comment, and Home
+Assistant deleted the light entities of every module using the converter. A
+rename or a dropped extend does the same.
 These tests need no zigbee-herdsman-converters: they read the generated text.
 
 When a change to the ZDMS16-2 entities is intended, update ZDMS16_2_EXTENDS
