@@ -245,7 +245,7 @@ const dev = h.device();
 const firmware = (model) => definitions.filter((d) => d.model === model).map((d) => d.extend.filter((x) => !x.fake)
     .flatMap((x) => x.exposes ?? []).flatMap((x) => (typeof x === "function" ? x(dev, {}) : [x]))
     .filter((x) => x.name === "mcu_firmware")
-    .map(({type, name, access, endpoint, category, description}) => ({type, name, access, endpoint: endpoint ?? null, category, description})));
+    .map(({type, name, label, access, endpoint, category, description}) => ({type, name, label, access, endpoint: endpoint ?? null, category, description})));
 const version = (model) => definitions.filter((d) => d.model === model)
     .map((d) => h.fakeExtends(d).filter((x) => x.args?.name === "mcu_version").map((x) => [x.args, x.toZigbee]));
 console.log(JSON.stringify({
@@ -253,8 +253,9 @@ console.log(JSON.stringify({
     version: version("ZDMS16-2"),
 }));
 """))
-    expose = {"type": "text", "name": "mcu_firmware", "access": 1, "endpoint": None, "category": "diagnostic",
-              "description": "Firmware of the dimming MCU: Open Dimmer or the stock Tuya firmware"}
+    expose = {"type": "text", "name": "mcu_firmware", "label": "MCU firmware", "access": 1, "endpoint": None,
+              "category": "diagnostic",
+              "description": "Firmware of the secondary MCU (the chip that drives the outputs): Open Dimmer or the stock Tuya firmware"}
     assert out["firmware"] == [[[expose], [expose]], [[]], [[]]]
     text_args = {"name": "mcu_version", "endpointName": "dimmer_left", "access": "STATE_GET", "cluster": "genBasic",
                  "attribute": {"ID": 0xFF12, "type": 0x42},

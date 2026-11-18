@@ -277,6 +277,7 @@ const romasku = {
             description: "Firmware version of the secondary MCU (the chip that drives the outputs)",
             entityCategory: "diagnostic",
         });
+        result.exposes = result.exposes.map((expose) => expose.withLabel("MCU version"));
         // The version alone, without the module's Open Dimmer marker (that is
         // mcu_firmware). Only the published value changes: msg.data, which the
         // other converters read, keeps the raw "x.y.z own".
@@ -297,7 +298,8 @@ const romasku = {
     mcuFirmware: () => ({
         isModernExtend: true,
         exposes: [e.text("mcu_firmware", ea.STATE)
-            .withDescription("Firmware of the dimming MCU: Open Dimmer or the stock Tuya firmware")
+            .withLabel("MCU firmware")
+            .withDescription("Firmware of the secondary MCU (the chip that drives the outputs): Open Dimmer or the stock Tuya firmware")
             .withCategory("diagnostic")],
         fromZigbee: [{
             cluster: "genBasic",
