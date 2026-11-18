@@ -25,7 +25,7 @@ Please describe what you are working on, under ## Upcoming
   - The module button resets the device
   - Link diagnostics as Basic cluster attributes
   - Open Dimmer, the open-source firmware for its PY32F002A dimming MCU: carried in the image,
-    which updates an MCU that runs another Open Dimmer version (a stock MCU is never touched)
+    which updates an MCU that runs an older Open Dimmer version (a stock MCU is never touched)
   - Z2M: `mcu_firmware` says Open Dimmer or Tuya (stock), `mcu_version` shows the version alone;
     the Open Dimmer settings (dimming curve, fade and hold, per-channel power-on behaviour, wall
     switch gestures) follow the device option `open_dimmer_settings` (auto / show / hide; the
