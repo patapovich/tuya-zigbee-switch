@@ -34,6 +34,14 @@ class SwitchType(t.enum8):
     Momentary_NC = 0x02
 
 
+class DimmerSwitchType(t.enum8):
+    """OnOffConfiguration switch_type of a dimmer endpoint (not SwitchType:
+    1 is a latching state switch here, 2 a push button)."""
+    Toggle = 0x00
+    State = 0x01
+    Momentary = 0x02
+
+
 class CoverSwitchType(t.enum8):
     Toggle = 0x00
     Momentary = 0x01
@@ -240,7 +248,7 @@ class CustomOnOffSwitchCfgCluster(CustomCluster, OnOffConfiguration):
         # Standard ZCL defines switch_type as read-only; our firmware makes it
         # writable so the physical dimmer type can be configured.
         switch_type: Final = ZCLAttributeDef(
-            id=0x0000, type=SwitchType, access="rw", is_manufacturer_specific=False
+            id=0x0000, type=DimmerSwitchType, access="rw", is_manufacturer_specific=False
         )
 
 
@@ -532,7 +540,7 @@ for config in CONFIGS:
             )
             .enum(
                 CustomOnOffSwitchCfgCluster.AttributeDefs.switch_type.name,
-                SwitchType,
+                DimmerSwitchType,
                 CustomOnOffSwitchCfgCluster.cluster_id,
                 translation_key="dimmer_switch_type_"+str(endpoint_id),
                 fallback_name="Dimmer switch type "+str(endpoint_id),

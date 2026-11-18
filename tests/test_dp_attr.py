@@ -274,3 +274,18 @@ def test_dp_inits_reach_the_mcu():
         assert _wrote_dp(take_tx(proc), 0x13), "IT never reached the MCU"
     finally:
         proc.stop()
+
+
+def test_dp_config_beyond_the_cap_is_dropped_with_a_log(capsys):
+    """The firmware maps at most MAX_DP_ATTRS (12) entries: a 13th is dropped, and
+    the log says so (the converter generator refuses such a board, so Z2M would
+    otherwise show a setting the device does not have)."""
+    entries = "".join(f"{0x40 + i:02X}V{0x20 + i:02X};" for i in range(13))
+    proc = StubProc(device_config=TPZ2, dp_config=entries).start()
+    try:
+        device = Device(proc)
+        assert device.read_zigbee_attr(1, ZCL_CLUSTER_BASIC, 0xFF2B) is not None  # the 12th
+        assert not proc.exec("zcl_read 1 0x0000 0xFF2C").ok  # the 13th
+    finally:
+        proc.stop()
+    assert "dp_attr: entry at 72 dropped, at most 12" in capsys.readouterr().out

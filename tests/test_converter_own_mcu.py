@@ -1,20 +1,40 @@
 """The generated Z2M converter's own-MCU-firmware settings for the ZDMS16-2
-(dimming curve per dimmer, shown per the device option own_mcu_settings)."""
+(dimming curve, fade and hold per dimmer, shown per the device option
+own_mcu_settings), and how it follows the MCU version the module reports."""
 
 import json
 import re
-import shutil
-import subprocess
 
-import pytest
-
-from generated_converter import custom_converter_js
+from generated_converter import custom_converter_js, run_node
 
 
 def zdms16_block() -> str:
     js = custom_converter_js()
     start = js.index('model: "ZDMS16-2"')
     return js[start : js.index("configure:", start)]
+
+
+# The ZDMS16-2 definition, the exposes that follow the MCU (name_endpoint), and
+# a fake MCU version report (the module's attribute cache plus every genBasic
+# fromZigbee, as Zigbee2MQTT runs them).
+ZDMS = """
+const def = definitions.find((d) => d.model === "ZDMS16-2");
+const model = {endpoint: () => ({dimmer_left: 1, dimmer_right: 2})};
+const shown = (dev, options = {}) => def.extend.filter((x) => !x.fake)
+    .flatMap((x) => x.exposes ?? []).flatMap((x) => (typeof x === "function" ? x(dev, options) : [x]))
+    .map((x) => `${x.name}${x.endpoint ? "_" + x.endpoint : ""}`);
+const report = (dev, v, options = {}) => {
+    dev.getEndpoint(1).clusters.genBasic.attributes[0xff12] = v;
+    const out = {};
+    for (const fz of def.extend.flatMap((x) => (x.fake ? [] : x.fromZigbee ?? [])).filter((f) => f.cluster === "genBasic")) {
+        Object.assign(out, fz.convert(model, {device: dev, endpoint: {ID: 1}, data: {[0xff12]: v}}, () => {}, options, {device: dev}) ?? {});
+    }
+    return out;
+};
+const fz = (dev, ep, data, options = {}) => def.extend.filter((x) => !x.fake).flatMap((x) => x.fromZigbee ?? [])
+    .map((f) => f.convert(model, {device: dev, endpoint: {ID: ep}, data}, () => {}, options, {device: dev}))
+    .filter((r) => r !== undefined);
+"""
 
 
 def test_curves_are_on_each_dimmer_endpoint_with_their_own_attribute():
@@ -28,70 +48,238 @@ def test_curves_are_on_each_dimmer_endpoint_with_their_own_attribute():
 
 
 def test_own_firmware_is_told_by_the_suffix_only():
-    """Run the converter's version check in node: a vendor 2.x is not ours."""
-    if shutil.which("node") is None:
-        pytest.skip("node not installed")
-    js = custom_converter_js()
-    fn = js[js.index("const ownMcuMajorOf") : js.index("};\n", js.index("const ownMcuMajorOf")) + 3]
-    script = fn + """
+    """A vendor 2.x is not ours; a bare 2.x after a known "own" one still is (the module
+    could not identify the own MCU: a lost identity answer); a 1.x stock MCU clears it."""
+    out = run_node("""
 const dev = (cached, meta) => ({ meta: { mcuVersion: meta },
   getEndpoint: () => ({ clusters: { genBasic: { attributes: { 65298: cached } } } }) });
 console.log(JSON.stringify([
-  ownMcuMajorOf(dev("2.0.3 own", undefined)),
-  ownMcuMajorOf(dev("2.0.3", undefined)),
-  ownMcuMajorOf(dev("", "2.0.3 own")),
-  ownMcuMajorOf(dev("1.0.7", "2.0.3 own")),
-  ownMcuMajorOf(undefined),
+  c.ownMcuMajorOf(dev("2.0.3 own", undefined)),
+  c.ownMcuMajorOf(dev("2.0.3", undefined)),
+  c.ownMcuMajorOf(dev("", "2.0.3 own")),
+  c.ownMcuMajorOf(dev("1.0.7", "2.0.3 own")),
+  c.ownMcuMajorOf(undefined),
+  c.ownMcuMajorOf(dev("2.1.10", "2.1.10 own")),
+  c.ownMcuMajorOf(dev("2.1.11", "2.1.10 own")),
+  c.ownMcuMajorOf(dev("0.0.0", "2.1.10 own")),
+  c.ownMcuMajorOf(dev("1.0.7", undefined)),
 ]));
-"""
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout
-    assert out.strip() == "[2,null,2,null,null]"
+""")
+    assert json.loads(out) == [2, None, 2, None, None, 2, 2, 2, None]
+
+
+def test_a_bare_version_keeps_the_own_settings():
+    """own -> bare 2.x (identity answer lost) -> "" (module restart): the exposes stay
+    those of the own MCU, so a Zigbee2MQTT restart does not delete 15 entities per
+    module; a stock version (1.x) then replaces it."""
+    out = json.loads(run_node(ZDMS + """
+const dev = h.device();
+const steps = {};
+for (const v of ["2.1.10 own", "2.1.10", "", "2.1.10 own", "1.0.7"]) {
+    report(dev, v);
+    steps[v || "empty"] = [dev.meta.mcuVersion, shown(dev).length, shown(dev).includes("action")];
+}
+console.log(JSON.stringify(steps));
+"""))
+    own = ["2.1.10 own", 15, True]
+    assert out["2.1.10 own"] == own
+    assert out["2.1.10"] == own
+    assert out["empty"] == own
+    assert out["1.0.7"] == ["1.0.7", 1, False]      # the shared power_on_behavior only
 
 
 def test_power_on_per_channel_and_gestures_follow_the_own_mcu():
-    """Run the ZDMS16-2 power-on and gesture extends in node with stand-in exposes."""
-    if shutil.which("node") is None:
-        pytest.skip("node not installed")
-    js = custom_converter_js()
-    helpers = js[js.index("const ownMcuMajorOf") : js.index("const romasku")]
-    start = js.index("    dimmerPowerOnPerChannel:")
-    extends = js[start : js.index("    dimmerPowerOnBehavior:", start)]
-    script = """
-const fake = (name, values) => { const x = { name, values, endpoint: undefined,
-  withDescription() { return x; }, withCategory() { return x; },
-  withEndpoint(ep) { x.endpoint = ep; return x; } }; return x; };
-const e = { enum: (n, a, v) => fake(n, v), action: (v) => fake("action", v) };
-const ea = { ALL: 7, SET: 2 };
-""" + helpers + "const R = {\n" + extends + "};\n" + """
-const dev = (v) => ({ meta: {}, getEndpoint: () => ({ clusters: { genBasic: { attributes: { 65298: v } } } }) });
-const names = ["dimmer_left", "dimmer_right"];
-const po = R.dimmerPowerOnPerChannel(names), ge = R.dimmerGestures(names);
-const pc = names.map((n) => R.dimmerPowerOnChannel(n));
-const shownAll = (d, o) => [...pc.flatMap((x) => shown(x, d, o)), ...shown(po, d, o)];
-const shown = (ext, d, o) => ext.exposes[0](d, o).map((x) => `${x.name}${x.endpoint ? "_" + x.endpoint : ""}`);
-const model = { endpoint: () => ({ dimmer_left: 1, dimmer_right: 2 }) };
-const fz = (ext, ep, data) => ext.fromZigbee[0].convert(model, { endpoint: { ID: ep }, data, device: {} });
+    out = json.loads(run_node(ZDMS + """
+const ver = (v) => { const d = h.device(); d.getEndpoint(1).clusters.genBasic.attributes[0xff12] = v; return d; };
+const po = def.extend.find((x) => !x.fake && x.toZigbee?.[0]?.key?.includes("power_on_behavior"));
+const pick = (list) => list.filter((n) => n.startsWith("power_on") || n === "action");
 console.log(JSON.stringify({
-  own: [shownAll(dev("2.1.1 own"), {}), shown(ge, dev("2.1.1 own"), {})],
-  stock: [shownAll(dev("1.0.7"), {}), shown(ge, dev("1.0.7"), {})],
-  hide: shownAll(dev("2.1.1 own"), { own_mcu_settings: "hide" }),
-  show: shown(ge, dev("1.0.7"), { own_mcu_settings: "show" }),
-  gestures: [fz(ge, 2, { presentValue: 0x32 }), fz(ge, 1, { presentValue: 0x15 }),
-             fz(ge, 1, { presentValue: 0x10 }), fz(ge, 3, { presentValue: 0x11 })],
-  power: [fz(po, 1, { startUpOnOff: 255 }), fz(po, 2, { startUpOnOff: 0 }), fz(po, 2, { onOff: 1 })],
+  own: pick(shown(ver("2.1.1 own"))),
+  stock: pick(shown(ver("1.0.7"))),
+  hide: pick(shown(ver("2.1.1 own"), { own_mcu_settings: "hide" })),
+  show: pick(shown(ver("1.0.7"), { own_mcu_settings: "show" })),
+  gestures: [fz(ver("2.1.1 own"), 2, { presentValue: 0x32 }), fz(ver("2.1.1 own"), 1, { presentValue: 0x15 }),
+             fz(ver("2.1.1 own"), 1, { presentValue: 0x10 }), fz(ver("2.1.1 own"), 3, { presentValue: 0x11 })],
+  power: [fz(ver("1.0.7"), 1, { startUpOnOff: 255 }), fz(ver("1.0.7"), 2, { startUpOnOff: 0 }), fz(ver("1.0.7"), 2, { onOff: 1 })],
 }));
-"""
-    out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
-    assert out["own"] == [["power_on_behavior_dimmer_left", "power_on_behavior_dimmer_right"], ["action"]]
-    assert out["stock"] == [["power_on_behavior"], []]
+"""))
+    assert out["own"] == ["power_on_behavior_dimmer_left", "power_on_behavior_dimmer_right", "action"]
+    assert out["stock"] == ["power_on_behavior"]
     assert out["hide"] == ["power_on_behavior"]
-    assert out["show"] == ["action"]
-    assert out["gestures"] == [{"action": "double_dimmer_right"}, {"action": "release_dimmer_left"}, None, None]
+    assert out["show"] == ["power_on_behavior_dimmer_left", "power_on_behavior_dimmer_right", "action"]
+    assert out["gestures"] == [[{"action": "double_dimmer_right"}], [{"action": "release_dimmer_left"}], [], []]
     assert out["power"] == [
-        {"power_on_behavior_dimmer_left": "previous", "power_on_behavior": "previous"},
-        {"power_on_behavior_dimmer_right": "off"},
-        None,
+        [{"power_on_behavior_dimmer_left": "previous", "power_on_behavior": "previous"}],
+        [{"power_on_behavior_dimmer_right": "off"}],
+        [],
     ]
+
+
+def test_shared_power_on_sets_every_channel():
+    """The shared power_on_behavior (no endpoint) writes every dimmer endpoint: an own
+    MCU keeps power-on per channel, so a write on endpoint 1 alone changed only L1. A
+    per-channel one writes its own endpoint only."""
+    out = json.loads(run_node(ZDMS + """
+const po = def.extend.find((x) => !x.fake && x.toZigbee?.[0]?.key?.includes("power_on_behavior")).toZigbee[0];
+const dev = h.device();
+const run = async (endpointName, entity) => {
+    h.log.length = 0;
+    const r = await po.convertSet(entity, "power_on_behavior", "on", {endpoint_name: endpointName, device: dev, mapped: model});
+    return [h.log.filter((l) => l[0] === "write").map((l) => [l[1], l[3].startUpOnOff]), r.state];
+};
+(async () => console.log(JSON.stringify({
+    shared: await run(undefined, dev.getEndpoint(1)),
+    right: await run("dimmer_right", dev.getEndpoint(2)),
+})))();
+"""))
+    assert out["shared"] == [
+        [[1, 1], [2, 1]],
+        {"power_on_behavior": "on", "power_on_behavior_dimmer_left": "on", "power_on_behavior_dimmer_right": "on"},
+    ]
+    assert out["right"] == [[[2, 1]], {"power_on_behavior": "on"}]
+
+
+def test_own_settings_from_a_stock_mcu_are_not_stored():
+    """The module answers 0 for the own-MCU attributes when the MCU is stock: those
+    must not reach the state as 'linear' / 0, values a stock MCU does not have."""
+    out = json.loads(run_node(ZDMS + """
+const ver = (v) => { const d = h.device(); d.getEndpoint(1).clusters.genBasic.attributes[0xff12] = v; return d; };
+const data = {[0xff30]: 0, [0xff35]: 950};
+console.log(JSON.stringify({
+    own: fz(ver("2.1.10 own"), 1, data),
+    stock: fz(ver("1.0.7"), 1, data),
+    unknown: fz(ver(""), 1, data),
+    show: fz(ver("1.0.7"), 1, data, {own_mcu_settings: "show"}),
+}));
+"""))
+    assert out["own"] == [{"dimming_curve_dimmer_left": "linear"}, {"hold_time_dimmer_left": 950}]
+    assert out["stock"] == []
+    assert out["unknown"] == []
+    assert out["show"] == out["own"]
+
+
+CONFIGURE = ZDMS + """
+const configure = async (versions) => {
+    const dev = h.device({versions});
+    h.log.length = 0;
+    h.delays.length = 0;
+    await def.configure(dev, {ID: 1}, def);
+    const reads = h.log.filter((l) => l[0] === "read");
+    return {
+        versionReads: reads.filter((l) => l[2] === "genBasic" && l[3][0] === 0xff12).length,
+        ownReads: reads.filter((l) => l[2] === "genBasic" && l[3][0] !== 0xff12).map((l) => l[3][0].toString(16)),
+        dimmerReads: reads.filter((l) => l[2] !== "genBasic").map((l) => `${l[1]}:${l[2]}:${l[3].join("+")}`),
+        reporting: h.log.filter((l) => l[0] === "report").map((l) => [l[1], l[2], ...(l[3].map ? l[3].map((r) => [r.attribute.ID ?? r.attribute, r.minimumReportInterval, r.maximumReportInterval]) : [l[3]])]),
+        delays: [...h.delays],
+    };
+};
+"""
+
+
+def test_configure_waits_for_the_mcu_before_reading_its_settings():
+    """Right after a module restart the module answers "" until the MCU has told it:
+    configure waits for a real mcu_version before it reads the MCU's settings."""
+    out = json.loads(run_node(CONFIGURE + """
+(async () => console.log(JSON.stringify(await configure(["", "", "2.1.10 own"]))))();
+"""))
+    assert out["versionReads"] == 3
+    assert out["delays"][:3] == [2000, 2000, 1500]
+    assert out["ownReads"] == [f"ff{a:02x}" for a in range(0x30, 0x3C)]
+    assert out["dimmerReads"] == [
+        f"{ep}:{cluster}" for ep in (1, 2) for cluster in
+        ("genOnOff:startUpOnOff", "genLevelCtrl:onLevel", "lightingBallastCfg:minLevel+maxLevel", "genOnOffSwitchCfg:switchType")
+    ]
+
+
+def test_configure_reads_own_settings_only_from_an_own_mcu():
+    """A stock MCU (or a bare version: the module did not identify ours) has none
+    of them; reading would store the module's 0s."""
+    out = json.loads(run_node(CONFIGURE + """
+(async () => console.log(JSON.stringify([await configure(["1.0.7"]), await configure(["2.1.10"])])))();
+"""))
+    for run in out:
+        assert run["versionReads"] == 1
+        assert run["ownReads"] == []
+        assert len(run["dimmerReads"]) == 8
+
+
+def test_configure_stops_waiting_for_a_module_that_does_not_answer():
+    """An offline module: two failed reads 2 s apart and configure goes on (15 reads
+    with a pause after each took ~3 min)."""
+    out = json.loads(run_node(CONFIGURE + """
+(async () => console.log(JSON.stringify(await configure([new Error("timeout")]))))();
+"""))
+    assert out["versionReads"] == 2
+    assert out["ownReads"] == []
+    assert out["delays"] == [2000]
+    assert len(out["dimmerReads"]) == 8
+
+
+def test_configure_keeps_waiting_after_single_failed_reads():
+    """A failed read now and then (delivery failures while routes re-form after a
+    restart) neither ends the wait nor skips the pause before the next try; only two
+    failures in a row do."""
+    out = json.loads(run_node(CONFIGURE + """
+const e = () => new Error("Delivery failed");
+(async () => console.log(JSON.stringify(await configure([e(), "", e(), "", e(), "2.1.10 own"]))))();
+"""))
+    assert out["versionReads"] == 6
+    assert out["delays"][:6] == [2000, 2000, 2000, 2000, 2000, 1500]
+    assert out["ownReads"] == [f"ff{a:02x}" for a in range(0x30, 0x3C)]
+
+
+def test_gestures_are_reported_on_change_only():
+    """Gestures are events: a maximum report interval repeats the last one (about
+    every 18 h with 65000 s) and fires its action again; 0 means changes only.
+    No reporting is added for anything else (the module's table holds 12 entries)."""
+    out = json.loads(run_node(CONFIGURE + """
+(async () => console.log(JSON.stringify((await configure(["2.1.10 own"])).reporting)))();
+"""))
+    assert out == [
+        [1, "genOnOff", {"min": 0, "max": 65000, "change": 1}],
+        [1, "genLevelCtrl", ["currentLevel", 0, 65000]],
+        [1, "genMultistateInput", [0x55, 0, 0]],
+        [2, "genOnOff", {"min": 0, "max": 65000, "change": 1}],
+        [2, "genLevelCtrl", ["currentLevel", 0, 65000]],
+        [2, "genMultistateInput", [0x55, 0, 0]],
+    ]
+
+
+def test_on_level_is_read_again_when_the_module_announces_itself():
+    """OnLevel is kept by the module, not the MCU, and has no reporting: after a module
+    restart (it announces itself) the converter reads it again on every dimmer
+    endpoint. Both onEvent signatures: Zigbee2MQTT 2.x (event) and 1.x (type, data, device)."""
+    for v1 in (False, True):
+        out = json.loads(run_node(ZDMS + """
+const dev = h.device();
+const reads = async (...args) => {
+    h.log.length = 0;
+    await def.onEvent(...args);
+    return h.log.filter((l) => l[0] === "read").map((l) => `${l[1]}:${l[2]}:${l[3].join("+")}`);
+};
+(async () => console.log(JSON.stringify({
+    announce: await reads({type: "deviceAnnounce", data: {device: dev}}),
+    announceV1: await reads("deviceAnnounce", {}, dev, {}, {}),
+    start: await reads({type: "start", data: {device: dev}}),
+    stop: await reads({type: "stop", data: {ieeeAddr: dev.ieeeAddr}}),
+})))();
+""", z2m_v1=v1))
+        on_level = ["1:genLevelCtrl:onLevel", "2:genLevelCtrl:onLevel"]
+        assert out == {"announce": on_level, "announceV1": on_level, "start": [], "stop": []}
+
+
+def test_device_level_numeric_has_no_endpoint_filter():
+    """A numeric setting without an endpoint must not filter its reports on
+    [undefined] (which matches no endpoint); with one it filters on that one."""
+    out = json.loads(run_node("""
+const r = c.romasku;
+console.log(JSON.stringify([
+    r.multiPressResetCount("multi_press_reset_count").args.endpointNames,
+    r.multiPressResetCount("multi_press_reset_count", "dimmer_left").args.endpointNames,
+    r.dimmerMinLevel("min_level").args.endpointNames ?? null,
+]));
+"""))
+    assert out == [None, ["dimmer_left"], None]
 
 
 def test_fade_and_hold_settings_are_per_dimmer_with_their_own_attributes():
@@ -113,15 +301,3 @@ def test_every_dimmer_has_its_light_on_a_line_of_its_own():
     lines = [l for l in block.splitlines() if "light({ endpointNames" in l]
     assert [re.search(r'endpointNames: \["(\w+)"\]', l).group(1) for l in lines] == ["dimmer_left", "dimmer_right"]
     assert all(l.strip().startswith("light(") for l in lines)
-
-
-def test_configure_waits_for_the_mcu_before_reading_its_settings():
-    """Right after a module restart the module answers 0 until the MCU has sent its values:
-    configure must wait for a real mcu_version before it reads the own-MCU settings."""
-    js = custom_converter_js()
-    start = js.index('model: "ZDMS16-2"')
-    configure = js[js.index("configure: async", start) :]
-    wait = configure.index("realMcuVersion(version)")
-    first_setting = configure.index("0xff30]")
-    assert wait < first_setting
-    assert "setTimeout(resolve, 2000)" in configure[:first_setting]

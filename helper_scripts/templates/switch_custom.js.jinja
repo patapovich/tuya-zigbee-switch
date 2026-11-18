@@ -16,6 +16,23 @@ const exposesLib = require("zigbee-herdsman-converters/lib/exposes");
 const e = exposesLib.presets;
 const ea = exposesLib.access;
 
+/* A secondary-MCU version as the module reports it ("x.y.z", or "x.y.z own"
+ * once it has identified our own firmware), not the "" or "0.0.0" it
+ * answers right after a restart, before the MCU has told it. */
+const realMcuVersion = (v) => typeof v === "string" && /^\d+\.\d+\.\d+( own)?$/.test(v) && !v.startsWith("0.0.0");
+
+/* The version that says what the MCU is: the newest real one (latest), else
+ * the last one kept (kept, device.meta). "own" is sticky: a bare 2.x or later
+ * does not replace a kept "own" one, because the module reports ours without
+ * the suffix when it could not identify it (a lost identity answer). Only a
+ * version below 2.x (a stock MCU) means the MCU really changed. */
+const mcuVersionOf = (latest, kept) => {
+    if (!realMcuVersion(latest)) return realMcuVersion(kept) ? kept : undefined;
+    const bareOwnMajor = !latest.endsWith(" own") && Number(latest.split(".")[0]) >= 2;
+    if (bareOwnMajor && realMcuVersion(kept) && kept.endsWith(" own")) return kept;
+    return latest;
+};
+
 /* Major version of our own secondary-MCU firmware, as last seen: the module
  * shows ours as "x.y.z own" (only ours answers its identity query; a stock
  * MCU never gets the suffix, whatever its version number). Kept in
@@ -29,10 +46,7 @@ const ownMcuMajorOf = (device) => {
     } catch (error) {
         cached = undefined;
     }
-    // The newest value the device sent, unless it is the "" read right after
-    // a restart of the module; then the last real one kept in meta.
-    const real = (v) => typeof v === "string" && /^\d+\.\d+\.\d+( own)?$/.test(v) && !v.startsWith("0.0.0");
-    const v = real(cached) ? cached : device.meta?.mcuVersion;
+    const v = mcuVersionOf(cached, device.meta?.mcuVersion);
     const m = typeof v === "string" ? /^(\d+)\.\d+\.\d+ own$/.exec(v) : null;
     return m ? Number(m[1]) : undefined;
 };
@@ -128,7 +142,7 @@ const romasku = {
     longPressDuration: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "genOnOffSwitchCfg",
             attribute: { ID: 0xff03, type: 0x21 }, // uint16
             description: "What duration is considerd to be long press",
@@ -139,7 +153,7 @@ const romasku = {
     levelMoveRate: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "genOnOffSwitchCfg",
             attribute: { ID: 0xff04, type: 0x20 }, // uint8
             description: "Level (dim) move rate in steps per ms",
@@ -218,7 +232,7 @@ const romasku = {
     multiPressResetCount: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "genBasic",
             attribute: { ID: 0xff02, type: 0x20 }, // uint8
             description: "Number of consecutive presses to trigger factory reset (0 = disabled)",
@@ -262,12 +276,13 @@ const romasku = {
             cluster: "genBasic",
             type: ["attributeReport", "readResponse"],
             convert: (model, msg) => {
-                const v = msg.data?.[0xff12];
                 // Keep the last real version: right after a restart the module
-                // answers "" until the MCU has told it. That must not hide the
+                // answers "" until the MCU has told it, and a bare 2.x may be
+                // ours not yet identified (mcuVersionOf). Neither must hide the
                 // own firmware's settings.
-                const real = typeof v === "string" && /^\d+\.\d+\.\d+( own)?$/.test(v) && !v.startsWith("0.0.0");
-                if (real && msg.device && msg.device.meta?.mcuVersion !== v) {
+                if (!msg.device) return;
+                const v = mcuVersionOf(msg.data?.[0xff12], msg.device.meta?.mcuVersion);
+                if (v !== undefined && msg.device.meta?.mcuVersion !== v) {
                     msg.device.meta.mcuVersion = v;
                     msg.device.save();
                 }
@@ -301,8 +316,10 @@ const romasku = {
             fromZigbee: [{
                 cluster: "genBasic",
                 type: ["attributeReport", "readResponse"],
-                convert: (model, msg) => {
+                convert: (model, msg, publish, options) => {
                     if (msg.endpoint.ID !== 1 || msg.data?.[attrId] === undefined) return;
+                    // A stock MCU has no such setting: the module answers 0.
+                    if (minMcu && !ownMcuShown(msg.device, options, minMcu)) return;
                     const v = msg.data[attrId];
                     const key = Object.keys(lookup).find((k) => lookup[k] === v);
                     return {[property]: key ?? v};
@@ -339,8 +356,9 @@ const romasku = {
             fromZigbee: [{
                 cluster: "genBasic",
                 type: ["attributeReport", "readResponse"],
-                convert: (model, msg) => {
+                convert: (model, msg, publish, options) => {
                     if (msg.endpoint.ID !== 1 || msg.data?.[attrId] === undefined) return;
+                    if (minMcu && !ownMcuShown(msg.device, options, minMcu)) return;   // as ownMcuEnum
                     return {[property]: msg.data[attrId]};
                 },
             }],
@@ -373,6 +391,7 @@ const romasku = {
                 if (value.length > 256) throw new Error("Length of device_config_ext is greater than 256");
                 if (value.length && !value.endsWith(";")) throw new Error("Should end with ;");
             },
+            entityCategory: "config",
         }),
     deviceConfig: (name, endpointName) =>
         text({
@@ -561,7 +580,7 @@ const romasku = {
     coverSwitchLongPressDuration: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: 0xFC01,
             attribute: {ID: 0x0005, type: Zcl.DataType.UINT16},
             description: "Threshold in milliseconds to distinguish short press from long press",
@@ -598,7 +617,7 @@ const romasku = {
     coverOpenTime: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "closuresWindowCovering",
             attribute: {ID: 0xff02, type: Zcl.DataType.UINT16},
             description: "Travel time for the OPENING direction (0.1 s precision). " +
@@ -616,7 +635,7 @@ const romasku = {
     coverCloseTime: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "closuresWindowCovering",
             attribute: {ID: 0xff03, type: Zcl.DataType.UINT16},
             description: "Travel time for the CLOSING direction (0.1 s precision). " +
@@ -632,7 +651,7 @@ const romasku = {
     coverOpenDeadzone: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "closuresWindowCovering",
             attribute: {ID: 0xff04, type: Zcl.DataType.UINT16},
             description: "Mechanical deadzone at the OPEN end (100%) as a percentage of " +
@@ -646,7 +665,7 @@ const romasku = {
     coverClosedDeadzone: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "closuresWindowCovering",
             attribute: {ID: 0xff05, type: Zcl.DataType.UINT16},
             description: "Mechanical deadzone at the CLOSED end (0%) as a percentage of " +
@@ -660,7 +679,7 @@ const romasku = {
     dimmerMinLevel: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "lightingBallastCfg",
             attribute: "minLevel",
             description: "Minimum brightness of the dimmer (MCU setting). With level scaling (default) brightness 1 is this level.",
@@ -671,7 +690,7 @@ const romasku = {
     dimmerMaxLevel: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "lightingBallastCfg",
             attribute: "maxLevel",
             description: "Maximum brightness of the dimmer (MCU setting). With level scaling (default) brightness 254 is this level.",
@@ -682,7 +701,7 @@ const romasku = {
     dimmerOnLevel: (name, endpointName) =>
         numeric({
             name,
-            endpointNames: [endpointName],
+            endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "genLevelCtrl",
             attribute: "onLevel",
             description: "Brightness the light comes on at, from the wall switch or an On command, set without a round trip through the network. 255 = the level it had before.",
@@ -748,8 +767,23 @@ const romasku = {
                 key: ["power_on_behavior"],
                 convertSet: async (entity, key, value, meta) => {
                     if (!Object.prototype.hasOwnProperty.call(lookup, value)) throw new Error(`${key}: one of ${names.join(", ")}`);
-                    await entity.write("genOnOff", {startUpOnOff: lookup[value]});
-                    return {state: {[key]: value}};
+                    if (meta.endpoint_name) {
+                        // One channel (own MCU): its own power-on DP.
+                        await entity.write("genOnOff", {startUpOnOff: lookup[value]});
+                        return {state: {[key]: value}};
+                    }
+                    // The shared setting: written on every channel, so it also
+                    // sets every channel of an own MCU, which keeps one per
+                    // channel (a stock MCU just gets the same value again).
+                    const map = typeof meta.mapped?.endpoint === "function" ? meta.mapped.endpoint(meta.device) : {};
+                    const channels = dimmerNames.map((name) => [name, map[name] !== undefined ? meta.device.getEndpoint(map[name]) : undefined])
+                        .filter(([, endpoint]) => endpoint);
+                    const state = {[key]: value};
+                    for (const [name, endpoint] of channels.length ? channels : [[undefined, entity]]) {
+                        await endpoint.write("genOnOff", {startUpOnOff: lookup[value]});
+                        if (name) state[`${key}_${name}`] = value;
+                    }
+                    return {state};
                 },
                 convertGet: async (entity) => {
                     await entity.read("genOnOff", ["startUpOnOff"]);
@@ -791,6 +825,25 @@ const romasku = {
             }],
         };
     },
+    // A definition's onEvent for a dimmer board: OnLevel lives in the module,
+    // not in the MCU, and a module restart can reset it. It has no reporting
+    // (the module's reporting table is small), so read it again when the
+    // module announces itself after a restart; the page then shows the value
+    // the module really uses.
+    dimmerOnLevelRefresh: (endpointIds) => async (...args) => {
+        // Zigbee2MQTT 2.x passes one event, 1.x (type, data, device, ...).
+        const [first] = args;
+        const type = typeof first === "string" ? first : first?.type;
+        const device = typeof first === "string" ? args[2] : first?.data?.device;
+        if (type !== "deviceAnnounce" || !device) return;
+        for (const id of endpointIds) {
+            try {
+                await device.getEndpoint(id)?.read("genLevelCtrl", ["onLevel"]);
+            } catch (error) {
+                // not answered now; read at the next announce, configure or refresh
+            }
+        }
+    },
     dimmerPowerOnBehavior: (name, endpointName) =>
         enumLookup({
             name,
@@ -806,55 +859,55 @@ const romasku = {
 {% macro dp_extend(dp, device, first_endpoint) %}
 {% if dp.type == "E" and (dp.min_mcu or dp.dimmer) %}
             romasku.ownMcuEnum({
-                name: "{{dp.name}}",
+                name: {{dp.name|tojson}},
                 endpointName: "{{device.dimmerNames[dp.dimmer - 1] if dp.dimmer else first_endpoint}}",
                 attrId: 0x{{("ff" ~ dp.attr)|lower}},
-                lookup: { {% for k, v in dp["values"].items() %}"{{k}}": {{v}}{{ ", " if not loop.last }}{% endfor %} },
-                description: "{{dp.label}}",
+                lookup: { {% for k, v in dp["values"].items() %}{{k|tojson}}: {{v}}{{ ", " if not loop.last }}{% endfor %} },
+                description: {{dp.label|tojson}},
                 minMcu: {{dp.min_mcu or 0}},
             }),
 {% elif dp.type == "B" %}
             binary({
-                name: "{{dp.name}}",
+                name: {{dp.name|tojson}},
                 endpointName: "{{first_endpoint}}",
                 cluster: "genBasic",
                 attribute: { ID: 0x{{("ff" ~ dp.attr)|lower}}, type: 0x10 }, // boolean
                 valueOn: ["ON", 1],
                 valueOff: ["OFF", 0],
-                description: "{{dp.label}}",
+                description: {{dp.label|tojson}},
                 entityCategory: "config",
             }),
 {% elif dp.type == "E" %}
             enumLookup({
-                name: "{{dp.name}}",
+                name: {{dp.name|tojson}},
                 endpointName: "{{first_endpoint}}",
-                lookup: { {% for k, v in dp["values"].items() %}"{{k}}": {{v}}{{ ", " if not loop.last }}{% endfor %} },
+                lookup: { {% for k, v in dp["values"].items() %}{{k|tojson}}: {{v}}{{ ", " if not loop.last }}{% endfor %} },
                 cluster: "genBasic",
                 attribute: { ID: 0x{{("ff" ~ dp.attr)|lower}}, type: 0x30 }, // enum8
-                description: "{{dp.label}}",
+                description: {{dp.label|tojson}},
                 entityCategory: "config",
             }),
 {% elif dp.type == "V" and (dp.dimmer or dp.min_mcu) %}
             romasku.ownMcuNumeric({
-                name: "{{dp.name}}",
+                name: {{dp.name|tojson}},
                 endpointName: "{{device.dimmerNames[dp.dimmer - 1] if dp.dimmer else first_endpoint}}",
                 attrId: 0x{{("ff" ~ dp.attr)|lower}},
-                description: "{{dp.label}}",
+                description: {{dp.label|tojson}},
                 valueMin: {{dp.min}},
                 valueMax: {{dp.max}},
-                unit: {{ ('"' ~ dp.unit ~ '"') if dp.unit else "undefined" }},
+                unit: {{ dp.unit|tojson if dp.unit else "undefined" }},
                 minMcu: {{dp.min_mcu or 0}},
             }),
 {% elif dp.type == "V" %}
             numeric({
-                name: "{{dp.name}}",
+                name: {{dp.name|tojson}},
                 endpointNames: ["{{first_endpoint}}"],
                 cluster: "genBasic",
                 attribute: { ID: 0x{{("ff" ~ dp.attr)|lower}}, type: 0x23 }, // uint32
-                description: "{{dp.label}}",
+                description: {{dp.label|tojson}},
                 valueMin: {{dp.min}},
                 valueMax: {{dp.max}},
-{% if dp.unit %}                unit: "{{dp.unit}}",
+{% if dp.unit %}                unit: {{dp.unit|tojson}},
 {% endif %}                entityCategory: "config",
             }),
 {% endif %}
@@ -982,7 +1035,8 @@ const definitions = [
             {% endif %}
             {% if device.dimmerNames %}
             // Device: technical settings last.
-            {% if device.has_secondary_mcu %}romasku.mcuVersion("mcu_version", "{{first_endpoint}}"),
+            {% if device.has_secondary_mcu %}
+            romasku.mcuVersion("mcu_version", "{{first_endpoint}}"),
             {% endif %}
             romasku.multiPressResetCount("multi_press_reset_count", "{{first_endpoint}}"),
             {% if device.has_dedicated_net_led %}
@@ -995,34 +1049,47 @@ const definitions = [
             {% endif %}
         ],
         meta: { multiEndpoint: true },
+        {% if device.dimmerNames %}
+        {% set dimmer_base = (device.switchNames | length) + (device.relayNames | length) + (device.coverSwitchNames | length) + (device.coverNames | length) %}
+        onEvent: romasku.dimmerOnLevelRefresh([{% for dimmerName in device.dimmerNames %}{{loop.index + dimmer_base}}{{ ", " if not loop.last }}{% endfor %}]),
+        {% endif %}
         configure: async (device, coordinatorEndpoint, logger) => {
-            {% if device.has_secondary_mcu %}
+            {% if device.dimmerNames or (device.dp_attributes | selectattr("min_mcu") | list) %}
             // Right after a module restart the module answers with defaults (0) until the MCU
             // has sent its values; reading then would leave 0 on the page. Wait for a real MCU
             // version (a few seconds, longer while the module updates the MCU), then read.
+            // A module that does not answer at all is offline: stop after two failed reads
+            // in a row, 2 s apart (a single failure, e.g. while routes re-form after a
+            // restart, only costs one more try).
             const mcuEndpoint = device.getEndpoint(1);
-            const realMcuVersion = (v) => typeof v === "string" && /^\d+\.\d+\.\d+( own)?$/.test(v) && !v.startsWith("0.0.0");
-            for (let attempt = 0; attempt < 15; attempt++) {
-                let version;
+            let mcuVersion;
+            for (let attempt = 0, failures = 0; attempt < 15; attempt++) {
                 try {
                     const result = await mcuEndpoint.read("genBasic", [0xff12]); // mcu_version
-                    version = result?.[0xff12];
+                    mcuVersion = result?.[0xff12];
+                    failures = 0;
                 } catch (error) {
-                    version = undefined; // not answered yet
+                    mcuVersion = undefined; // not answered
+                    if (++failures >= 2) break;
                 }
-                if (realMcuVersion(version)) {
+                if (realMcuVersion(mcuVersion)) {
                     await new Promise((resolve) => setTimeout(resolve, 1500)); // the rest of its DP dump
                     break;
                 }
                 await new Promise((resolve) => setTimeout(resolve, 2000));
             }
-            {% for dp in device.dp_attributes if dp.min_mcu %}
-            try {
-                await device.getEndpoint(1).read("genBasic", [0x{{("ff" ~ dp.attr)|lower}}]); // {{dp.name}}
-            } catch (error) {
-                // Only an own MCU firmware has it.
+            {% if device.dp_attributes | selectattr("min_mcu") | list %}
+            // Settings only an own MCU firmware has: a stock MCU's module answers 0 for them.
+            if (typeof mcuVersion === "string" && mcuVersion.endsWith(" own")) {
+                {% for dp in device.dp_attributes if dp.min_mcu %}
+                try {
+                    await mcuEndpoint.read("genBasic", [0x{{("ff" ~ dp.attr)|lower}}]); // {{dp.name}}
+                } catch (error) {
+                    // not answered now; read on the next configure or with a refresh
+                }
+                {% endfor %}
             }
-            {% endfor %}
+            {% endif %}
             {% endif %}
             {% for switchName in device.switchNames %}
             const endpoint{{loop.index}} = device.getEndpoint({{loop.index}});
@@ -1126,12 +1193,14 @@ const definitions = [
             {% if device.secondary_mcu_image %}
             try {
                 // Wall switch gestures (own MCU firmware); older module builds lack the cluster.
+                // Each gesture is an event: report changes only (maximum interval 0), else
+                // the stack repeats the last gesture every maximum interval (and Z2M with it).
                 await reporting.bind(dimmer{{loop.index}}, coordinatorEndpoint, ["genMultistateInput"]);
                 await dimmer{{loop.index}}.configureReporting("genMultistateInput", [
                     {
                         attribute: {ID: 0x0055 /* presentValue */, type: 0x21}, // uint16
                         minimumReportInterval: 0,
-                        maximumReportInterval: constants.repInterval.MAX,
+                        maximumReportInterval: 0,
                         reportableChange: 1,
                     },
                 ]);
