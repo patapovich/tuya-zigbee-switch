@@ -51,6 +51,7 @@ static void put_be32(uint8_t *p, uint32_t v) {
 #define PAUSE_MAX_MIN         (24u * 60u)   /* further failure, up to a day */
 #define OFFERS_MAX            3             /* offers without a result before giving up */
 #define IDENT_RETRIES         3             /* asked 4 times in 7.5 s before a bare version */
+#define IDENT_LATE_MAX        2             /* then at the MCU's next 2 network queries */
 
 static uint8_t  g_image_state;              /* 0 not checked, 1 good, 2 unusable */
 static uint8_t  g_failures;                 /* failed update results since the last good one */
@@ -153,6 +154,23 @@ static hal_task_t g_ident_timer;
 static uint8_t    g_ident_timer_ready;
 static uint8_t    g_ident_waiting;
 static uint8_t    g_ident_retries;
+static uint8_t    g_ident_gave_up;          /* its version answer's questions all ran out */
+static uint8_t    g_ident_late;             /* asked at its queries since */
+
+static void ident_timeout(void *arg);
+
+static void ident_ask(uint8_t retries, uint32_t wait_ms) {
+    if (!g_ident_timer_ready) {
+        g_ident_timer.handler = ident_timeout;
+        g_ident_timer.arg     = NULL;
+        hal_tasks_init(&g_ident_timer);
+        g_ident_timer_ready = 1;
+    }
+    g_ident_waiting = 1;
+    g_ident_retries = retries;
+    tuya_secondary_mcu_queue_cmd(TUYA_MCU_CMD_OTA_IDENT, NULL, 0);
+    hal_tasks_schedule(&g_ident_timer, wait_ms);
+}
 
 static void ident_timeout(void *arg) {
     (void)arg;
@@ -165,13 +183,15 @@ static void ident_timeout(void *arg) {
      * version shown for our own MCU makes the converter take it for a stock
      * one, so that comes only after all of them. */
     if (g_ident_retries < IDENT_RETRIES) {
-        g_ident_retries++;
-        tuya_secondary_mcu_queue_cmd(TUYA_MCU_CMD_OTA_IDENT, NULL, 0);
-        hal_tasks_schedule(&g_ident_timer, (uint32_t)IDENT_TIMEOUT_MS << g_ident_retries);
+        ident_ask((uint8_t)(g_ident_retries + 1),
+                  (uint32_t)IDENT_TIMEOUT_MS << (g_ident_retries + 1));
         return;
     }
     g_ident_waiting = 0;
-    tuya_mcu_app_show_mcu_version();     /* not ours: shown as it is */
+    if (!g_ident_gave_up) {
+        g_ident_gave_up = 1;
+        tuya_mcu_app_show_mcu_version(); /* not ours: shown as it is */
+    }
 }
 
 uint8_t tuya_mcu_ota_may_be_own(uint8_t packed) {
@@ -179,6 +199,7 @@ uint8_t tuya_mcu_ota_may_be_own(uint8_t packed) {
 }
 
 void tuya_mcu_ota_mcu_restarted(void) {
+    g_ident_gave_up = 0;
     if (g_ident_waiting) {
         g_ident_waiting = 0;
         hal_tasks_unschedule(&g_ident_timer);
@@ -189,17 +210,23 @@ uint8_t tuya_mcu_ota_on_version(uint8_t packed) {
     if (!tuya_mcu_ota_may_be_own(packed)) {
         return 0;
     }
-    if (!g_ident_timer_ready) {
-        g_ident_timer.handler = ident_timeout;
-        g_ident_timer.arg     = NULL;
-        hal_tasks_init(&g_ident_timer);
-        g_ident_timer_ready = 1;
-    }
-    g_ident_waiting = 1;
-    g_ident_retries = 0;
-    tuya_secondary_mcu_queue_cmd(TUYA_MCU_CMD_OTA_IDENT, NULL, 0);
-    hal_tasks_schedule(&g_ident_timer, IDENT_TIMEOUT_MS);
+    g_ident_gave_up = 0;
+    g_ident_late    = 0;
+    ident_ask(0, IDENT_TIMEOUT_MS);
     return 1;
+}
+
+/* All questions lost (the link stopped for longer than they span: a UART
+ * re-init, a long burst loss, an MCU stuck for a while): it is shown bare and
+ * taken for a stock MCU. Its periodic network query (every 30 s) shows the
+ * link works again, so a couple more questions are sent then; an answer turns
+ * it into ours (shown "x.y.z own", everything read again). */
+void tuya_mcu_ota_mcu_queried(void) {
+    if (!g_ident_gave_up || g_ident_waiting || g_ident_late >= IDENT_LATE_MAX) {
+        return;
+    }
+    g_ident_late++;
+    ident_ask(IDENT_RETRIES, (uint32_t)IDENT_TIMEOUT_MS << IDENT_RETRIES);
 }
 
 /* Only our own firmware answers the identity query. The protocol byte is
@@ -214,6 +241,7 @@ static void on_ident(const uint8_t *data, uint16_t len) {
         return;
     }
     g_ident_waiting = 0;
+    g_ident_gave_up = 0;
     hal_tasks_unschedule(&g_ident_timer);
     tuya_mcu_app_set_mcu_own();             /* shows "x.y.z own" */
 
@@ -326,6 +354,9 @@ uint8_t tuya_mcu_ota_may_be_own(uint8_t packed) {
 }
 
 void tuya_mcu_ota_mcu_restarted(void) {
+}
+
+void tuya_mcu_ota_mcu_queried(void) {
 }
 
 uint8_t tuya_mcu_ota_on_command(uint8_t cmd, uint16_t seq, const uint8_t *data,

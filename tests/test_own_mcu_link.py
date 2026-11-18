@@ -144,6 +144,63 @@ def test_lost_identity_answers_never_show_a_bare_version():
         proc.stop()
 
 
+def gave_up_identifying(proc, device, lost: int | None = None) -> OwnMcu:
+    """Contact by its query; every timed identity answer lost (or never
+    given): shown bare after 7.5 s, taken for a stock MCU."""
+    mcu = OwnMcu(proc, device, power_on=(0, 1))
+    if lost is None:
+        mcu.answers_ident = False
+    else:
+        mcu.lose[OTA_IDENT] = lost
+    mcu.query_seq = 1
+    device.step_time(1900)
+    pump(proc)
+    take_tx(proc)
+    mcu.query_network()
+    assert mcu.serve(8000).count(OTA_IDENT) == 4
+    assert shown_version(device) == OWN.removesuffix(" own")
+    assert power_on(device) == (STARTUP_OFF, STARTUP_OFF)   # DP 14 for both
+    return mcu
+
+
+def test_identity_is_asked_again_at_the_mcus_next_query():
+    """The link stopped for longer than the timed questions span: the MCU's
+    next periodic query shows it works again, and our firmware's answer then
+    brings it back as ours, its settings read per channel."""
+    proc, device = start()
+    try:
+        mcu = gave_up_identifying(proc, device, lost=4)
+        mcu.query_network()
+        sent = mcu.serve(1000)
+        assert sent.count(OTA_IDENT) == 1 and CMD_VERSION not in sent
+        assert shown_version(device) == OWN
+        assert power_on(device) == (STARTUP_OFF, STARTUP_ON)
+        mcu.query_network()
+        assert mcu.serve(1000) == [TUYA_CMD_QUERY_NETWORK]   # only the answer
+    finally:
+        proc.stop()
+
+
+def test_mcu_that_never_says_who_it_is_is_asked_at_two_queries_only():
+    """A stock MCU that says 2.x: two more questions, no flip of what is
+    shown, nothing more until its next version answer."""
+    proc, device = start()
+    try:
+        mcu = gave_up_identifying(proc, device)
+        asked = []
+        for _ in range(4):
+            mcu.query_network()
+            asked.append(mcu.serve(30_000, step_ms=500).count(OTA_IDENT))
+            assert shown_version(device) == OWN.removesuffix(" own")
+        assert asked == [1, 1, 0, 0]
+        mcu.send([tuya_frame(CMD_VERSION, bytes([VERSION]))])  # unasked, as after pairing
+        assert mcu.serve(8000).count(OTA_IDENT) == 4
+        mcu.query_network()
+        assert mcu.serve(5000).count(OTA_IDENT) == 1
+    finally:
+        proc.stop()
+
+
 def test_mcu_restart_during_identification_is_noticed():
     """It restarts after its version answer, before the identity answer: its
     query numbered 0 starts the contact again, though not known as ours yet."""
@@ -228,11 +285,14 @@ def test_stock_2x_mcu_that_numbers_every_query_0_gets_a_few_contacts_only():
     try:
         mcu = OwnMcu(proc, device, version=newer_version())
         mcu.answers_ident = False
-        versions = 0
+        versions = idents = 0
         for _ in range(6):
             mcu.query_network(0)
-            versions += mcu.serve(30_000, step_ms=500).count(CMD_VERSION)
+            sent = mcu.serve(30_000, step_ms=500)
+            versions += sent.count(CMD_VERSION)
+            idents += sent.count(OTA_IDENT)
         assert versions == 1 + 3
+        assert idents == 4 * 4 + 2                  # then at 2 queries more
         assert not shown_version(device).endswith("own")
     finally:
         proc.stop()

@@ -158,13 +158,14 @@ static void version_answered(void) {
 static uint8_t    g_contact = CONTACT_NONE;
 static hal_task_t g_contact_timer;
 
-static void first_contact(uint8_t source) {
+/* Returns 1 if it made the contact (asked the version). */
+static uint8_t first_contact(uint8_t source) {
     if (g_contact == CONTACT_MCU || (source == CONTACT_TIMER && g_contact != CONTACT_NONE)) {
-        return;
+        return 0;
     }
     if (source == CONTACT_MCU && g_contact == CONTACT_TIMER && g_mcu_own) {
         g_contact = CONTACT_MCU;
-        return;
+        return 0;
     }
     g_contact = source;
     g_mcu_own = 0;
@@ -178,6 +179,7 @@ static void first_contact(uint8_t source) {
     if (dp_attrs_cnt > 0 || dimmer_clusters_cnt > 0) {
         dp_attr_query_all();
     }
+    return 1;
 }
 
 static void resync_all(void) {
@@ -319,7 +321,9 @@ static void on_mcu_command(uint8_t cmd, uint16_t seq, const uint8_t *data, uint1
         /* Unanswered, the MCU assumes the link is broken (key LEDs blink). */
         uint8_t status = network_status();
         tuya_secondary_mcu_send_reply(cmd, seq, &status, 1);
-        first_contact(CONTACT_MCU);
+        if (!first_contact(CONTACT_MCU) && !g_version_waiting && !g_mcu_own) {
+            tuya_mcu_ota_mcu_queried();     /* its identity answers all lost? */
+        }
         return;
     }
 
