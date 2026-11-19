@@ -143,6 +143,13 @@ typedef struct {
     uint8_t              has_held_report;
     uint32_t             held_report_value;
     uint32_t             last_written_value;
+
+#ifdef DIMMER_BINDINGS
+    /* Its wall switch's own endpoint (dimmer_cluster_add_switch_endpoint; 0: none), for the
+     * lights bound to it; bind_hold_down: its next hold (detached mode) dims down. */
+    uint8_t              bind_endpoint;
+    uint8_t              bind_hold_down;
+#endif
 } zigbee_dimmer_cluster;
 
 void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
@@ -161,6 +168,13 @@ void dimmer_cluster_mcu_restarted(void);
 void dimmer_cluster_callback_attr_write_trampoline(uint8_t endpoint,
                                                    uint16_t cluster_id,
                                                    uint16_t attribute_id);
+
+#ifdef DIMMER_BINDINGS
+/** The endpoint of the dimmer's wall switch: On/Off and Level Control clients, for bindings of
+ *  other lights to it (Dimmer Switch). */
+void dimmer_cluster_add_switch_endpoint(zigbee_dimmer_cluster *cluster,
+                                        hal_zigbee_endpoint *endpoint);
+#endif
 
 #ifdef DIMMER_SCENES
 /** For Store Scene: the endpoint's state as scene flags (scene_cluster.h; the level only when

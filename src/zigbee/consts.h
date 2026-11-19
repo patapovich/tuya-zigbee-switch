@@ -23,6 +23,7 @@
 // Device ids (HA profile)
 
 #define ZCL_HA_DEVICE_ID_DIMMABLE_LIGHT    0x0101
+#define ZCL_HA_DEVICE_ID_DIMMER_SWITCH     0x0104
 
 
 // Attributes

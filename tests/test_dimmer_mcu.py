@@ -677,10 +677,12 @@ def endpoint_device_ids(tmp_path, config: str) -> dict[int, str]:
 
 
 def test_dimmer_endpoints_are_dimmable_lights(tmp_path):
-    """HA Dimmable Light (0x0101) on the dimmer endpoints; the other endpoints keep 0xffff."""
-    assert endpoint_device_ids(tmp_path, ZDMS16_2) == {1: "0x0101", 2: "0x0101"}
+    """HA Dimmable Light (0x0101) on the dimmer endpoints, Dimmer Switch (0x0104) on their wall
+    switches' endpoints after all others; the other endpoints keep 0xffff."""
+    assert endpoint_device_ids(tmp_path, ZDMS16_2) == {1: "0x0101", 2: "0x0101", 3: "0x0104",
+                                                       4: "0x0104"}
     assert endpoint_device_ids(tmp_path, "A;B;SA0u;RB0;DM1;") == {1: "0xffff", 2: "0xffff",
-                                                                  3: "0x0101"}
+                                                                  3: "0x0101", 4: "0x0104"}
 
 
 

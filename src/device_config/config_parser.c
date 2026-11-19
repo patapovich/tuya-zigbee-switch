@@ -698,6 +698,20 @@ void parse_config() {
                                       &endpoints[cover_base + index]);
     }
 
+#ifdef DIMMER_BINDINGS
+    /* Each dimmer's wall switch as an endpoint of its own, after every other one (none moves):
+     * other lights bound to it follow the wall switch (dimmer_cluster.c). */
+    for (int index = 0; index < dimmer_clusters_cnt &&
+         total_endpoints < (int)(sizeof(endpoints) / sizeof(endpoints[0])); index++) {
+        endpoints[total_endpoints].endpoint   = total_endpoints + 1;
+        endpoints[total_endpoints].profile_id = 0x0104;
+        cluster_ptr += endpoints[total_endpoints - 1].cluster_count;
+        endpoints[total_endpoints].clusters = cluster_ptr;
+        dimmer_cluster_add_switch_endpoint(&dimmer_clusters[index], &endpoints[total_endpoints]);
+        total_endpoints++;
+    }
+#endif
+
     hal_zigbee_init(endpoints, total_endpoints);
     while (cursor != (char *)device_config_str.data) {
         cursor--;

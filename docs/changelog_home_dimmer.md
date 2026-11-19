@@ -21,6 +21,12 @@ zdms16-py32 release notes.
   for the module, kept over power cuts; a group's scenes go when the channel leaves the group.
   Zigbee2MQTT lists the Scenes cluster after a re-interview of the device. Other boards: no
   change.
+- Direct control from the wall switch: each channel's wall switch has an endpoint of its own
+  (3 and 4, Dimmer Switch with On/Off and Level Control clients); lights or groups bound to it
+  in Zigbee2MQTT (Bind, source endpoint 3 / 4) follow it without the coordinator. Normal wall
+  switch mode: its on and off go out as On / Off. Detached mode (Open Dimmer): a press toggles,
+  a hold dims (up and down by turns, at DefaultMoveRate or 50 levels/s), a double press sets
+  full brightness. Nothing is sent without a binding; the light entities stay as they were.
 
 ## 1.1.3-ab06b9a0 (2026-11-19), carries Open Dimmer 2.2.3
 

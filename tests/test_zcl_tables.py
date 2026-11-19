@@ -63,9 +63,10 @@ def test_the_zdms16_2_counts_and_headroom(tmp_path):
     board = boards()["MODULE_AVATTO_ZDMS16_2"]
     got = counts(tmp_path, board["config_str"], dp_config_of(board))
     print("ZDMS16-2 ZCL tables:", got)
-    # Scenes (DIMMER_SCENES): +1 cluster and +5 attributes per dimmer endpoint.
-    assert got == {"endpoints": (2, 8), "in_clusters": (17, 32), "out_clusters": (1, 32),
-                   "zcl_clusters": (18, 32), "attributes": (90, 128)}     # 17 + the SDK's OTA
+    # Scenes (DIMMER_SCENES): +1 cluster and +5 attributes per dimmer endpoint; the wall
+    # switches' endpoints 3 / 4 (DIMMER_BINDINGS): On/Off and Level Control clients each.
+    assert got == {"endpoints": (4, 8), "in_clusters": (17, 32), "out_clusters": (5, 32),
+                   "zcl_clusters": (22, 32), "attributes": (90, 128)}     # 21 + the SDK's OTA
 
 
 def test_a_config_over_the_limits_is_said_so(tmp_path):

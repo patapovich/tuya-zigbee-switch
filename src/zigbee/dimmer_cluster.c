@@ -967,6 +967,96 @@ static uint8_t dimmer_own_mcu(const zigbee_dimmer_cluster *cluster) {
 #endif
 }
 
+#ifdef DIMMER_BINDINGS
+/* ---- the wall switch's bindings (its own endpoint, 3 / 4 on the ZDMS16-2) -----------------
+ *
+ * Lights bound to it follow the wall switch. Normal mode (DP 162 / 163 0, also any MCU that does
+ * not have it): the channel's on and off by the wall switch go out as On / Off (never Toggle:
+ * right also when the channel itself is in a bound group); only the changes taken for the wall
+ * switch's (not our commands, their answers, a query's answer, the first report after a boot,
+ * the countdown's end), so two units bound to each other cannot loop. Detached mode (Open
+ * Dimmer): its gestures drive them: single (and the fast press) Toggle; hold MoveWithOnOff up
+ * and Move down by turns (the first up, a single starts again at up); its release
+ * StopWithOnOff; double MoveToLevelWithOnOff(254, 0.4 s), full; triple nothing (an action in
+ * Zigbee2MQTT only). Off mode: nothing. Without a binding nothing goes out. */
+#define DIMMER_GESTURE_SINGLE     1
+#define DIMMER_GESTURE_DOUBLE     2
+#define DIMMER_GESTURE_HOLD       4
+#define DIMMER_GESTURE_RELEASE    5
+#define DIMMER_GESTURE_PRESS      6
+#define DIMMER_INPUT_NORMAL       0
+#define DIMMER_INPUT_DETACHED     1
+#define DIMMER_BIND_RATE          50 /* levels/s of a hold without a DefaultMoveRate */
+
+static void dimmer_add_cluster(hal_zigbee_endpoint *endpoint, uint16_t cluster_id,
+                               uint8_t attribute_count, hal_zigbee_attribute *attributes,
+                               hal_zigbee_cmd_callback_t cmd_callback);
+
+static void dimmer_bind_send(const zigbee_dimmer_cluster *cluster, uint16_t cluster_id,
+                             uint8_t command_id, const uint8_t *payload, uint8_t len) {
+    hal_zigbee_cmd cmd = {
+        .endpoint            = cluster->bind_endpoint,
+        .profile_id          = ZCL_HA_PROFILE,
+        .cluster_id          = cluster_id,
+        .command_id          = command_id,
+        .cluster_specific    = 1,
+        .direction           = HAL_ZIGBEE_DIR_CLIENT_TO_SERVER,
+        .disable_default_rsp = 1,
+        .payload             = payload,
+        .payload_len         = len,
+    };
+
+    if (cluster->bind_endpoint)
+        hal_zigbee_send_cmd_to_bindings(&cmd);
+}
+
+static void dimmer_bind_gesture(zigbee_dimmer_cluster *cluster, uint8_t gesture) {
+    uint8_t p[3];
+    uint8_t rate = cluster->default_move_rate;
+
+    if (cluster->input_mode_mcu != DIMMER_INPUT_DETACHED)
+        return;
+
+    switch (gesture) {
+    case DIMMER_GESTURE_SINGLE:
+    case DIMMER_GESTURE_PRESS:
+        cluster->bind_hold_down = 0;
+        dimmer_bind_send(cluster, ZCL_CLUSTER_ON_OFF, ZCL_CMD_ONOFF_TOGGLE, NULL, 0);
+        break;
+    case DIMMER_GESTURE_DOUBLE:
+        p[0] = ZCL_LEVEL_MAX;
+        p[1] = 4; /* 0.4 s */
+        p[2] = 0;
+        dimmer_bind_send(cluster, ZCL_CLUSTER_LEVEL_CONTROL, ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF,
+                         p, 3);
+        break;
+    case DIMMER_GESTURE_HOLD:
+        p[0] = cluster->bind_hold_down ? ZCL_LEVEL_MOVE_DOWN : ZCL_LEVEL_MOVE_UP;
+        p[1] = rate && rate != 0xFF ? rate : DIMMER_BIND_RATE;
+        dimmer_bind_send(cluster, ZCL_CLUSTER_LEVEL_CONTROL,
+                         cluster->bind_hold_down ? ZCL_CMD_LEVEL_MOVE : ZCL_CMD_LEVEL_MOVE_WITH_ON_OFF,
+                         p, 2);
+        cluster->bind_hold_down ^= 1;
+        break;
+    case DIMMER_GESTURE_RELEASE:
+        dimmer_bind_send(cluster, ZCL_CLUSTER_LEVEL_CONTROL, ZCL_CMD_LEVEL_STOP_WITH_ON_OFF, NULL, 0);
+        break;
+    }
+}
+
+void dimmer_cluster_add_switch_endpoint(zigbee_dimmer_cluster *cluster,
+                                        hal_zigbee_endpoint *endpoint) {
+    endpoint->device_id     = ZCL_HA_DEVICE_ID_DIMMER_SWITCH;
+    cluster->bind_endpoint  = endpoint->endpoint;
+    cluster->bind_hold_down = 0;
+    dimmer_add_cluster(endpoint, ZCL_CLUSTER_ON_OFF, 0, NULL, NULL);
+    dimmer_add_cluster(endpoint, ZCL_CLUSTER_LEVEL_CONTROL, 0, NULL, NULL);
+    endpoint->clusters[0].is_server = 0; /* clients: commands out */
+    endpoint->clusters[1].is_server = 0;
+}
+
+#endif
+
 static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
                                         const uint8_t *value, uint16_t value_len) {
     if (value_len < 1)
@@ -1001,6 +1091,16 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
                                   !tuya_secondary_mcu_report_is_passive() &&
                                   !tuya_secondary_mcu_report_acks_write();
             uint8_t pending = cluster->pending_level;
+#ifdef DIMMER_BINDINGS
+            /* The same for an off, not at the end of a countdown (Open Dimmer's own off). */
+            uint8_t switched_off = !value[0] && cluster->state_known && cluster->on &&
+                                   !(cluster->countdown && dimmer_countdown_left(cluster) == 0) &&
+                                   !tuya_secondary_mcu_report_is_passive() &&
+                                   !tuya_secondary_mcu_report_acks_write();
+            if ((switched_on || switched_off) && cluster->input_mode_mcu == DIMMER_INPUT_NORMAL)
+                dimmer_bind_send(cluster, ZCL_CLUSTER_ON_OFF,
+                                 switched_on ? ZCL_CMD_ONOFF_ON : ZCL_CMD_ONOFF_OFF, NULL, 0);
+#endif
 
             if (!value[0])
                 dimmer_stop_move(cluster);
@@ -1069,6 +1169,9 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
             hal_zigbee_notify_attribute_changed(cluster->endpoint,
                                                 ZCL_CLUSTER_MULTISTATE_INPUT_BASIC,
                                                 ZCL_ATTR_MULTISTATE_INPUT_PRESENT_VALUE);
+#ifdef DIMMER_BINDINGS
+            dimmer_bind_gesture(cluster, value[0]);
+#endif
         } else if (dp_type == TUYA_DP_TYPE_VALUE && dimmer_own_mcu(cluster) &&
                    cluster->dimmer_idx < OPEN_DIMMER_CHANNELS) {
             dimmer_on_od_value(cluster, dpid, number);
