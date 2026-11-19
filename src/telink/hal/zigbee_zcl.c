@@ -59,6 +59,7 @@ static cluster_registerFunc_t get_register_func_by_cluster_id(u16 cluster_id) {
     if (cluster_id == ZCL_CLUSTER_GEN_ON_OFF) {
         return zcl_onOff_register;
     }
+
     /* Also on dimmer_only boards: their dimmer endpoints report Open Dimmer's wall switch
      * gestures there (an unregistered cluster has no attributes for the stack: no reports). */
     if (cluster_id == ZCL_CLUSTER_GEN_MULTISTATE_INPUT_BASIC) {
@@ -246,12 +247,22 @@ void telink_zigbee_hal_zcl_init(hal_zigbee_endpoint *endpoints,
         zcl_specClusterInfo_t *endpoint_first_cluster_ptr = cluster_info_ptr;
         for (hal_zigbee_cluster *cluster = endpoint->clusters;
              cluster < endpoint->clusters + endpoint->cluster_count; cluster++) {
-            /* A full table: the cluster is not registered (counted), never written past. */
-            uint8_t ota = cluster->cluster_id == ZCL_CLUSTER_OTA;
+            /* A full table: the cluster is not registered (counted), never written past. One
+             * with a register function takes an entry of the SDK's ZCL cluster list, unless
+             * this endpoint has registered its id already (client or server alike: the SDK
+             * refuses the duplicate, zcl.c:188). */
+            uint8_t ota         = cluster->cluster_id == ZCL_CLUSTER_OTA;
+            uint8_t takes_entry = !ota && get_register_func_by_cluster_id(cluster->cluster_id);
+            for (zcl_specClusterInfo_t *p = endpoint_first_cluster_ptr;
+                 takes_entry && p < cluster_info_ptr; p++) {
+                if (p->clusterId == cluster->cluster_id && p->clusterRegisterFunc) {
+                    takes_entry = 0;
+                }
+            }
             if ((cluster->is_server ? in_cluster_ptr >= in_clusters + MAX_IN_CLUSTERS
                                     : out_cluster_ptr >= out_clusters + MAX_OUT_CLUSTERS) ||
                 (!ota && (cluster_info_ptr >= cluster_infos + HAL_ZIGBEE_MAX_CLUSTER_INFOS ||
-                          zcl_room == 0 ||
+                          (takes_entry && zcl_room == 0) ||
                           attr_table_ptr + cluster->attribute_count > attr_tables + MAX_ATTRS))) {
                 hal_zigbee_tables_dropped++;
                 printf("ZCL tables full: cluster 0x%04x of endpoint %d not registered\r\n",
@@ -270,7 +281,9 @@ void telink_zigbee_hal_zcl_init(hal_zigbee_endpoint *endpoints,
             if (ota) {
                 continue;
             }
-            zcl_room--;
+            if (takes_entry) {
+                zcl_room--;
+            }
             cluster_info_ptr->clusterId           = cluster->cluster_id;
             cluster_info_ptr->manuCode            = 0;
             cluster_info_ptr->attrTbl             = attr_table_ptr;

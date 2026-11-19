@@ -65,7 +65,11 @@ void hal_zigbee_init(hal_zigbee_endpoint *ep_list, uint8_t ep_count) {
                 in++;
             else
                 out++;
-            if (c->cluster_id != 0x0019) { /* OTA: the SDK's own */
+
+            /* OTA: the SDK's own. Every other cluster is counted for the SDK's ZCL list: an
+             * upper bound (the Telink HAL counts only those with a register function, once
+             * per endpoint and id; tests/test_zcl_tables.py checks the register functions). */
+            if (c->cluster_id != 0x0019) {
                 infos++;
                 attrs += c->attribute_count;
             }

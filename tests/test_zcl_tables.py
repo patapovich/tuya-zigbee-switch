@@ -64,7 +64,7 @@ def test_the_zdms16_2_counts_and_headroom(tmp_path):
     got = counts(tmp_path, board["config_str"], dp_config_of(board))
     print("ZDMS16-2 ZCL tables:", got)
     assert got == {"endpoints": (2, 8), "in_clusters": (15, 32), "out_clusters": (1, 32),
-                   "zcl_clusters": (17, 32), "attributes": (78, 128)}
+                   "zcl_clusters": (16, 32), "attributes": (78, 128)}     # 15 + the SDK's OTA
 
 
 def test_a_config_over_the_limits_is_said_so(tmp_path):
