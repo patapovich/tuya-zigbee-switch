@@ -26,6 +26,11 @@ zdms16-py32 release notes.
   once. The OTA image is 6.2 KB smaller (room for the SWD master and Scenes). The OTA files are
   now linked with the board's own flags (they were linked again without `DIMMER_ONLY`), and the
   OTA step runs the symbol checks on that link.
+- The OTA server's side is left out of the ZDMS16-2 build (the module only ever receives
+  images): the SDK's `ota.c` and `zcl_ota.c` are compiled through
+  `src/telink/patch_sdk/ota_client_only.c` and `zcl_ota_client_only.c`, with the SDK's flags.
+  A client-to-server OTA command (which only a server receives) is answered as unsupported.
+  The OTA image is 2.3 KB smaller.
 
 ## 1.1.3-ab06b9a0 (2026-11-19), carries Open Dimmer 2.2.3
 

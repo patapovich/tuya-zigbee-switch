@@ -151,6 +151,14 @@ def test_an_own_mcu_gets_what_the_full_build_sends(dimmer_only, monkeypatch):
 # ---- the ELF check of every Telink board build (src/telink/Makefile
 # check-dimmer-only), on nm listings ----------------------------------------
 
+# The OTA client, in every board (check_dimmer_only_symbols.py OTA_CLIENT_KEPT).
+OTA_CLIENT_NM = """\
+00011a30 T zcl_otaCb
+00012b10 T zcl_ota_register
+00012c40 T zcl_ota_queryNextImageReqSend
+00012d00 T zcl_ota_imageBlockReqSend
+00012de0 T zcl_ota_upgradeEndReqSend
+"""
 FULL_NM = """\
 000081b8 T switch_cluster_add_to_endpoint
 00007ab0 T relay_cluster_add_to_endpoint
@@ -158,8 +166,8 @@ FULL_NM = """\
 00008818 T cover_switch_cluster_add_to_endpoint
 00009098 T cover_cluster_add_to_endpoint
 00009224 T battery_cluster_add_to_endpoint
-"""
-DIMMER_ONLY_NM = "00006c70 T dimmer_cluster_add_to_endpoint\n"
+""" + OTA_CLIENT_NM
+DIMMER_ONLY_NM = "00006c70 T dimmer_cluster_add_to_endpoint\n" + OTA_CLIENT_NM
 
 
 def check(tmp_path: Path, listing: str, dimmer_only: bool) -> subprocess.CompletedProcess:
@@ -205,3 +213,28 @@ def test_the_elf_check_refuses_green_power_in_a_dimmer_only_build(tmp_path, line
 def test_the_elf_check_takes_green_power_or_none_in_other_builds(tmp_path):
     assert check(tmp_path, FULL_NM + GP_NM, False).returncode == 0
     assert check(tmp_path, FULL_NM, False).returncode == 0  # an end device: no GP in its stack
+
+
+# The OTA server's side left out of a dimmer_only build (src/telink/patch_sdk/ota_client_only.c,
+# zcl_ota_client_only.c); kept or not in the others.
+OTA_SERVER_NM = """\
+00012e80 T zcl_ota_imageBlockRspSend
+00012f40 T zcl_ota_queryNextImageRspSend
+00013000 T zcl_ota_upgradeEndRspSend
+"""
+
+
+@pytest.mark.parametrize("line", OTA_SERVER_NM.splitlines())
+def test_the_elf_check_refuses_the_ota_server_in_a_dimmer_only_build(tmp_path, line):
+    assert check(tmp_path, DIMMER_ONLY_NM + line + "\n", True).returncode == 1
+
+
+def test_the_elf_check_takes_the_ota_server_or_none_in_other_builds(tmp_path):
+    assert check(tmp_path, FULL_NM + OTA_SERVER_NM, False).returncode == 0
+    assert check(tmp_path, FULL_NM, False).returncode == 0
+
+
+@pytest.mark.parametrize("line", OTA_CLIENT_NM.splitlines())
+def test_the_elf_check_wants_the_ota_client_in_every_build(tmp_path, line):
+    for listing, dimmer_only in ((DIMMER_ONLY_NM, True), (FULL_NM, False)):
+        assert check(tmp_path, listing.replace(line + "\n", ""), dimmer_only).returncode == 1

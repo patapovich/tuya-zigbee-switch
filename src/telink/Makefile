@@ -150,7 +150,7 @@ TELINK_SOURCES := \
 	patch_sdk/drv_nv.c
 
 ifneq ($(DIMMER_ONLY),)
-TELINK_SOURCES += patch_sdk/gp_stub.c
+TELINK_SOURCES += patch_sdk/gp_stub.c patch_sdk/ota_client_only.c patch_sdk/zcl_ota_client_only.c
 endif
 
 # The SWD master of the secondary MCU (src/zigbee/mcu_flasher.c): only boards
@@ -246,6 +246,11 @@ $(BIN_FILE): $(ELF_FILE)
 	@mkdir -p $(dir $@)
 	@$(OBJCOPY) -O binary $< $@
 	@$(SIZE) $<
+
+# The SDK files a dimmer_only board compiles through patch_sdk/ (ota_client_only.c,
+# zcl_ota_client_only.c) get the SDK's flags (sdk.mk: -fpack-struct), so their
+# structures have the layout the SDK's other objects and libraries expect.
+$(BUILD_DIR)/telink/patch_sdk/ota_client_only.o $(BUILD_DIR)/telink/patch_sdk/zcl_ota_client_only.o: GCC_FLAGS += -fpack-struct
 
 # Compile Telink-specific C files
 $(BUILD_DIR)/telink/%.o: %.c
