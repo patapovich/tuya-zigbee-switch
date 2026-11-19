@@ -313,3 +313,74 @@ console.log(JSON.stringify({
     assert out["press"] == [{"action": "press_dimmer_right"}]
     assert out["hold"] == [{"action": "hold_dimmer_left"}]
     assert out["press21"] == []
+
+
+# What goes out for a message (light()'s converters as zhc has them: converter_harness.js),
+# through the converter the definition takes first for the key, as Zigbee2MQTT picks it.
+SEND = ZDMS + """
+const tzFor = (key, ep) => def.extend.flatMap((x) => x.toZigbee ?? [])
+    .find((t) => t.key?.includes(key) && (!t.endpoints || t.endpoints.includes(ep)));
+const send = async (version, message, options = {}, ep = "dimmer_right") => {
+    const dev = h.device(); dev.getEndpoint(1).clusters.genBasic.attributes[0xff12] = version;
+    const key = Object.keys(message).find((k) => k !== "transition");
+    h.log.length = 0;
+    await tzFor(key, ep).convertSet(dev.getEndpoint(2), key, message[key], {device: dev, message, options,
+                                                                         endpoint_name: ep, mapped: model});
+    return h.log.filter((l) => l[0] === "command").map((l) => [l[2], l[3], l[4].transtime ?? null]);
+};
+"""
+
+
+def test_a_level_change_without_a_transition_goes_out_as_none_for_open_dimmer():
+    out = json.loads(run_node(SEND + """
+(async () => {
+    const r = {};
+    for (const v of ["2.2.0 own", "2.1.14 own", "1.0.7"]) {
+        r[v] = {
+            brightness: await send(v, {brightness: 100}),
+            on100: await send(v, {state: "ON", brightness: 100}),
+            step: await send(v, {brightness_step: 20}),
+            stepOnOff: await send(v, {brightness_step_onoff: -20}),
+            on: await send(v, {state: "ON"}), off: await send(v, {state: "OFF"}),
+            given0: await send(v, {brightness: 100, transition: 0}),
+            given12: await send(v, {brightness: 100, transition: 1.2}),
+            option12: await send(v, {brightness: 100}, {transition: 1.2}),
+            option12Off: await send(v, {state: "OFF"}, {transition: 1.2}),
+            option0On: await send(v, {state: "ON"}, {transition: 0}),
+            emptyOption: await send(v, {brightness: 100}, {transition: ""}),
+            move: await send(v, {brightness_move: 40}),
+        };
+    }
+    console.log(JSON.stringify(r));
+})();
+"""))
+    mtl = "moveToLevelWithOnOff"
+    for v in ("2.2.0 own", "2.1.14 own"):                    # Open Dimmer
+        r = out[v]
+        assert r["brightness"] == r["on100"] == [["genLevelCtrl", mtl, 0xFFFF]], v
+        assert r["step"] == [["genLevelCtrl", "step", 0xFFFF]]
+        assert r["stepOnOff"] == [["genLevelCtrl", "stepWithOnOff", 0xFFFF]]
+        assert r["emptyOption"] == [["genLevelCtrl", mtl, 0xFFFF]]
+        assert r["on"] == [["genOnOff", "on", None]] and r["off"] == [["genOnOff", "off", None]]
+        assert r["given0"] == [["genLevelCtrl", mtl, 0]]          # explicit 0: at once
+        assert r["given12"] == r["option12"] == [["genLevelCtrl", mtl, 12]]
+        assert r["option12Off"] == [["genLevelCtrl", mtl, 12]]   # on/off with a time: a level move
+        assert r["option0On"] == [["genLevelCtrl", mtl, 0]]
+        assert r["move"] == [["genLevelCtrl", "move", None]]    # a rate: unchanged
+    s = out["1.0.7"]                                          # stock: zhc's frames as they are
+    assert s["brightness"] == s["on100"] == s["emptyOption"] == [["genLevelCtrl", mtl, 0]]
+    assert s["step"] == [["genLevelCtrl", "step", 0]]
+    assert s["given12"] == s["option12"] == [["genLevelCtrl", mtl, 12]]
+    assert s["on"] == [["genOnOff", "on", None]]
+
+
+def test_the_transition_option_says_what_it_does_here():
+    out = json.loads(run_node(ZDMS + """
+console.log(JSON.stringify(def.extend.flatMap((x) => x.options ?? []).filter((o) => o.name === "transition")
+    .map((o) => ({type: o.type, access: o.access, min: o.value_min, step: o.value_step, description: o.description}))));
+"""))
+    assert len(out) == 1
+    o = out[0]
+    assert (o["type"], o["access"], o["min"], o["step"]) == ("numeric", 2, 0, 0.1)
+    for words in ("Empty: the module's fade settings", "0: at once", "factory MCU", "wall switch"):
+        assert words in o["description"], words

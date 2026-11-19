@@ -1150,6 +1150,45 @@ const romasku = {
             }],
         };
     },
+    // Transitions of the dimmer channels. zigbee-herdsman-converters sends a level change
+    // without a transition (neither the message's nor the device option transition) with time
+    // 0, which Open Dimmer takes for "at once": for an Open Dimmer those go out with 0xFFFF
+    // ("none": the module's fade settings) instead; a given time, 0 included, as zhc computes
+    // it. A stock MCU's module: zhc's frames as they are (it does not use the time anyway).
+    // light()'s own level converters, wrapped, ahead of the channels' light() so they are
+    // the ones taken (Zigbee2MQTT takes the first that matches); Move: unchanged (a rate).
+    // The definition's transition option says what it means here (the converters' own one
+    // is left out: the first option of a name is kept).
+    dimmerTransition: (dimmerNames) => {
+        const inner = light({endpointNames: dimmerNames, effect: false, powerOnBehavior: false});
+        const keys = ["state", "brightness", "brightness_percent", "brightness_step", "brightness_step_onoff"];
+        const levelCommands = ["moveToLevel", "moveToLevelWithOnOff", "step", "stepWithOnOff"];
+        const unset = (meta) => meta.message?.transition == null &&
+            (meta.options?.transition == null || meta.options.transition === "");
+        const noTime = (entity) => new Proxy(entity, {
+            get: (target, prop) => {
+                if (prop === "command") {
+                    return (cluster, command, payload, ...rest) => target.command(cluster, command,
+                        cluster === "genLevelCtrl" && levelCommands.includes(command) && payload?.transtime === 0
+                            ? {...payload, transtime: 0xffff} : payload, ...rest);
+                }
+                const v = Reflect.get(target, prop, target);
+                return typeof v === "function" && prop !== "constructor" ? v.bind(target) : v;
+            },
+        });
+        return {
+            isModernExtend: true,
+            options: [
+                e.numeric("transition", ea.SET).withValueMin(0).withValueStep(0.1)
+                    .withDescription("Transition time in seconds (e.g. 1.2) of on/off and brightness changes from Zigbee2MQTT / Home Assistant; a transition in the message wins. Empty: the module's fade settings (fade_on_time / fade_off_time, brightness_transition). 0: at once. The wall switch always takes the module's fade. Open Dimmer 2.1.14 and later; with the factory MCU the time is not used (the MCU fades by itself)."),
+            ],
+            toZigbee: inner.toZigbee.filter((c) => c.key?.some((k) => keys.includes(k))).map((c) => ({
+                ...c,
+                convertSet: async (entity, key, value, meta) => (ownMcuVersionNumbers(meta.device) && unset(meta)
+                    ? c.convertSet(noTime(entity), key, value, meta) : c.convertSet(entity, key, value, meta)),
+            })),
+        };
+    },
     dimmerPowerOnBehavior: (name, endpointName) =>
         enumLookup({
             name,
@@ -1317,6 +1356,9 @@ const definitions = [
             romasku.coverSwitchLongPressDuration("{{coverSwitch}}_long_press_duration", "{{coverSwitch}}"),
             {% endfor %}
             {# Dimmers, per channel: the light, its range, curve, power-on, switch, fade and hold. #}
+            {% if device.dimmerNames and device.secondary_mcu_image %}
+            romasku.dimmerTransition({{device.dimmerNames | tojson}}),
+            {% endif %}
             {% for dimmerName in device.dimmerNames %}
             {% set dimmer_index = loop.index %}
             light({ endpointNames: ["{{dimmerName}}"], effect: false, powerOnBehavior: false }),

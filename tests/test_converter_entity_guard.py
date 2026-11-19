@@ -20,6 +20,7 @@ ZDMS16_2_EXTENDS = [
     "deviceEndpoints(dimmer_left=1, dimmer_right=2)",
     "romasku.ownMcuOption()",
     "romasku.mcuVersionMeta()",
+    "romasku.dimmerTransition(dimmer_left, dimmer_right)",
     *[
         entry
         for dimmer in ("dimmer_left", "dimmer_right")

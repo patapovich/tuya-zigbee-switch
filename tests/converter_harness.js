@@ -36,6 +36,56 @@ const fakeConvert = (fn, args) => {
     };
 };
 
+/* light()'s toZigbee as zigbee-herdsman-converters has them (toZigbee.ts light_onoff_brightness,
+ * light_brightness_step, light_brightness_move; utils.getTransition): what they send for a
+ * message, in short. The time: the message's transition, else the device option transition, in
+ * 1/10 s; none: 0 and not "specified". State on / off without brightness: genOnOff, unless a time
+ * is specified (then moveToLevelWithOnOff). */
+const getTransition = (meta) => {
+    if (meta.message?.transition != null) return {time: Number(meta.message.transition) * 10, specified: true};
+    if (meta.options?.transition != null && meta.options.transition !== "") {
+        return {time: Number(meta.options.transition) * 10, specified: true};
+    }
+    return {time: 0, specified: false};
+};
+const lightToZigbee = (args) => [
+    {
+        key: ["state", "brightness", "brightness_percent", "on_time", "off_wait_time"],
+        ...(args?.endpointNames ? {endpoints: args.endpointNames} : {}),
+        convertSet: async (entity, key, value, meta) => {
+            const t = getTransition(meta);
+            const state = typeof meta.message.state === "string" ? meta.message.state.toLowerCase() : undefined;
+            const brightness = meta.message.brightness;
+            if (brightness === undefined && state !== undefined) {
+                if (t.specified && state !== "toggle") {
+                    await entity.command("genLevelCtrl", "moveToLevelWithOnOff",
+                                         {level: state === "off" ? 0 : 254, transtime: t.time});
+                } else {
+                    await entity.command("genOnOff", state, {});
+                }
+                return {state: {state: state.toUpperCase()}};
+            }
+            await entity.command("genLevelCtrl", "moveToLevelWithOnOff", {level: brightness, transtime: t.time});
+            return {state: {brightness}};
+        },
+    },
+    {
+        key: ["brightness_step", "brightness_step_onoff"],
+        convertSet: async (entity, key, value, meta) => {
+            await entity.command("genLevelCtrl", key.endsWith("_onoff") ? "stepWithOnOff" : "step",
+                                 {stepmode: value > 0 ? 0 : 1, stepsize: Math.abs(value),
+                                  transtime: getTransition(meta).time});
+        },
+    },
+    {
+        key: ["brightness_move", "brightness_move_onoff"],
+        convertSet: async (entity, key, value, meta) => {
+            await entity.command("genLevelCtrl", key.endsWith("onoff") ? "moveWithOnOff" : "move",
+                                 {movemode: value > 0 ? 0 : 1, rate: Math.abs(value)});
+        },
+    },
+];
+
 const modernExtend = {};
 for (const fn of ["numeric", "enumLookup", "deviceEndpoints", "onOff", "light", "text", "binary", "windowCovering"]) {
     modernExtend[fn] = (args) => ({
@@ -43,7 +93,7 @@ for (const fn of ["numeric", "enumLookup", "deviceEndpoints", "onOff", "light", 
         fake: fn,
         args,
         fromZigbee: [{cluster: args?.cluster, type: ["attributeReport", "readResponse"], convert: fakeConvert(fn, args)}],
-        toZigbee: [{key: [args?.name]}],
+        toZigbee: fn === "light" ? lightToZigbee(args) : [{key: [args?.name]}],
         exposes: [],
     });
 }
