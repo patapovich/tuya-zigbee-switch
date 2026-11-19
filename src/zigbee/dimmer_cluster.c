@@ -785,7 +785,9 @@ static void dimmer_on_od_value(zigbee_dimmer_cluster *cluster, uint8_t dpid, uin
     uint16_t v = (uint16_t)(number > 0xFFFF ? 0xFFFF : number);
 
     if (dpid == dimmer_countdown_dp(cluster)) {
-        dimmer_countdown_set(cluster, number);   /* 0 also when it ran out */
+        /* 0 also when it ran out; a bogus huge one is the MCU's longest. */
+        dimmer_countdown_set(cluster,
+                             number > DIMMER_COUNTDOWN_MAX ? DIMMER_COUNTDOWN_MAX : number);
         return;
     }
 
@@ -1268,7 +1270,11 @@ void dimmer_cluster_mcu_restarted(void) {
         }
 #ifdef SECONDARY_MCU_IMAGE
         hal_tasks_unschedule(&cluster->identify_task);
-        cluster->identify_time = 0;
+        if (cluster->identify_time) {
+            cluster->identify_time = 0;
+            hal_zigbee_notify_attribute_changed(cluster->endpoint, ZCL_CLUSTER_IDENTIFY,
+                                                ZCL_ATTR_IDENTIFY_TIME);
+        }
 #endif
     }
 }

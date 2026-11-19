@@ -187,6 +187,20 @@ def test_a_countdown_the_mcu_reports_ended_is_gone():
         proc.stop()
 
 
+def test_a_bogus_countdown_from_the_mcu_is_its_longest():
+    """A report of DP 6 above 86400 s (never sent by Open Dimmer) is taken as 86400 s: no
+    wrap of the module's own end time, so the longer time still wins."""
+    proc, device, mcu = own()
+    try:
+        cmd(device, mcu, 1, ON_OFF, CMD_ON)
+        mcu.send([mcu._report([value_dp(DP_COUNTDOWN[1], 0xFFFFFFFF)], passive=False)])
+        assert attr(device, 1, ON_OFF, ATTR_COUNTDOWN) == 86400
+        assert cmd(device, mcu, 1, ON_OFF, CMD_ON_WITH_TIMED_OFF, timed_off(0, 1000)) == \
+            [(DP_ON[1], 1)]                                        # 100 s < the day left
+    finally:
+        proc.stop()
+
+
 def test_an_mcu_restart_ends_the_countdown_and_the_identify():
     proc, device, mcu = own()
     try:
@@ -199,8 +213,10 @@ def test_an_mcu_restart_ends_the_countdown_and_the_identify():
         mcu.serve(1000)
         assert attr(device, 1, ON_OFF, ATTR_COUNTDOWN) == 0
         assert attr(device, 2, IDENTIFY, ATTR_IDENTIFY_TIME) == 0
-        assert any(e.kind == "zcl_attr_change" and int(e.payload["attr"], 16) == ATTR_COUNTDOWN
-                   and int(e.payload["ep"]) == 1 for e in device._events)
+        changed = {(int(e.payload["ep"]), int(e.payload["cluster"], 16), int(e.payload["attr"], 16))
+                   for e in device._events if e.kind == "zcl_attr_change"}
+        assert (1, ON_OFF, ATTR_COUNTDOWN) in changed                  # both reported
+        assert (2, IDENTIFY, ATTR_IDENTIFY_TIME) in changed
     finally:
         proc.stop()
 
