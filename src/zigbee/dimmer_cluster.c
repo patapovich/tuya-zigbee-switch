@@ -143,6 +143,12 @@ static void dimmer_set_on(zigbee_dimmer_cluster *cluster, uint8_t on) {
 
     cluster->on = on;
     dimmer_notify_onoff(cluster);
+    /* Open Dimmer: any off (ours, the wall switch, the countdown's own end) ends it. */
+    if (!on && cluster->countdown) {
+        cluster->countdown = 0;
+        hal_zigbee_notify_attribute_changed(cluster->endpoint, ZCL_CLUSTER_ON_OFF,
+                                            ZCL_ATTR_ONOFF_COUNTDOWN);
+    }
 }
 
 /* ---- MCU writes ---------------------------------------------------------- */
@@ -201,6 +207,15 @@ static void dimmer_stop_move(zigbee_dimmer_cluster *cluster) {
 
 static uint8_t dimmer_own_mcu(const zigbee_dimmer_cluster *cluster);
 
+/* Open Dimmer of at least that build (OPEN_DIMMER_*_BUILD) on this dimmer: one of its two
+ * channels (a third dimmer of a config has no DPs of its own there). */
+#define OPEN_DIMMER_CHANNELS    2
+
+static uint8_t dimmer_od_from(const zigbee_dimmer_cluster *cluster, uint16_t build) {
+    return dimmer_own_mcu(cluster) && cluster->dimmer_idx < OPEN_DIMMER_CHANNELS &&
+           tuya_mcu_ota_own_build() >= build;
+}
+
 /* ---- transition time -------------------------------------------------------
  *
  * A ZCL transition time (1/10 s, little endian at tt) for the change written next: Open Dimmer
@@ -215,7 +230,7 @@ static uint8_t dimmer_own_mcu(const zigbee_dimmer_cluster *cluster);
 #define DIMMER_TRANSITION_VALID_MS    1500 /* the MCU's window is 1 s from its receipt */
 
 static void dimmer_send_transition(zigbee_dimmer_cluster *cluster, const uint8_t *tt) {
-    if (!dimmer_own_mcu(cluster) || tuya_mcu_ota_own_build() < OPEN_DIMMER_TRANSITION_BUILD)
+    if (!dimmer_od_from(cluster, OPEN_DIMMER_TRANSITION_BUILD))
         return;
 
     uint16_t t   = (uint16_t)(tt[0] | (tt[1] << 8));
@@ -231,6 +246,89 @@ static void dimmer_send_transition(zigbee_dimmer_cluster *cluster, const uint8_t
     dimmer_write_tuya_value(cluster->own_transition_dpid, ms > 0xFFFFu ? 0xFFFFu : ms);
     cluster->transition_at = t ? (now | 1u) : 0;
 }
+
+/* ---- Open Dimmer settings (from OPEN_DIMMER_FEATURES_BUILD) -----------------
+ *
+ * Its DPs per channel (zdms16-py32 src/dimmer.h): DP 6 / 12 the countdown, and from 162 on,
+ * 162 + 2 * k + channel: k 0 wall switch mode, 1 level after a power cut, 2 identify, 3 start
+ * boost; all values. Written only to such an MCU: to any other one a write of their
+ * attributes sends nothing and sets them back to "none". */
+#define DIMMER_OD_INPUT          0
+#define DIMMER_OD_POWER_LEVEL    1
+#define DIMMER_OD_IDENTIFY       2
+#define DIMMER_OD_BOOST          3
+#define DIMMER_COUNTDOWN_MAX     86400u /* s */
+#define DIMMER_INPUT_MODE_MAX    2      /* 0 normal, 1 detached, 2 off */
+#define DIMMER_IDENTIFY_MAX      255    /* s */
+#define DIMMER_BOOST_MAX         750    /* ms */
+
+#ifdef SECONDARY_MCU_IMAGE
+static uint8_t dimmer_od_dp(const zigbee_dimmer_cluster *cluster, uint8_t k) {
+    return (uint8_t)(cluster->own_transition_dpid + 2 + 2 * k);
+}
+
+#endif
+
+static uint8_t dimmer_countdown_dp(const zigbee_dimmer_cluster *cluster) {
+    return (uint8_t)(6 * (cluster->dimmer_idx + 1));
+}
+
+static uint8_t dimmer_od_features(const zigbee_dimmer_cluster *cluster) {
+    return dimmer_od_from(cluster, OPEN_DIMMER_FEATURES_BUILD);
+}
+
+/* StartUpCurrentLevel from the MCU's value: 0 the last level (0xFF, previous); one below the
+ * channel's minimum (by more than its steps of 4) is what a "minimum" wrote; else the level. */
+static uint8_t dimmer_startup_level(const zigbee_dimmer_cluster *cluster) {
+    uint16_t v = cluster->startup_value;
+
+    if (v == 0)
+        return ZCL_START_UP_CURRENT_LEVEL_PREVIOUS;
+
+    if ((uint32_t)v + 4 <= cluster->mcu_min)
+        return ZCL_START_UP_CURRENT_LEVEL_MINIMUM;
+
+    return dimmer_value_to_level(cluster, v);
+}
+
+static void dimmer_update_startup_level(zigbee_dimmer_cluster *cluster) {
+    uint8_t level = dimmer_startup_level(cluster);
+
+    if (level != cluster->startup_level) {
+        cluster->startup_level = level;
+        hal_zigbee_notify_attribute_changed(cluster->endpoint, ZCL_CLUSTER_LEVEL_CONTROL,
+                                            ZCL_ATTR_LEVEL_START_UP_CURRENT_LEVEL);
+    }
+}
+
+#ifdef SECONDARY_MCU_IMAGE
+/* IdentifyTime counts down by the second; the MCU blinks as long by itself. */
+static void dimmer_identify_tick(void *arg) {
+    zigbee_dimmer_cluster *cluster = (zigbee_dimmer_cluster *)arg;
+
+    if (cluster->identify_time == 0)
+        return;
+
+    cluster->identify_time--;
+    if (cluster->identify_time)
+        hal_tasks_schedule(&cluster->identify_task, 1000);
+}
+
+/* ZCL Identify or an IdentifyTime write: the channel blinks that long (at most 255 s, the
+ * MCU's limit), 0 stops it. Nothing to any other MCU. */
+static void dimmer_identify(zigbee_dimmer_cluster *cluster, uint16_t s) {
+    hal_tasks_unschedule(&cluster->identify_task);
+    if (!dimmer_od_features(cluster)) {
+        cluster->identify_time = 0;
+        return;
+    }
+    cluster->identify_time = s > DIMMER_IDENTIFY_MAX ? DIMMER_IDENTIFY_MAX : s;
+    dimmer_write_tuya_value(dimmer_od_dp(cluster, DIMMER_OD_IDENTIFY), cluster->identify_time);
+    if (cluster->identify_time)
+        hal_tasks_schedule(&cluster->identify_task, 1000);
+}
+
+#endif
 
 /* On before level: the MCU acknowledges a level written while the channel is
  * off but does not keep it, and "on" restores the level it remembers.
@@ -354,8 +452,19 @@ static hal_zigbee_cmd_result_t dimmer_cluster_callback(zigbee_dimmer_cluster *cl
         return HAL_ZIGBEE_CMD_SKIPPED;
 
     static const uint8_t no_time[2] = { 0, 0 };
+    const uint8_t *      payload    = (const uint8_t *)cmd_payload;
 
     switch (command_id) {
+    case ZCL_CMD_ON_WITH_TIMED_OFF:
+        /* Payload: on/off control (bit 0: accept only when on), on time (u16, 1/10 s), off
+         * wait time (u16, not used: nothing guards the off). */
+        if (payload == NULL || cmd_payload_len < 5)
+            return HAL_ZIGBEE_MALFORMED_COMMAND;
+
+        if ((payload[0] & 0x01) && !cluster->on)
+            return HAL_ZIGBEE_CMD_PROCESSED;
+
+    /* fall through */
     case ZCL_CMD_ONOFF_ON:
     case ZCL_CMD_ON_WITH_RECALL_GLOBAL_SCENE:
     case ZCL_CMD_ONOFF_OFF:
@@ -369,6 +478,17 @@ static hal_zigbee_cmd_result_t dimmer_cluster_callback(zigbee_dimmer_cluster *cl
     }
 
     switch (command_id) {
+    case ZCL_CMD_ON_WITH_TIMED_OFF: {
+        /* An On; Open Dimmer also goes off by itself after the on time, written once it is
+         * on (whole seconds, rounded up). An on time of 0 (or the invalid 0xFFFF) leaves a
+         * running countdown as it is (ZCL: the longer one wins, and 0 is no time). */
+        uint16_t on_time = (uint16_t)(payload[1] | (payload[2] << 8));
+
+        dimmer_turn_on_default(cluster);
+        if (on_time != 0 && on_time != 0xFFFF && dimmer_od_features(cluster))
+            dimmer_write_tuya_value(dimmer_countdown_dp(cluster), (on_time + 9u) / 10u);
+        break;
+    }
     case ZCL_CMD_ONOFF_ON:
     case ZCL_CMD_ON_WITH_RECALL_GLOBAL_SCENE:
         dimmer_turn_on_default(cluster);
@@ -501,7 +621,50 @@ static hal_zigbee_cmd_result_t dimmer_cluster_level_callback(zigbee_dimmer_clust
 static void dimmer_range_changed(zigbee_dimmer_cluster *cluster) {
     if (cluster->level_value != 0)
         dimmer_set_current_level(cluster, dimmer_value_to_level(cluster, cluster->level_value));
+    dimmer_update_startup_level(cluster);
 }
+
+#ifdef SECONDARY_MCU_IMAGE
+/* A value DP of Open Dimmer: this channel's countdown or one of its settings from 162 on. */
+static void dimmer_on_od_value(zigbee_dimmer_cluster *cluster, uint8_t dpid, uint32_t number) {
+    uint16_t v = (uint16_t)(number > 0xFFFF ? 0xFFFF : number);
+
+    if (dpid == dimmer_countdown_dp(cluster)) {
+        cluster->countdown = number;
+        hal_zigbee_notify_attribute_changed(cluster->endpoint, ZCL_CLUSTER_ON_OFF,
+                                            ZCL_ATTR_ONOFF_COUNTDOWN);
+        return;
+    }
+
+    uint8_t k = (uint8_t)(dpid - dimmer_od_dp(cluster, 0));
+    if (dpid < dimmer_od_dp(cluster, 0) || (k & 1) || k > 2 * DIMMER_OD_BOOST)
+        return; /* the other channel's, or none of these */
+
+    switch (k >> 1) {
+    case DIMMER_OD_INPUT:
+        if (number <= DIMMER_INPUT_MODE_MAX) {
+            cluster->input_mode     = (uint8_t)number;
+            cluster->input_mode_mcu = (uint8_t)number;
+            hal_zigbee_notify_attribute_changed(cluster->endpoint,
+                                                ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG,
+                                                ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_INPUT_MODE);
+        }
+        break;
+    case DIMMER_OD_POWER_LEVEL:
+        cluster->startup_value = v;
+        dimmer_update_startup_level(cluster);
+        break;
+    case DIMMER_OD_BOOST:
+        cluster->start_boost = v;
+        hal_zigbee_notify_attribute_changed(cluster->endpoint, ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG,
+                                            ZCL_ATTR_BALLAST_START_BOOST);
+        break;
+    default: /* identify: its end is counted here */
+        break;
+    }
+}
+
+#endif
 
 /* Our own PY32 firmware with its per-channel DPs on this dimmer. */
 static uint8_t dimmer_own_mcu(const zigbee_dimmer_cluster *cluster) {
@@ -610,6 +773,9 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
             hal_zigbee_notify_attribute_changed(cluster->endpoint,
                                                 ZCL_CLUSTER_MULTISTATE_INPUT_BASIC,
                                                 ZCL_ATTR_MULTISTATE_INPUT_PRESENT_VALUE);
+        } else if (dp_type == TUYA_DP_TYPE_VALUE && dimmer_own_mcu(cluster) &&
+                   cluster->dimmer_idx < OPEN_DIMMER_CHANNELS) {
+            dimmer_on_od_value(cluster, dpid, number);
         }
 #endif
     }
@@ -632,6 +798,42 @@ static hal_zigbee_cmd_result_t dimmer_cluster_level_callback_trampoline(
                                          cmd_payload_len);
 }
 
+#ifdef SECONDARY_MCU_IMAGE
+static hal_zigbee_cmd_result_t dimmer_cluster_identify_callback_trampoline(
+    uint8_t endpoint, uint16_t cluster_id, uint8_t command_id,
+    void *cmd_payload, uint16_t cmd_payload_len) {
+    zigbee_dimmer_cluster *cluster = dimmer_by_endpoint(endpoint);
+    const uint8_t *        payload = (const uint8_t *)cmd_payload;
+
+    if (cluster == NULL || command_id != ZCL_CMD_IDENTIFY)
+        return HAL_ZIGBEE_CMD_SKIPPED; /* Identify Query: the stack answers it */
+
+    if (payload == NULL || cmd_payload_len < 2)
+        return HAL_ZIGBEE_MALFORMED_COMMAND;
+
+    dimmer_identify(cluster, (uint16_t)(payload[0] | (payload[1] << 8)));
+    return HAL_ZIGBEE_CMD_PROCESSED;
+}
+
+#define DIMMER_OD_ATTRS       1 /* each Open Dimmer setting is one more attribute of its cluster */
+#else
+#define DIMMER_OD_ATTRS       0
+#endif
+#define DIMMER_ONOFF_ATTRS    (2 + DIMMER_OD_ATTRS)
+#define DIMMER_LEVEL_ATTRS    (2 + DIMMER_OD_ATTRS)
+
+static void dimmer_add_cluster(hal_zigbee_endpoint *endpoint, uint16_t cluster_id,
+                               uint8_t attribute_count, hal_zigbee_attribute *attributes,
+                               hal_zigbee_cmd_callback_t cmd_callback) {
+    hal_zigbee_cluster *c = &endpoint->clusters[endpoint->cluster_count++];
+
+    c->cluster_id      = cluster_id;
+    c->attribute_count = attribute_count;
+    c->attributes      = attributes;
+    c->is_server       = 1;
+    c->cmd_callback    = cmd_callback;
+}
+
 void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
                                     hal_zigbee_endpoint *endpoint) {
     cluster->endpoint = endpoint->endpoint;
@@ -652,15 +854,29 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
     cluster->mcu_max         = 0;
     cluster->level_value     = 0;
     cluster->state_known     = 0;
+    cluster->countdown       = 0;
+    cluster->startup_value   = 0;
+    cluster->startup_level   = ZCL_START_UP_CURRENT_LEVEL_PREVIOUS;
+    cluster->identify_time   = 0;
+    cluster->start_boost     = 0;
+    cluster->input_mode      = 0;
+    cluster->input_mode_mcu  = 0;
+#ifdef SECONDARY_MCU_IMAGE
+    cluster->identify_task.handler = dimmer_identify_tick;
+    cluster->identify_task.arg     = cluster;
+    hal_tasks_init(&cluster->identify_task);
+#endif
     dimmer_load_on_level(cluster);
+
+    hal_zigbee_attribute *level_attrs = &cluster->attr_infos[DIMMER_ONOFF_ATTRS];
 
     SETUP_ATTR(0, ZCL_ATTR_ONOFF, ZCL_DATA_TYPE_BOOLEAN, ATTR_READONLY, cluster->on);
     SETUP_ATTR(1, ZCL_ATTR_START_UP_ONOFF, ZCL_DATA_TYPE_ENUM8, ATTR_WRITABLE,
                cluster->startup_mode);
-    SETUP_ATTR(2, ZCL_ATTR_LEVEL_CURRENT_LEVEL, ZCL_DATA_TYPE_UINT8, ATTR_READONLY,
-               cluster->current_level);
-    SETUP_ATTR(3, ZCL_ATTR_LEVEL_ON_LEVEL, ZCL_DATA_TYPE_UINT8, ATTR_WRITABLE,
-               cluster->on_level);
+    SETUP_ATTR_FOR_TABLE(level_attrs, 0, ZCL_ATTR_LEVEL_CURRENT_LEVEL, ZCL_DATA_TYPE_UINT8,
+                         ATTR_READONLY, cluster->current_level);
+    SETUP_ATTR_FOR_TABLE(level_attrs, 1, ZCL_ATTR_LEVEL_ON_LEVEL, ZCL_DATA_TYPE_UINT8,
+                         ATTR_WRITABLE, cluster->on_level);
 
     // Min/max brightness on the standard lightingBallastCfg cluster (0x0301),
     // so Zigbee2MQTT can render sliders bound to these without a custom cluster.
@@ -674,38 +890,35 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
                          ZCL_ATTR_ONOFF_CONFIGURATION_SWITCH_TYPE,
                          ZCL_DATA_TYPE_ENUM8, ATTR_WRITABLE, cluster->switch_type);
 
-    endpoint->clusters[endpoint->cluster_count].cluster_id      = ZCL_CLUSTER_ON_OFF;
-    endpoint->clusters[endpoint->cluster_count].attribute_count = 2;
-    endpoint->clusters[endpoint->cluster_count].attributes      = cluster->attr_infos;
-    endpoint->clusters[endpoint->cluster_count].is_server       = 1;
-    endpoint->clusters[endpoint->cluster_count].cmd_callback    =
-        dimmer_cluster_callback_trampoline;
-    endpoint->cluster_count++;
+#ifdef SECONDARY_MCU_IMAGE
+    /* Open Dimmer's settings (from OPEN_DIMMER_FEATURES_BUILD), next to the standard ones. */
+    SETUP_ATTR(2, ZCL_ATTR_ONOFF_COUNTDOWN, ZCL_DATA_TYPE_UINT32, ATTR_WRITABLE,
+               cluster->countdown);
+    SETUP_ATTR_FOR_TABLE(level_attrs, 2, ZCL_ATTR_LEVEL_START_UP_CURRENT_LEVEL,
+                         ZCL_DATA_TYPE_UINT8, ATTR_WRITABLE, cluster->startup_level);
+    SETUP_ATTR_FOR_TABLE(cluster->ballast_attr_infos, 2, ZCL_ATTR_BALLAST_START_BOOST,
+                         ZCL_DATA_TYPE_UINT16, ATTR_WRITABLE, cluster->start_boost);
+    SETUP_ATTR_FOR_TABLE(cluster->switch_type_attr_infos, 1,
+                         ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_INPUT_MODE,
+                         ZCL_DATA_TYPE_ENUM8, ATTR_WRITABLE, cluster->input_mode);
+    SETUP_ATTR_FOR_TABLE(cluster->identify_attr_infos, 0, ZCL_ATTR_IDENTIFY_TIME,
+                         ZCL_DATA_TYPE_UINT16, ATTR_WRITABLE, cluster->identify_time);
+#endif
 
-    endpoint->clusters[endpoint->cluster_count].cluster_id      = ZCL_CLUSTER_LEVEL_CONTROL;
-    endpoint->clusters[endpoint->cluster_count].attribute_count = 2;
-    endpoint->clusters[endpoint->cluster_count].attributes      = &cluster->attr_infos[2];
-    endpoint->clusters[endpoint->cluster_count].is_server       = 1;
-    endpoint->clusters[endpoint->cluster_count].cmd_callback    =
-        dimmer_cluster_level_callback_trampoline;
-    endpoint->cluster_count++;
-
-    endpoint->clusters[endpoint->cluster_count].cluster_id =
-        ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG;
-    endpoint->clusters[endpoint->cluster_count].attribute_count = 2;
-    endpoint->clusters[endpoint->cluster_count].attributes      = cluster->ballast_attr_infos;
-    endpoint->clusters[endpoint->cluster_count].is_server       = 1;
-    endpoint->clusters[endpoint->cluster_count].cmd_callback    = NULL;
-    endpoint->cluster_count++;
-
-    endpoint->clusters[endpoint->cluster_count].cluster_id      = ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG;
-    endpoint->clusters[endpoint->cluster_count].attribute_count = 1;
-    endpoint->clusters[endpoint->cluster_count].attributes      = cluster->switch_type_attr_infos;
-    endpoint->clusters[endpoint->cluster_count].is_server       = 1;
-    endpoint->clusters[endpoint->cluster_count].cmd_callback    = NULL;
-    endpoint->cluster_count++;
+    dimmer_add_cluster(endpoint, ZCL_CLUSTER_ON_OFF, DIMMER_ONOFF_ATTRS, cluster->attr_infos,
+                       dimmer_cluster_callback_trampoline);
+    dimmer_add_cluster(endpoint, ZCL_CLUSTER_LEVEL_CONTROL, DIMMER_LEVEL_ATTRS, level_attrs,
+                       dimmer_cluster_level_callback_trampoline);
+    dimmer_add_cluster(endpoint, ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG, 2 + DIMMER_OD_ATTRS,
+                       cluster->ballast_attr_infos, NULL);
+    dimmer_add_cluster(endpoint, ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG, 1 + DIMMER_OD_ATTRS,
+                       cluster->switch_type_attr_infos, NULL);
 
 #ifdef SECONDARY_MCU_IMAGE
+    /* Identify: the channel blinks (Open Dimmer from OPEN_DIMMER_FEATURES_BUILD). */
+    dimmer_add_cluster(endpoint, ZCL_CLUSTER_IDENTIFY, 1, cluster->identify_attr_infos,
+                       dimmer_cluster_identify_callback_trampoline);
+
     /* Wall switch gestures of the own PY32 firmware (silent with another MCU). */
     cluster->action_seq   = 0;
     cluster->action_state = 0;
@@ -721,13 +934,8 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
     SETUP_ATTR_FOR_TABLE(cluster->multistate_attr_infos, 3,
                          ZCL_ATTR_MULTISTATE_INPUT_STATUS_FLAGS,
                          ZCL_DATA_TYPE_BITMAP8, ATTR_READONLY, dimmer_gesture_flags);
-    endpoint->clusters[endpoint->cluster_count].cluster_id =
-        ZCL_CLUSTER_MULTISTATE_INPUT_BASIC;
-    endpoint->clusters[endpoint->cluster_count].attribute_count = 4;
-    endpoint->clusters[endpoint->cluster_count].attributes      = cluster->multistate_attr_infos;
-    endpoint->clusters[endpoint->cluster_count].is_server       = 1;
-    endpoint->clusters[endpoint->cluster_count].cmd_callback    = NULL;
-    endpoint->cluster_count++;
+    dimmer_add_cluster(endpoint, ZCL_CLUSTER_MULTISTATE_INPUT_BASIC, 4,
+                       cluster->multistate_attr_infos, NULL);
 #endif
 
     // Receive DP state reports from the secondary MCU (e.g. physical button
@@ -761,11 +969,38 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
                                                                 : cluster->power_on_behavior_dpid,
                                         TUYA_DP_TYPE_ENUM, &value, sizeof(value));
         }
+#ifdef SECONDARY_MCU_IMAGE
+        else if (attribute_id == ZCL_ATTR_ONOFF_COUNTDOWN) {
+            /* Counts only while on (the MCU keeps 0 when off). */
+            if (!cluster->on || !dimmer_od_features(cluster)) {
+                cluster->countdown = 0;
+            } else {
+                if (cluster->countdown > DIMMER_COUNTDOWN_MAX)
+                    cluster->countdown = DIMMER_COUNTDOWN_MAX;
+                dimmer_write_tuya_value(dimmer_countdown_dp(cluster), cluster->countdown);
+            }
+        }
+#endif
         break;
 
     case ZCL_CLUSTER_LEVEL_CONTROL:
         if (attribute_id == ZCL_ATTR_LEVEL_ON_LEVEL)
             dimmer_store_on_level(cluster);
+#ifdef SECONDARY_MCU_IMAGE
+        else if (attribute_id == ZCL_ATTR_LEVEL_START_UP_CURRENT_LEVEL) {
+            /* 0xFF previous: 0, the last level; 0x00 minimum: the lowest value, which the MCU
+             * takes as the channel's min at every start (also after a later change of it). */
+            uint8_t l = cluster->startup_level;
+            if (!dimmer_od_features(cluster)) {
+                cluster->startup_level = dimmer_startup_level(cluster);
+                break;
+            }
+            dimmer_write_tuya_value(dimmer_od_dp(cluster, DIMMER_OD_POWER_LEVEL),
+                                    l == ZCL_START_UP_CURRENT_LEVEL_PREVIOUS ? 0
+                                    : l == ZCL_START_UP_CURRENT_LEVEL_MINIMUM ? TUYA_BRIGHTNESS_MIN
+                                    : dimmer_level_to_value(cluster, l));
+        }
+#endif
         break;
 
     case ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG:
@@ -776,6 +1011,18 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
             dimmer_write_tuya_value(cluster->max_level_dpid,
                                     dimmer_zcl_level_to_tuya_value(cluster->max_level));
         }
+#ifdef SECONDARY_MCU_IMAGE
+        else if (attribute_id == ZCL_ATTR_BALLAST_START_BOOST) {
+            if (!dimmer_od_features(cluster)) {
+                cluster->start_boost = 0;
+                break;
+            }
+            if (cluster->start_boost > DIMMER_BOOST_MAX)
+                cluster->start_boost = DIMMER_BOOST_MAX;
+            /* The MCU keeps steps of 50 ms; its answer tells the one it took. */
+            dimmer_write_tuya_value(dimmer_od_dp(cluster, DIMMER_OD_BOOST), cluster->start_boost);
+        }
+#endif
         break;
 
     case ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG:
@@ -783,7 +1030,23 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
             tuya_secondary_mcu_write_dp(cluster->switch_type_dpid, TUYA_DP_TYPE_ENUM,
                                         &cluster->switch_type, sizeof(cluster->switch_type));
         }
+#ifdef SECONDARY_MCU_IMAGE
+        else if (attribute_id == ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_INPUT_MODE) {
+            if (!dimmer_od_features(cluster) || cluster->input_mode > DIMMER_INPUT_MODE_MAX) {
+                cluster->input_mode = cluster->input_mode_mcu;
+                break;
+            }
+            dimmer_write_tuya_value(dimmer_od_dp(cluster, DIMMER_OD_INPUT), cluster->input_mode);
+        }
+#endif
         break;
+
+#ifdef SECONDARY_MCU_IMAGE
+    case ZCL_CLUSTER_IDENTIFY:
+        if (attribute_id == ZCL_ATTR_IDENTIFY_TIME)
+            dimmer_identify(cluster, cluster->identify_time);
+        break;
+#endif
 
     default:
         break;

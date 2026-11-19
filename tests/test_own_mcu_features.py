@@ -1,0 +1,350 @@
+"""Open Dimmer 2.2.0 (build 500) on the module side: the countdown (ZCL OnWithTimedOff and
+genOnOff 0xff10, DP 6 / 12), the wall switch mode (genOnOffSwitchCfg 0xff10, DP 162 / 163),
+the level after a power cut (Level Control StartUpCurrentLevel, DP 164 / 165), identify
+(genIdentify, DP 166 / 167) and the start boost (lightingBallastCfg 0xff10, DP 168 / 169).
+Those DPs go only to an Open Dimmer identified with build 500 or later; any other MCU gets what
+it got before (an OnWithTimedOff is an On), and a write of their attributes sends it nothing.
+"""
+import pytest
+from own_mcu import FEATURES_BUILD, own_mcu_contact
+from test_dimmer_mcu import ack_writes, scaled_to_tuya, scaled_to_zcl, start
+from tuya_mcu import (
+    TUYA_CMD_REPORT_PASSIVE,
+    bool_dp,
+    dp_writes,
+    mcu_report,
+    pump,
+    take_tx,
+    value_dp,
+)
+
+IDENTIFY, ON_OFF, SWITCH_CFG, LEVEL, BALLAST = 0x0003, 0x0006, 0x0007, 0x0008, 0x0301
+ATTR_ONOFF = 0x0000
+ATTR_COUNTDOWN = 0xFF10          # genOnOff
+ATTR_INPUT_MODE = 0xFF10         # genOnOffSwitchCfg
+ATTR_STARTUP_LEVEL = 0x4000      # Level Control StartUpCurrentLevel
+ATTR_IDENTIFY_TIME = 0x0000
+ATTR_BOOST = 0xFF10              # lightingBallastCfg
+CMD_OFF, CMD_ON, CMD_ON_WITH_TIMED_OFF = 0x00, 0x01, 0x42
+CMD_IDENTIFY = 0x00
+MINIMUM, PREVIOUS = 0x00, 0xFF
+
+DP_ON = {1: 1, 2: 7}
+DP_COUNTDOWN = {1: 6, 2: 12}
+DP_INPUT = {1: 162, 2: 163}
+DP_POWER_LEVEL = {1: 164, 2: 165}
+DP_IDENTIFY = {1: 166, 2: 167}
+DP_BOOST = {1: 168, 2: 169}
+NEW_DPS = {6, 12, *range(162, 170)}
+MCU_MIN = 200                    # the firmware's default min (OwnMcu)
+
+
+def own(build: int | None = FEATURES_BUILD, prepare=None):
+    """An identified Open Dimmer of that build after its first contact (dump read)."""
+    proc, device = start()
+    mcu = own_mcu_contact(proc, device, build=build, prepare=prepare)
+    take_tx(proc)
+    mcu.writes.clear()
+    return proc, device, mcu
+
+
+def attr(device, ep: int, cluster: int, attr_id: int) -> int:
+    return int(device.read_zigbee_attr(ep, cluster, attr_id))
+
+
+def cmd(device, mcu, ep: int, cluster: int, command: int, payload: bytes | None = None):
+    device.call_zigbee_cmd(ep, cluster, command, payload)
+    mcu.serve()
+    out = list(mcu.writes)
+    mcu.writes.clear()
+    return out
+
+
+def write(device, mcu, ep: int, cluster: int, attr_id: int, value: int):
+    device.write_zigbee_attr(ep, cluster, attr_id, value)
+    mcu.serve()
+    out = list(mcu.writes)
+    mcu.writes.clear()
+    return out
+
+
+def timed_off(ctrl: int, tenths: int, off_wait: int = 0) -> bytes:
+    return bytes([ctrl]) + tenths.to_bytes(2, "little") + off_wait.to_bytes(2, "little")
+
+
+# ---- countdown ---------------------------------------------------------------
+
+@pytest.mark.parametrize("ep", [1, 2])
+def test_on_with_timed_off_is_an_on_and_then_the_countdown(ep):
+    proc, device, mcu = own()
+    try:
+        w = cmd(device, mcu, ep, ON_OFF, CMD_ON_WITH_TIMED_OFF, timed_off(0, 255))   # 25.5 s
+        assert w == [(DP_ON[ep], 1), (DP_COUNTDOWN[ep], 26)]                      # whole s, up
+        assert attr(device, ep, ON_OFF, ATTR_ONOFF) == 1
+        assert attr(device, ep, ON_OFF, ATTR_COUNTDOWN) == 26
+        assert mcu.ch[ep - 1]["countdown"] == 26
+    finally:
+        proc.stop()
+
+
+def test_on_with_timed_off_accept_only_when_on():
+    proc, device, mcu = own()
+    try:
+        assert cmd(device, mcu, 1, ON_OFF, CMD_ON_WITH_TIMED_OFF, timed_off(1, 100)) == []
+        assert attr(device, 1, ON_OFF, ATTR_ONOFF) == 0
+        cmd(device, mcu, 1, ON_OFF, CMD_ON)
+        w = cmd(device, mcu, 1, ON_OFF, CMD_ON_WITH_TIMED_OFF, timed_off(1, 100))
+        assert w == [(DP_ON[1], 1), (DP_COUNTDOWN[1], 10)]
+    finally:
+        proc.stop()
+
+
+@pytest.mark.parametrize("tenths", [0, 0xFFFF])
+def test_on_with_timed_off_without_a_time_is_an_on(tenths):
+    proc, device, mcu = own()
+    try:
+        assert cmd(device, mcu, 1, ON_OFF, CMD_ON_WITH_TIMED_OFF, timed_off(0, tenths)) == \
+            [(DP_ON[1], 1)]
+    finally:
+        proc.stop()
+
+
+def test_a_short_on_with_timed_off_is_malformed():
+    proc, device, mcu = own()
+    try:
+        device.call_zigbee_cmd(1, ON_OFF, CMD_ON_WITH_TIMED_OFF, bytes([0, 10]),
+                               expected_result="MALFORMED_COMMAND")
+        mcu.serve()
+        assert mcu.writes == []
+    finally:
+        proc.stop()
+
+
+def test_the_countdown_attribute_is_written_while_on_only():
+    proc, device, mcu = own()
+    try:
+        cmd(device, mcu, 2, ON_OFF, CMD_ON)
+        assert write(device, mcu, 2, ON_OFF, ATTR_COUNTDOWN, 90) == [(DP_COUNTDOWN[2], 90)]
+        assert write(device, mcu, 2, ON_OFF, ATTR_COUNTDOWN, 100000) == [(DP_COUNTDOWN[2], 86400)]
+        assert attr(device, 2, ON_OFF, ATTR_COUNTDOWN) == 86400
+        assert write(device, mcu, 2, ON_OFF, ATTR_COUNTDOWN, 0) == [(DP_COUNTDOWN[2], 0)]
+        cmd(device, mcu, 2, ON_OFF, CMD_OFF)
+        assert write(device, mcu, 2, ON_OFF, ATTR_COUNTDOWN, 60) == []     # off: nothing to count
+        assert attr(device, 2, ON_OFF, ATTR_COUNTDOWN) == 0
+    finally:
+        proc.stop()
+
+
+@pytest.mark.parametrize("how", ["zigbee", "wall switch", "its end"])
+def test_any_off_ends_the_countdown(how):
+    proc, device, mcu = own()
+    try:
+        cmd(device, mcu, 1, ON_OFF, CMD_ON_WITH_TIMED_OFF, timed_off(0, 300))
+        assert attr(device, 1, ON_OFF, ATTR_COUNTDOWN) == 30
+        if how == "zigbee":
+            assert cmd(device, mcu, 1, ON_OFF, CMD_OFF) == [(DP_ON[1], 0)]
+        else:                       # the wall switch, or the countdown's end: a switch off
+            mcu.ch[0]["on"], mcu.ch[0]["countdown"] = 0, 0
+            mcu.send([mcu._report([mcu._dp(DP_ON[1])], passive=False)])
+        assert attr(device, 1, ON_OFF, ATTR_ONOFF) == 0
+        assert attr(device, 1, ON_OFF, ATTR_COUNTDOWN) == 0
+    finally:
+        proc.stop()
+
+
+# ---- the dump of 2.2.0 -----------------------------------------------------------
+
+def settings(mcu):
+    mcu.ch[0].update(input=1, power_level=0, boost=300)
+    mcu.ch[1].update(input=2, power_level=600, boost=0)
+
+
+def test_the_dump_of_2_2_0_fills_the_settings():
+    proc, device, mcu = own(prepare=settings)
+    try:
+        assert [attr(device, ep, SWITCH_CFG, ATTR_INPUT_MODE) for ep in (1, 2)] == [1, 2]
+        assert [attr(device, ep, LEVEL, ATTR_STARTUP_LEVEL) for ep in (1, 2)] == [
+            PREVIOUS, scaled_to_zcl(600, MCU_MIN, 1000)]
+        assert [attr(device, ep, BALLAST, ATTR_BOOST) for ep in (1, 2)] == [300, 0]
+        assert [attr(device, ep, ON_OFF, ATTR_COUNTDOWN) for ep in (1, 2)] == [0, 0]
+    finally:
+        proc.stop()
+
+
+def test_a_power_cut_level_below_the_minimum_is_minimum():
+    """0x00 (minimum) is written as the lowest value, kept by the MCU as 12; it reads back
+    as minimum, not as level 1. A min raised later still makes it the minimum."""
+    proc, device, mcu = own(prepare=lambda m: m.ch[0].update(power_level=12))
+    try:
+        assert attr(device, 1, LEVEL, ATTR_STARTUP_LEVEL) == MINIMUM
+    finally:
+        proc.stop()
+
+
+# ---- wall switch mode, power-cut level, start boost ------------------------------
+
+def test_the_wall_switch_mode_is_written_per_channel():
+    proc, device, mcu = own(prepare=settings)
+    try:
+        assert write(device, mcu, 1, SWITCH_CFG, ATTR_INPUT_MODE, 0) == [(DP_INPUT[1], 0)]
+        assert write(device, mcu, 2, SWITCH_CFG, ATTR_INPUT_MODE, 1) == [(DP_INPUT[2], 1)]
+        assert [mcu.ch[0]["input"], mcu.ch[1]["input"]] == [0, 1]
+        assert write(device, mcu, 2, SWITCH_CFG, ATTR_INPUT_MODE, 3) == []     # no such mode
+        assert attr(device, 2, SWITCH_CFG, ATTR_INPUT_MODE) == 1
+    finally:
+        proc.stop()
+
+
+def test_the_level_after_a_power_cut_is_written_scaled():
+    proc, device, mcu = own()
+    try:
+        assert write(device, mcu, 1, LEVEL, ATTR_STARTUP_LEVEL, PREVIOUS) == [(DP_POWER_LEVEL[1], 0)]
+        assert attr(device, 1, LEVEL, ATTR_STARTUP_LEVEL) == PREVIOUS
+        assert write(device, mcu, 1, LEVEL, ATTR_STARTUP_LEVEL, MINIMUM) == [(DP_POWER_LEVEL[1], 10)]
+        assert attr(device, 1, LEVEL, ATTR_STARTUP_LEVEL) == MINIMUM
+        value = scaled_to_tuya(128, MCU_MIN, 1000)
+        assert write(device, mcu, 2, LEVEL, ATTR_STARTUP_LEVEL, 128) == [(DP_POWER_LEVEL[2], value)]
+        kept = mcu.ch[1]["power_level"]                                   # steps of 4
+        assert attr(device, 2, LEVEL, ATTR_STARTUP_LEVEL) == scaled_to_zcl(kept, MCU_MIN, 1000)
+        assert abs(attr(device, 2, LEVEL, ATTR_STARTUP_LEVEL) - 128) <= 1
+    finally:
+        proc.stop()
+
+
+def test_the_level_after_a_power_cut_follows_a_new_range():
+    proc, device, mcu = own(prepare=lambda m: m.ch[0].update(power_level=600))
+    try:
+        assert attr(device, 1, LEVEL, ATTR_STARTUP_LEVEL) == scaled_to_zcl(600, MCU_MIN, 1000)
+        mcu_report(proc, value_dp(3, 400), cmd=TUYA_CMD_REPORT_PASSIVE)         # min 400
+        assert attr(device, 1, LEVEL, ATTR_STARTUP_LEVEL) == scaled_to_zcl(600, 400, 1000)
+    finally:
+        proc.stop()
+
+
+def test_the_start_boost_is_written_in_ms():
+    proc, device, mcu = own()
+    try:
+        assert write(device, mcu, 1, BALLAST, ATTR_BOOST, 300) == [(DP_BOOST[1], 300)]
+        assert write(device, mcu, 2, BALLAST, ATTR_BOOST, 275) == [(DP_BOOST[2], 275)]
+        assert attr(device, 2, BALLAST, ATTR_BOOST) == 250                 # what the MCU kept
+        assert write(device, mcu, 1, BALLAST, ATTR_BOOST, 900) == [(DP_BOOST[1], 750)]
+        assert attr(device, 1, BALLAST, ATTR_BOOST) == 750
+    finally:
+        proc.stop()
+
+
+# ---- identify ----------------------------------------------------------------------
+
+def test_identify_blinks_the_channel_and_counts_down():
+    proc, device, mcu = own()
+    try:
+        assert cmd(device, mcu, 1, IDENTIFY, CMD_IDENTIFY, (10).to_bytes(2, "little")) == \
+            [(DP_IDENTIFY[1], 10)]
+        assert attr(device, 1, IDENTIFY, ATTR_IDENTIFY_TIME) == 10
+        for _ in range(3):
+            device.step_time(1000)
+        assert attr(device, 1, IDENTIFY, ATTR_IDENTIFY_TIME) == 7
+        for _ in range(8):
+            device.step_time(1000)
+        assert attr(device, 1, IDENTIFY, ATTR_IDENTIFY_TIME) == 0
+        mcu.serve()
+        assert mcu.writes == []                     # the MCU ends it by itself
+    finally:
+        proc.stop()
+
+
+def test_identify_is_capped_at_255_s_and_0_stops_it():
+    proc, device, mcu = own()
+    try:
+        assert cmd(device, mcu, 2, IDENTIFY, CMD_IDENTIFY, (600).to_bytes(2, "little")) == \
+            [(DP_IDENTIFY[2], 255)]
+        assert attr(device, 2, IDENTIFY, ATTR_IDENTIFY_TIME) == 255
+        assert cmd(device, mcu, 2, IDENTIFY, CMD_IDENTIFY, bytes(2)) == [(DP_IDENTIFY[2], 0)]
+        assert attr(device, 2, IDENTIFY, ATTR_IDENTIFY_TIME) == 0
+        assert write(device, mcu, 1, IDENTIFY, ATTR_IDENTIFY_TIME, 5) == [(DP_IDENTIFY[1], 5)]
+        device.step_time(1000)
+        assert attr(device, 1, IDENTIFY, ATTR_IDENTIFY_TIME) == 4
+    finally:
+        proc.stop()
+
+
+# ---- any other MCU -------------------------------------------------------------------
+
+def no_writes(proc, device) -> list:
+    pump(proc)
+    out = dp_writes(take_tx(proc))
+    device.step_time(100)
+    pump(proc)
+    return out + dp_writes(take_tx(proc))
+
+
+NONE_VALUES = [(ON_OFF, ATTR_COUNTDOWN, 0), (SWITCH_CFG, ATTR_INPUT_MODE, 0),
+               (LEVEL, ATTR_STARTUP_LEVEL, PREVIOUS), (BALLAST, ATTR_BOOST, 0),
+               (IDENTIFY, ATTR_IDENTIFY_TIME, 0)]
+
+
+@pytest.mark.parametrize("build", [400, None])
+def test_an_older_open_dimmer_gets_none_of_it(build):
+    proc, device, mcu = own(build=build)
+    try:
+        w = cmd(device, mcu, 1, ON_OFF, CMD_ON_WITH_TIMED_OFF, timed_off(0, 100))
+        assert w == [(DP_ON[1], 1)]
+        for cluster, attr_id, none in NONE_VALUES:
+            for value in (1, 2):
+                assert write(device, mcu, 1, cluster, attr_id, value) == [], hex(attr_id)
+            assert attr(device, 1, cluster, attr_id) == none, hex(attr_id)
+        assert cmd(device, mcu, 2, IDENTIFY, CMD_IDENTIFY, (5).to_bytes(2, "little")) == []
+        assert attr(device, 2, IDENTIFY, ATTR_IDENTIFY_TIME) == 0
+    finally:
+        proc.stop()
+
+
+def test_a_factory_mcu_gets_an_on_for_an_on_with_timed_off_and_nothing_else():
+    proc, device = start()                          # never identified
+    try:
+        device.call_zigbee_cmd(1, ON_OFF, CMD_ON_WITH_TIMED_OFF, timed_off(0, 100))
+        assert ack_writes(proc, device) == [(DP_ON[1], 1)]
+        for cluster, attr_id, none in NONE_VALUES:
+            device.write_zigbee_attr(2, cluster, attr_id, 1)
+            assert no_writes(proc, device) == [], hex(attr_id)
+            assert attr(device, 2, cluster, attr_id) == none, hex(attr_id)
+        device.call_zigbee_cmd(2, IDENTIFY, CMD_IDENTIFY, (5).to_bytes(2, "little"))
+        assert no_writes(proc, device) == []
+        mcu_report(proc, value_dp(DP_INPUT[1], 1), cmd=TUYA_CMD_REPORT_PASSIVE)
+        mcu_report(proc, value_dp(DP_BOOST[1], 300), cmd=TUYA_CMD_REPORT_PASSIVE)
+        mcu_report(proc, value_dp(DP_COUNTDOWN[1], 30), cmd=TUYA_CMD_REPORT_PASSIVE)
+        assert attr(device, 1, SWITCH_CFG, ATTR_INPUT_MODE) == 0       # not its DPs
+        assert attr(device, 1, BALLAST, ATTR_BOOST) == 0
+        assert attr(device, 1, ON_OFF, ATTR_COUNTDOWN) == 0
+        mcu_report(proc, bool_dp(DP_ON[1], 0))
+    finally:
+        proc.stop()
+
+
+def test_the_dump_of_an_older_open_dimmer_has_none_of_the_new_dps():
+    """The model as the firmware: before build 500 its dump ends with the fade and hold
+    settings (the module reads only what is there)."""
+    proc, device, mcu = own(build=400, prepare=settings)
+    try:
+        frames = mcu.dump()
+        assert len(frames) == 5
+        assert sum(len(f) // 2 for f in frames) == 234
+        assert [attr(device, ep, SWITCH_CFG, ATTR_INPUT_MODE) for ep in (1, 2)] == [0, 0]
+    finally:
+        proc.stop()
+
+
+def test_the_dump_of_2_2_0_is_one_burst_of_282_bytes():
+    proc, device, mcu = own()
+    try:
+        frames = mcu.dump()
+        assert sum(len(f) // 2 for f in frames) == 282
+        dps = set()
+        for f in frames:
+            data = bytes.fromhex(f)[8:-1]
+            while data:
+                dps.add(data[0])
+                data = data[4 + int.from_bytes(data[2:4], "big"):]
+        assert dps & NEW_DPS == {6, 12, 162, 163, 164, 165, 168, 169}   # identify: never
+    finally:
+        proc.stop()

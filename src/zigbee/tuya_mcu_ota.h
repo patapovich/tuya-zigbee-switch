@@ -131,6 +131,11 @@ uint16_t tuya_mcu_ota_own_build(void);
  * network changes of the next second take (zdms16-py32 src/dimmer.h). */
 #define OPEN_DIMMER_TRANSITION_BUILD    400
 
+/* Open Dimmer from this build (2.2.0) takes a countdown (DP 6 / 12), the wall switch mode
+ * (162 / 163), the level after a power cut (164 / 165), identify (166 / 167) and the start
+ * boost (168 / 169). Nothing of these goes to any other MCU. */
+#define OPEN_DIMMER_FEATURES_BUILD      500
+
 /** The MCU's network query that is no first contact, with no version
  *  question out: an MCU whose identity questions all ran out is asked again
  *  (twice at most, until its next version answer). */

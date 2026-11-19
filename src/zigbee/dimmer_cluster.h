@@ -30,10 +30,30 @@ typedef struct {
     uint32_t             transition_at;
     uint8_t              action_seq;
     uint16_t             action_state;
-    hal_zigbee_attribute attr_infos[4];             // onoff, startup, current_level, on_level
+
+    /* genOnOff: onoff, startup, [countdown]; genLevelCtrl after them: current level, on
+     * level, [start-up level] ([]: boards with an image only). */
+    hal_zigbee_attribute attr_infos[6];
     hal_zigbee_attribute multistate_attr_infos[4];  // wall switch gestures (own MCU)
-    hal_zigbee_attribute ballast_attr_infos[2];     // min/max level (lightingBallastCfg)
-    hal_zigbee_attribute switch_type_attr_infos[1]; // switch type (genOnOffSwitchCfg)
+    hal_zigbee_attribute ballast_attr_infos[3];     // min/max level, [start boost] (lightingBallastCfg)
+    hal_zigbee_attribute switch_type_attr_infos[2]; // switch type, [wall switch mode] (genOnOffSwitchCfg)
+    hal_zigbee_attribute identify_attr_infos[1];    // [IdentifyTime] (genIdentify)
+
+    /* Open Dimmer from OPEN_DIMMER_FEATURES_BUILD (2.2.0), as its dump and the answers to our
+     * writes tell (any other MCU: never written, they keep the values of "none"): the auto-off
+     * countdown in s (DP 6 / 12; 0 again when the channel goes off), the wall switch mode
+     * (162 / 163; input_mode_mcu: as the MCU said), the level after a power cut
+     * (StartUpCurrentLevel, 164 / 165; startup_value: the MCU's value, 0 = the last level),
+     * IdentifyTime (166 / 167, counted down here: the MCU does not report the end) and the
+     * start boost in ms (168 / 169). */
+    uint32_t             countdown;
+    uint16_t             startup_value;
+    uint16_t             identify_time;
+    uint16_t             start_boost;
+    uint8_t              input_mode;
+    uint8_t              input_mode_mcu;
+    uint8_t              startup_level;
+    hal_task_t           identify_task;
     uint8_t              current_level;
     uint8_t              min_level;
     uint8_t              max_level;
@@ -61,6 +81,7 @@ typedef struct {
      * the DR config token for the stock behaviour (1..254 -> 10..1000, the
      * MCU clamps, so the ends of the slider do nothing). */
     uint8_t              scale_levels;
+
     /* Level ramp (ZCL Move / MoveWithOnOff). */
     hal_task_t           ramp_task;
     uint8_t              move_direction; /* 0 = down, 1 = up */

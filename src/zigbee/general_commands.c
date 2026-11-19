@@ -23,8 +23,8 @@ static void zigbee_on_attr_change(uint8_t endpoint, uint16_t cluster_id,
 #endif
         dimmer_cluster_callback_attr_write_trampoline(endpoint, cluster_id, attribute_id);
     } else if (cluster_id == ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG ||
-               cluster_id == ZCL_CLUSTER_LEVEL_CONTROL) {
-        // Dimmer endpoints only (ballast min/max, OnLevel).
+               cluster_id == ZCL_CLUSTER_LEVEL_CONTROL || cluster_id == ZCL_CLUSTER_IDENTIFY) {
+        // Dimmer endpoints only (ballast min/max, OnLevel, Open Dimmer's settings).
         dimmer_cluster_callback_attr_write_trampoline(endpoint, cluster_id, attribute_id);
     } else if (cluster_id == ZCL_CLUSTER_COVER_SWITCH_CONFIG) {
 #ifndef DIMMER_ONLY

@@ -8,6 +8,7 @@
 
 #define ZCL_CLUSTER_BASIC                      0
 #define ZCL_CLUSTER_POWER_CFG                  1
+#define ZCL_CLUSTER_IDENTIFY                   3
 #define ZCL_CLUSTER_ON_OFF                     6
 #define ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG       7
 #define ZCL_CLUSTER_MULTISTATE_INPUT_BASIC     0x0012
@@ -79,6 +80,7 @@
 
 #define ZCL_ATTR_ONOFF_INDICATOR_MODE     0xff01
 #define ZCL_ATTR_ONOFF_INDICATOR_STATE    0xff02
+#define ZCL_ATTR_ONOFF_COUNTDOWN          0xff10 /* dimmer: auto-off s (Open Dimmer) */
 
 // OnOff configuration cluster
 
@@ -90,6 +92,7 @@
 #define ZCL_ATTR_ONOFF_CONFIGURATION_SWITCH_LONG_PRESS_DUR     0xff03
 #define ZCL_ATTR_ONOFF_CONFIGURATION_SWITCH_LEVEL_MOVE_RATE    0xff04
 #define ZCL_ATTR_ONOFF_CONFIGURATION_SWITCH_BINDING_MODE       0xff05
+#define ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_INPUT_MODE         0xff10 /* dimmer: wall switch mode */
 
 
 // Multistate cluster
@@ -107,6 +110,10 @@
 // Level Control cluster
 #define ZCL_ATTR_LEVEL_CURRENT_LEVEL                                 0x0000
 #define ZCL_ATTR_LEVEL_ON_LEVEL                                      0x0011
+#define ZCL_ATTR_LEVEL_START_UP_CURRENT_LEVEL                        0x4000
+
+// Identify cluster
+#define ZCL_ATTR_IDENTIFY_TIME                                       0x0000
 
 // WindowCovering cluster
 #define ZCL_ATTR_WINDOW_COVERING_TYPE                                0x0000
@@ -129,6 +136,7 @@
 // Lighting ballast configuration cluster (standard, 0x0301)
 #define ZCL_ATTR_BALLAST_MIN_LEVEL                                   0x0010
 #define ZCL_ATTR_BALLAST_MAX_LEVEL                                   0x0011
+#define ZCL_ATTR_BALLAST_START_BOOST                                 0xff10 /* ms (Open Dimmer) */
 
 // Poll Control cluster
 #define ZCL_CLUSTER_POLL_CONTROL                                     0x0020
@@ -193,6 +201,11 @@
 #define ZCL_LEVEL_MOVE_UP      0x00
 #define ZCL_LEVEL_MOVE_DOWN    0x01
 
+// StartUpCurrentLevel values besides a level
+
+#define ZCL_START_UP_CURRENT_LEVEL_MINIMUM     0x00
+#define ZCL_START_UP_CURRENT_LEVEL_PREVIOUS    0xFF
+
 // WindowCovering cluster
 
 #define ZCL_ATTR_WINDOW_COVERING_MOVING_STOPPED    0x00
@@ -219,6 +232,10 @@
 #define ZCL_CMD_OFF_WITH_EFFECT                0x40
 #define ZCL_CMD_ON_WITH_RECALL_GLOBAL_SCENE    0x41
 #define ZCL_CMD_ON_WITH_TIMED_OFF              0x42
+
+// Identify Cluster
+
+#define ZCL_CMD_IDENTIFY    0x00
 
 // Level Cluster
 

@@ -132,6 +132,16 @@ static status_t cmd_callback_level_control(zclIncomingAddrInfo_t *pAddrInfo,
                         pInMsg->pData, pInMsg->dataLen);
 }
 
+/* Identify (dimmer endpoints with Open Dimmer): the Identify command; the stack answers
+ * Identify Query from the IdentifyTime attribute. */
+static status_t cmd_callback_identify(zclIncomingAddrInfo_t *pAddrInfo, u8 cmdId,
+                                      void *cmdPayload) {
+    zclIncoming_t *pInMsg = cmd_incoming_from_addr_info(pAddrInfo);
+
+    return cmd_callback(pAddrInfo->dstEp, ZCL_CLUSTER_GEN_IDENTIFY, cmdId,
+                        pInMsg->pData, pInMsg->dataLen);
+}
+
 static status_t cmd_callback_poll_control(zclIncomingAddrInfo_t *pAddrInfo,
                                           u8 cmdId, void *cmdPayload) {
     zclIncoming_t *pInMsg = cmd_incoming_from_addr_info(pAddrInfo);
@@ -154,6 +164,9 @@ static cluster_forAppCb_t get_cmd_callback_by_cluster_id(u16 cluster_id) {
 #endif
     if (cluster_id == ZCL_CLUSTER_GEN_POLL_CONTROL) {
         return cmd_callback_poll_control;
+    }
+    if (cluster_id == ZCL_CLUSTER_GEN_IDENTIFY) {
+        return cmd_callback_identify;
     }
     return NULL;
 }
