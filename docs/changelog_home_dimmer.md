@@ -24,6 +24,12 @@ zdms16-py32 release notes.
   `hold_slow_zone`; labels say what a setting is (Wall switch type / mode / fast press, On
   level (wall switch), Power-on level); `on_level` has a preset previous (255);
   `mcu_temperature_calibration` is no longer shown.
+- The module's rescue paths (crash loop, button window, power-on check) can install Open
+  Dimmer images over 12 KB again: a bootloader run of the MCU (power-on or link probe, rescue,
+  button) over an app whose settings are already in the upper place (RING_HIGH, 2.1.14 and
+  later) gets the image without waiting for the app's health report. So such a unit also gets
+  a newer image at the power-on check, without the ~60 s wait. Offers to the app still wait
+  for the report.
 
 ## 1.1.3-6598b921 (2026-11-19), carries Open Dimmer 2.2.2
 

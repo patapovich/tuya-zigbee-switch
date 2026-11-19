@@ -32,13 +32,16 @@
  *     image, without state, for any offset; the header sits at image offset
  *     0xC0. Serving is gated only by the image check and the failure pause,
  *     never by build, version or the request's mode; an image over 12 KB also by
- *     the ring gate below, which looks at the request's mode for two things only:
- *     an MCU without a valid app (mode 2) is served what it can take, and the
- *     header request (offset 0xC0) of a probe (mode 3, or 6 for a link probe)
- *     that the gate keeps the image from gets a refusal at once: a header
- *     answer of size 0, CRC 0, version 0 and 16 zero bytes, which the v2
- *     bootloader takes for "nothing here" and starts its app (boot.c pick(),
- *     PICK_REFUSE), instead of waiting out its 3 s probe window.
+ *     the ring gate below, which looks at the request's mode and installed
+ *     header for three things only: an MCU without a valid app (mode 2) is
+ *     served what it can take; a probe, rescue, button or link run (mode 3, 4,
+ *     5, 6) over an installed app whose header says RING_HIGH (request byte 13,
+ *     the header's flags, bit 0x10) is served; and the header request (offset
+ *     0xC0) of a probe (mode 3, or 6 for a link probe) that the gate keeps the
+ *     image from gets a refusal at once: a header answer of size 0, CRC 0,
+ *     version 0 and 16 zero bytes, which the v2 bootloader takes for "nothing
+ *     here" and starts its app (boot.c pick(), PICK_REFUSE), instead of
+ *     waiting out its 3 s probe window.
  *  2. Robust. No crash and no stall on any request a bootloader can send:
  *     offset 0..0xFFFFFFFF, max_len 0..0xFFFF, 6 to 16 bytes, at up to one
  *     request per 50 ms for days (a unit without an app asks every 500 ms).
@@ -151,16 +154,29 @@ uint16_t tuya_mcu_ota_own_build(void);
  * (build 400, the ring mover) moves it up to 0x08004800 and says so in its health report: DP
  * 137 bit 24 (its ring is the upper one) and bit 25 (its newest settings record is in it). An
  * image over 12 KB (it needs RING_HIGH, see image_usable()) would overwrite the old ring, so
- * it is offered, and its blocks are served (any request mode: asked, probe, rescue, button,
- * link), only to an MCU whose last health report since this firmware's start said bit 25 and
- * that identified itself with a build of at least OPEN_DIMMER_TRANSITION_BUILD. A report that
- * opens the gate offers the update then. One exception: a bootloader with no valid app
- * (request mode 2, e.g. after a power cut during an update, which also restarted this
- * firmware, so it has heard no report) is served whatever the image: the bootloader itself
- * takes up to 14 KB there ("recovery comes before settings", BOOTLOADER.md section 1); a
- * refusal would leave the lamp dark. A probe (mode 3 or 6) that the gate keeps the image from
- * gets a refusal for its header request (contract item 1) within the first-answer time of
- * contract item 3, so a power-up is not 3 s slower. Images up to 12 KB are not gated. A request for offset 0
+ * it is offered, and its blocks are served to an asked run (mode 1) and a v1 bootloader, only
+ * to an MCU whose last health report since this firmware's start said bit 25 and that
+ * identified itself with a build of at least OPEN_DIMMER_TRANSITION_BUILD. A report that
+ * opens the gate offers the update then. Two exceptions, for the bootloader's own runs, in
+ * which no app reports (a crash loop never does, the button window and the power-on probe
+ * come before it can, and an app that declines offers is reached only so):
+ *  - a bootloader with no valid app (request mode 2, e.g. after a power cut during an
+ *    update, which also restarted this firmware, so it has heard no report) is served
+ *    whatever the image: the bootloader itself takes up to 14 KB there ("recovery comes
+ *    before settings", BOOTLOADER.md section 1); a refusal would leave the lamp dark;
+ *  - a probe, rescue, button or link run (mode 3, 4, 5, 6) whose request's installed header
+ *    (bytes 8..15: CRC, version, flags, build) has RING_HIGH is served: that app's layout has
+ *    its settings at 0x08004800 already, and over any other app the bootloader refuses an
+ *    image over 12 KB itself (boot.c pick(): size > g_limit), so the module need not.
+ *    Accepted risk: a 2.1.14 app whose ring copy failed (RING_HIGH set, its newest settings
+ *    record still in the low ring, DP 137 bit 25 clear) that takes such an image in one of
+ *    these runs loses its settings (the defaults), never its function. And a working RING_HIGH
+ *    app gets a newer image over 12 KB already at the power-on probe, not only after its
+ *    first health report.
+ * A probe (mode 3 or 6) that the gate keeps the image from gets a refusal for its header
+ * request (contract item 1) within the first-answer time of contract item 3, so a power-up is
+ * not 3 s slower; a rescue or button run (mode 4, 5) gets no answer and its window runs out.
+ * Images up to 12 KB are not gated. A request for offset 0
  * is a restart sign (contract item 4 (a)) whether the gate serves it or not. A factory MCU
  * never reports, so with such an image it gets no block answer at all (to the 0xA1 requests a
  * stock MCU should never send): fewer frames than phase 1, each one a reply it would have had

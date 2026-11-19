@@ -1211,23 +1211,39 @@ def health(proc, device, boot_word: int) -> list[tuple[int, bytes]]:
     return cmds_after(proc, device, 200)
 
 
-# Every request mode of a bootloader with an app, and a v1 bootloader (6 bytes).
-GATED_REQUESTS = {
-    "v1": block_request(0xC0, 16),
-    "asked": block_request(0xC0, 16, MODE_ASKED),
-    "probe": block_request(0xC0, 16, MODE_PROBE),
-    "rescue": block_request(0xC0, 16, MODE_RESCUE),
-    "button": block_request(0xC0, 16, MODE_BUTTON),
-    "link": block_request(0xC0, 16, MODE_LINK),
-    "a block past 12 KB": block_request(12 * 1024, 64, MODE_ASKED),
-    "a probe's block": block_request(64, 64, MODE_PROBE),   # (offset 0: a restart sign)
-}
+# The installed header's bytes 8..15 (CRC, version, flags, build) a v2 request carries: an app
+# whose settings ring is still the low one (2.1.12: no RING_HIGH, no build), and the ring mover
+# (2.1.14, build 400, RING_HIGH: its settings at 0x08004800).
+INSTALLED_LOW = bytes.fromhex("a6ad1bcd9c000000")
+INSTALLED_HIGH = (IMAGE[0xC8:0xCD] + bytes([APP_FLAG_CONFIRMS | APP_FLAG_RING_HIGH])
+                  + RING_MOVER_BUILD.to_bytes(2, "little"))
+
+
+def gated_requests(installed: bytes) -> dict[str, bytes]:
+    """Every request mode of a bootloader with an app (that installed header), and a v1
+    bootloader (6 bytes)."""
+    return {
+        "v1": block_request(0xC0, 16),
+        "asked": block_request(0xC0, 16, MODE_ASKED, installed),
+        "probe": block_request(0xC0, 16, MODE_PROBE, installed),
+        "rescue": block_request(0xC0, 16, MODE_RESCUE, installed),
+        "button": block_request(0xC0, 16, MODE_BUTTON, installed),
+        "link": block_request(0xC0, 16, MODE_LINK, installed),
+        "a block past 12 KB": block_request(12 * 1024, 64, MODE_ASKED, installed),
+        "a probe's block": block_request(64, 64, MODE_PROBE, installed),   # (0: a restart sign)
+        "a rescue's block": block_request(12 * 1024, 64, MODE_RESCUE, installed),
+    }
+
+
+GATED_REQUESTS = gated_requests(INSTALLED_LOW)
 
 
 def boot_pick(answer: bytes, mode: int, installed: bytes = IMAGE[0xC8:0xD0]) -> str:
     """zdms16-py32 boot/boot.c pick() on a block answer, as far as the module's answer decides
     it: NONE (no header answer: the probe waits on), REFUSE (a probe ends: the app starts), TAKE.
-    installed: the request's installed header bytes 8..15 (CRC, version, flags, build)."""
+    installed: the request's installed header bytes 8..15 (CRC, version, flags, build). The
+    limit is the installed layout's (12 KB without RING_HIGH, 14 KB with it or without an app);
+    a rescue or button run skips the installed image (g_skip)."""
     if len(answer) < 13 + 16 or int.from_bytes(answer[0:4], "big") != 0xC0:
         return "NONE"
     h = answer[13:29]
@@ -1237,6 +1253,7 @@ def boot_pick(answer: bytes, mode: int, installed: bytes = IMAGE[0xC8:0xD0]) -> 
     if (h[0:4] != b"APDZ" or int.from_bytes(h[4:8], "little") != size
             or int.from_bytes(h[8:12], "little") != crc or size < 0xD0 or size > limit
             or h[13] & 0x07 or crc == 0
+            or (mode in (MODE_RESCUE, MODE_BUTTON) and crc == int.from_bytes(installed[0:4], "little"))
             or (mode in (MODE_PROBE, MODE_LINK) and (build <= had or build > 0xFFFD))):
         return "REFUSE"
     return "TAKE"
@@ -1250,15 +1267,19 @@ def answer_kind(got: list[bytes]) -> str:
     return "refused" if got[0][4:] == bytes(len(got[0]) - 4) else "served"
 
 
-def gated(proc, device) -> dict[str, str]:
-    """How each of GATED_REQUESTS is answered."""
-    return {name: answer_kind(answers(proc, device, req)) for name, req in GATED_REQUESTS.items()}
+def gated(proc, device, installed: bytes = INSTALLED_LOW) -> dict[str, str]:
+    """How each of gated_requests(installed) is answered."""
+    return {name: answer_kind(answers(proc, device, req)) for name, req in gated_requests(installed).items()}
 
 
 # Gated: the probe's and the link probe's header requests get the refusal (they would wait
 # out the 3 s window), nothing else of the image goes out.
 NONE_SERVED = {name: "refused" if name in ("probe", "link") else "none" for name in GATED_REQUESTS}
 ALL_SERVED = {name: "served" for name in GATED_REQUESTS}
+# Over a RING_HIGH app the bootloader's own runs (probe, rescue, button, link) are served
+# whatever the reports said; an asked run and a v1 bootloader stay behind the gate.
+OWN_RUNS = ("probe", "rescue", "button", "link", "a probe's block", "a rescue's block")
+OWN_RUNS_SERVED = {name: "served" if name in OWN_RUNS else "none" for name in GATED_REQUESTS}
 
 
 def test_an_image_over_12_kb_waits_for_the_ring_moved_report(stub_13k):
@@ -1267,11 +1288,14 @@ def test_an_image_over_12_kb_waits_for_the_ring_moved_report(stub_13k):
         _, frames = contact_as_own(proc, device, VERSION, build=500, boot=2)
         assert OTA_NOTIFY not in [cmd for cmd, _ in frames]          # no report yet
         assert gated(proc, device) == NONE_SERVED
+        assert gated(proc, device, INSTALLED_HIGH) == OWN_RUNS_SERVED
         assert OTA_NOTIFY not in [cmd for cmd, _ in health(proc, device, RING_HIGH)]
         assert gated(proc, device) == NONE_SERVED                     # bit 25 not yet
+        assert gated(proc, device, INSTALLED_HIGH) == OWN_RUNS_SERVED
         frames = health(proc, device, RING_HIGH | RING_MOVED)
         assert [d for cmd, d in frames if cmd == OTA_NOTIFY] == [offer(IMAGE_13K)]
         assert gated(proc, device) == ALL_SERVED
+        assert gated(proc, device, INSTALLED_HIGH) == ALL_SERVED
         assert OTA_NOTIFY not in [cmd for cmd, _ in health(proc, device, RING_HIGH | RING_MOVED)]
         assert health(proc, device, RING_HIGH) == []                  # its last report: closed
         assert gated(proc, device) == NONE_SERVED
@@ -1289,18 +1313,20 @@ def test_a_gated_probe_gets_a_header_the_bootloader_refuses_at_once(stub_13k, mo
     proc, device = start_with(stub_13k)
     try:
         device.step_time(50)
-        got = answers(proc, device, block_request(0xC0, 16, mode))
-        assert len(got) == 1 and boot_pick(got[0], mode) == "REFUSE"
+        got = answers(proc, device, block_request(0xC0, 16, mode, INSTALLED_LOW))
+        assert len(got) == 1 and boot_pick(got[0], mode, INSTALLED_LOW) == "REFUSE"
+        assert answer_kind(got) == "refused"                        # the refusal, not the image
         assert len(got[0]) == 13 + 16                               # a full header answer
         assert 1 <= counters(device)["first_answer_ms"] <= 1500
         for _ in range(5):                                          # probes of later restarts
-            assert boot_pick(answers(proc, device, block_request(0xC0, 16, mode))[0], mode) == "REFUSE"
+            got = answers(proc, device, block_request(0xC0, 16, mode, INSTALLED_LOW))
+            assert boot_pick(got[0], mode, INSTALLED_LOW) == "REFUSE"
         assert ota_state(device) == (0, 0)                          # no failure, no pause
         _, frames = contact_as_own(proc, device, VERSION, build=500, boot=2)
         frames += health(proc, device, RING_HIGH | RING_MOVED)
         assert [d for cmd, d in frames if cmd == OTA_NOTIFY] == [offer(IMAGE_13K)]   # not used up
-        got = answers(proc, device, block_request(0xC0, 16, MODE_LINK))
-        assert got == [header_answer(IMAGE_13K)] and boot_pick(got[0], MODE_LINK) == "TAKE"
+        got = answers(proc, device, block_request(0xC0, 16, MODE_LINK, INSTALLED_HIGH))
+        assert got == [header_answer(IMAGE_13K)] and boot_pick(got[0], MODE_LINK, INSTALLED_HIGH) == "TAKE"
     finally:
         proc.stop()
 
@@ -1311,8 +1337,10 @@ def test_the_refusal_is_only_for_a_probes_header(stub_13k):
     proc, device = start_with(stub_13k)
     try:
         assert answers(proc, device, block_request(0xC0, 16)) == []
-        assert answers(proc, device, block_request(0xC0, 16, MODE_RESCUE)) == []
-        assert answers(proc, device, block_request(0xD0, 64, MODE_PROBE)) == []
+        assert answers(proc, device, block_request(0xC0, 16, MODE_RESCUE, INSTALLED_LOW)) == []
+        assert answers(proc, device, block_request(0xC0, 16, MODE_BUTTON, INSTALLED_LOW)) == []
+        assert answers(proc, device, block_request(0xD0, 64, MODE_PROBE, INSTALLED_LOW)) == []
+        assert ota_state(device) == (0, 0)                          # silence: no failure
         got = answers(proc, device, block_request(0xC0, 16, MODE_NO_APP))
         assert got == [header_answer(IMAGE_13K)] and boot_pick(got[0], MODE_NO_APP) == "TAKE"
     finally:
@@ -1378,13 +1406,77 @@ def test_a_bootloader_without_an_app_is_served_past_the_gate(stub_13k):
         proc.stop()
 
 
+@pytest.mark.parametrize("mode", [MODE_PROBE, MODE_LINK, MODE_RESCUE, MODE_BUTTON])
+def test_the_bootloaders_own_runs_over_a_ring_high_app_are_served_past_the_gate(stub_13k, mode):
+    """A crash loop (rescue: the app never reports bit 25), the button window and the power-on
+    probe at a module start (no report yet), the link probe of an app that declines offers: no
+    health report opens the gate for them. Over an installed app whose header says RING_HIGH
+    (its settings at 0x08004800 already) they get the real header and every block, and the
+    bootloader takes the image; over any other app it would refuse an image over 12 KB itself.
+    Offers still wait for bit 25; no failure is counted."""
+    proc, device = start_with(stub_13k)
+    try:
+        device.step_time(50)
+        got = answers(proc, device, block_request(0xC0, 16, mode, INSTALLED_HIGH))
+        assert got == [header_answer(IMAGE_13K)]
+        assert boot_pick(got[0], mode, INSTALLED_HIGH) == "TAKE"
+        assert boot_pick(got[0], mode, INSTALLED_LOW) == "REFUSE"   # the bootloader's own limit
+        for off in range(0, len(IMAGE_13K), 64):
+            got = answers(proc, device, block_request(off, 64, mode, INSTALLED_HIGH))
+            assert len(got) == 1 and got[0][13:] == IMAGE_13K[off:off + 64], off
+        assert answers(proc, device, block_request(len(IMAGE_13K), 64, mode, INSTALLED_HIGH))[0][13:] == b""
+        assert ota_state(device) == (0, 0)
+        _, frames = contact_as_own(proc, device, VERSION, build=500, boot=2)
+        frames += health(proc, device, RING_HIGH)
+        assert OTA_NOTIFY not in [cmd for cmd, _ in frames]          # offers: bit 25 only
+        assert answers(proc, device, block_request(0xC0, 16, MODE_ASKED, INSTALLED_HIGH)) == []
+        assert answers(proc, device, block_request(0xC0, 16)) == []  # a v1 bootloader: gated
+    finally:
+        proc.stop()
+
+
+@pytest.mark.parametrize("mode", [MODE_PROBE, MODE_LINK, MODE_RESCUE, MODE_BUTTON])
+def test_the_bootloaders_own_runs_over_a_low_ring_app_stay_gated(stub_13k, mode):
+    """Without RING_HIGH in the installed header: as before the change. A probe's header gets
+    the refusal (the app starts at once), a rescue or button run no answer (its window runs
+    out, then the app), no block of the image; neither counts as a failure."""
+    proc, device = start_with(stub_13k)
+    try:
+        got = answers(proc, device, block_request(0xC0, 16, mode, INSTALLED_LOW))
+        if mode in (MODE_PROBE, MODE_LINK):
+            assert answer_kind(got) == "refused" and boot_pick(got[0], mode, INSTALLED_LOW) == "REFUSE"
+        else:
+            assert got == []
+        assert answers(proc, device, block_request(0xD0, 64, mode, INSTALLED_LOW)) == []
+        flags_only = INSTALLED_LOW[:5] + bytes([APP_FLAG_CONFIRMS]) + INSTALLED_HIGH[6:]
+        assert answer_kind(answers(proc, device, block_request(0xD0, 64, mode, flags_only))) == "none"
+        assert ota_state(device) == (0, 0)
+    finally:
+        proc.stop()
+
+
+def test_a_ring_high_header_in_a_6_byte_request_or_an_asked_run_opens_nothing(stub_13k):
+    """Only the 16-byte request of a v2 bootloader carries the installed header: a v1 one
+    (6 bytes, with any further bytes ignored by the serving rule) and an asked run (it follows
+    an offer, which the gate holds back) stay gated."""
+    proc, device = start_with(stub_13k)
+    try:
+        assert answers(proc, device, block_request(0xC0, 16)) == []
+        assert answers(proc, device, block_request(0xC0, 16, MODE_ASKED, INSTALLED_HIGH)) == []
+        assert answers(proc, device, block_request(0xD0, 64, MODE_ASKED, INSTALLED_HIGH)) == []
+        short = block_request(0xC0, 16, MODE_PROBE, INSTALLED_HIGH)[:15]
+        assert answers(proc, device, short) == []
+    finally:
+        proc.stop()
+
+
 def test_an_offset_0_request_is_a_restart_sign_also_when_the_gate_keeps_the_image(stub_13k):
     """Contract item 4 (a): the MCU is in its bootloader, served or not; its app's next query
     is a first contact again, and it is asked who it is again."""
     proc, device = start_with(stub_13k)
     try:
         contact_as_own(proc, device, VERSION, build=500, boot=2)    # no ring report: gated
-        assert answers(proc, device, block_request(0, 64, MODE_PROBE)) == []
+        assert answers(proc, device, block_request(0, 64, MODE_PROBE, INSTALLED_LOW)) == []
         assert TUYA_CMD_MCU_VERSION in mcu_query_seq(proc, device, 7)
         assert OTA_IDENT in version_then_ident(proc, device)
     finally:

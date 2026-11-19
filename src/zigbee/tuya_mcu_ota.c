@@ -41,9 +41,10 @@
 #define IDENT_TIMEOUT_MS        500   /* first wait; doubles at every retry */
 #define NOTIFY_LEN              11    /* version size crc build; a 2.1.x app reads the first 9 */
 #define REQUEST_LEN             16    /* v2 bootloader: + version, mode, installed header 8..15 */
+#define REQUEST_AT_FLAGS        13    /* the installed header's flags (its byte 13, at 8 + 5) */
 #define REQUEST_MODE_NO_APP     2     /* no valid app: served past the ring gate */
-#define REQUEST_MODE_PROBE      3     /* power-on probe: gated, a header refusal ends it */
-#define REQUEST_MODE_RESCUE     4     /* 3 unconfirmed boots */
+#define REQUEST_MODE_PROBE      3     /* power-on probe (3..6: past the ring gate over a */
+#define REQUEST_MODE_RESCUE     4     /* 3 unconfirmed boots   RING_HIGH app, request_past_gate()) */
 #define REQUEST_MODE_BUTTON     5     /* the module button at power-on */
 #define REQUEST_MODE_LINK       6     /* the app's link watchdog asked for a probe */
 #define REQUEST_RUN_GAP_MS      10000 /* a bootloader asks at least every 500 ms, gives up after 10 s */
@@ -405,6 +406,27 @@ static void note_request(const uint8_t *data, uint16_t len) {
                       ((uint32_t)(uint8_t)len << 24) | ((uint32_t)boot << 16) | build);
 }
 
+/* A v2 bootloader's request the ring gate (tuya_mcu_ota.h) lets through whatever the health
+ * reports said: one without a valid app (mode 2), and one of the bootloader's own recovery or
+ * check runs (power-on probe 3, rescue 4, button 5, link probe 6) over an installed app whose
+ * header says RING_HIGH (its settings already at 0x08004800, so the image cannot overwrite
+ * them; the bootloader refuses an image over 12 KB over any other app itself, pick(): size >
+ * g_limit). Not an asked run (mode 1, it follows an offer, which the gate holds back) and not a
+ * v1 bootloader (6 bytes: no mode, no header; it takes at most 12 KB). */
+static uint8_t request_past_gate(const uint8_t *data, uint16_t len) {
+    if (len < REQUEST_LEN) {
+        return 0;
+    }
+    uint8_t mode = data[7];
+
+    if (mode == REQUEST_MODE_NO_APP) {
+        return 1;
+    }
+    return (mode == REQUEST_MODE_PROBE || mode == REQUEST_MODE_RESCUE ||
+            mode == REQUEST_MODE_BUTTON || mode == REQUEST_MODE_LINK) &&
+           (data[REQUEST_AT_FLAGS] & IMAGE_FLAG_RING_HIGH);
+}
+
 static void answer_block(uint16_t seq, const uint8_t *data, uint16_t len) {
     image_info_t img;
 
@@ -429,12 +451,14 @@ static void answer_block(uint16_t seq, const uint8_t *data, uint16_t len) {
     const uint8_t *body = secondary_mcu_image + off;
     uint8_t        head[BLOCK_HEADER_LEN];
 
-    if (!ring_gate_open(&img) && !(len >= REQUEST_LEN && data[7] == REQUEST_MODE_NO_APP)) {
-        /* Gated. A v2 probe (power-on, or asked by the app's link watchdog) waits its whole
-         * window for a header and only then starts the app: its header request gets a
-         * refusal, a header answer the bootloader takes for no image (all zero: no magic, size
-         * 0, CRC 0), which ends the probe at once (zdms16-py32 boot/boot.c pick()). Nothing
-         * else of the gated image is answered. A refusal counts as no failure and no offer. */
+    if (!ring_gate_open(&img) && !request_past_gate(data, len)) {
+        /* Gated (and the installed app's header has no RING_HIGH, or the run is an asked
+         * one or a v1 bootloader's). A v2 probe (power-on, or asked by the app's link
+         * watchdog) waits its whole window for a header and only then starts the app: its
+         * header request gets a refusal, a header answer the bootloader takes for no image
+         * (all zero: no magic, size 0, CRC 0), which ends the probe at once (zdms16-py32
+         * boot/boot.c pick()). Nothing else of the gated image is answered. A refusal counts
+         * as no failure and no offer. */
         static const uint8_t refusal[16] = { 0 };
         if (!(len >= REQUEST_LEN && off == IMAGE_HEADER_OFFSET &&
               (data[7] == REQUEST_MODE_PROBE || data[7] == REQUEST_MODE_LINK))) {
