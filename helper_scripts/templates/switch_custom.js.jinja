@@ -1248,7 +1248,8 @@ const romasku = {
             const job = Object.keys(jobs).find((k) => jobs[k] === b[2]) ?? `job ${b[2]}`;
             const parts = [`${state} ${job}`];
             if (b[1] === 1) parts.push(b[3] === 11 ? `writing page ${b[46] || 32}/32` : `step ${b[3]}`);
-            if (b[1] === 5) parts.push(`power-cycle the module now (${b[46]} power-ups left)` + (b[4] ? `; last attach stopped at step ${b[3]}` : ""));
+            // page 255: an install past its option bytes, taken up at every power-up until done
+            if (b[1] === 5) parts.push(`power-cycle the module now (${b[46] === 255 ? "the install goes on at every power-up" : `${b[46]} power-ups left`})` + (b[4] ? `; last attach stopped at step ${b[3]}` : ""));
             if (b[4]) parts.push(`error: ${errors[b[4]] ?? b[4]}` + (b[5] ? ` (SWD ${b[5]})` : ""));
             const w = (i) => b.readUInt32LE(i);
             if (w(8)) parts.push(`DPIDR ${hex(w(8))}`);
@@ -1811,9 +1812,9 @@ const definitions = [
     stockDefinitions = stockDefinitions.definitions ?? stockDefinitions;
     const stock = stockDefinitions.find((d) => d.model === "{{ stock.model }}" && d.vendor === "{{ stock.vendor }}");
     if (stock) {
+        const {zigbeeModel, ...stockWithoutIds} = stock;   // matched by the fingerprints below only
         definitions.push({
-            ...stock,
-            zigbeeModel: undefined,
+            ...stockWithoutIds,
             fingerprint: [
                 {% for name in stock.manufacturer_names %}
                 {modelID: "{{ stock.zb_model }}", manufacturerName: "{{ name }}"},
@@ -1825,6 +1826,8 @@ const definitions = [
             ota: true,
             {% endif %}
         });
+    } else {
+        console.warn("switch_custom.js: no stock {{ stock.vendor }} {{ stock.model }} definition in zigbee-herdsman-converters: the conversion OTA is not offered");
     }
 }
 {% endfor %}

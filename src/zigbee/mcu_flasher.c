@@ -161,6 +161,9 @@ enum {
 #define PHASE_ARMED         1u
 #define PHASE_OB_WRITTEN    2u
 #define ARMED_BOOTS         3u
+/* PHASE_OB_WRITTEN: the factory firmware may be gone (the protection change
+ * erased the flash): the install goes on at every power-up until it is done. */
+#define RESUME_ALWAYS       0xFFu
 typedef struct {
     uint8_t magic;
     uint8_t phase;
@@ -181,15 +184,21 @@ static uint32_t       g_crc;
 static uint32_t       g_started;
 static uint32_t       g_last_report;
 static uint8_t        g_page;      /* STEP_PROGRAM: next page, 1..31 then 0 */
-static uint8_t        g_rewrites;  /* STEP_VERIFY: sector 0 written again */
+static uint8_t        g_rewrites;  /* STEP_OB_CHECK / STEP_VERIFY: written again */
+static uint8_t        g_resumed;   /* an install taken up after its option bytes */
+static uint8_t        g_past_ob;   /* this install started its option bytes (or was taken up) */
 static uint32_t       g_confirm_at;
 static uint32_t       g_step_at;   /* when the current wait step began */
 
-/* Confirm attribute (Basic 0xff52, char string): a writing job's own name. */
+/* Confirm attribute (Basic 0xff52, char string): a writing job's own name.
+ * The SDK copies a written string without checking its length against the
+ * attribute (zcl_setAttrVal: len + 1 bytes): the buffer takes the longest one a
+ * char string can be (255), whatever a network node sends. */
 static struct __attribute__((packed)) {
     uint8_t len;
-    char    text[23];
+    char    text[255];
 } g_confirm;
+typedef char mcu_flasher_confirm_takes_any_char_string[(sizeof(g_confirm) == 256) ? 1 : -1];
 
 #define CONFIRM_MS    60000u
 
@@ -245,7 +254,7 @@ uint8_t mcu_flasher_register_attrs(hal_zigbee_attribute *table, uint8_t start_in
     a[2].attribute_id = ZCL_ATTR_BASIC_MCU_FLASHER_CONFIRM;
     a[2].data_type_id = ZCL_DATA_TYPE_CHAR_STR;
     a[2].flag         = ATTR_WRITABLE;
-    a[2].size         = (uint8_t)sizeof(g_confirm);
+    a[2].size         = 0xFFu;   /* the field's most (uint8_t); the buffer has 256 */
     a[2].value        = (uint8_t *)&g_confirm;
     return MCU_FLASHER_ATTRS;
 }
@@ -257,9 +266,20 @@ static void report(void) {
                                 &g_status, (uint8_t)sizeof(g_status));
 }
 
+static void arm(uint8_t phase, uint8_t boots_left);
+
 static void finish(uint8_t state, uint8_t error, swd_err_t swd_err) {
-    if (g_status.step > STEP_POWER && swd_err == SWD_OK) {
-        swd_power_down();
+    if (g_status.job == MCU_FLASHER_JOB_INSTALL && state == MCU_FLASHER_STATE_FAILED &&
+        g_past_ob) {
+        /* past the option bytes the factory firmware may be erased: a failure
+         * here keeps the job, it goes on at the next power-up */
+        g_status.error   = error;
+        g_status.swd_err = (uint8_t)swd_err;
+        arm(PHASE_OB_WRITTEN, RESUME_ALWAYS);
+        return;
+    }
+    if (g_status.step > STEP_POWER) {
+        swd_power_down();   /* best effort: the link may be gone */
     }
     swd_end();
     g_status.state       = state;
@@ -289,6 +309,9 @@ static void arm(uint8_t phase, uint8_t boots_left) {
     armed_t a = { ARMED_MAGIC, phase, boots_left, 0 };
 
     hal_nvm_write(NV_ITEM_MCU_FLASHER_JOB, sizeof(a), (uint8_t *)&a);
+    if (g_status.step > STEP_POWER) {
+        swd_power_down();   /* best effort: the link may be gone */
+    }
     swd_end();
     g_status.state       = MCU_FLASHER_STATE_ARMED;
     g_status.page        = boots_left;     /* shown as the power-ups left */
@@ -365,6 +388,8 @@ void mcu_flasher_on_write(uint16_t attribute_id) {
     g_abort         = 0;
     g_tries         = 0;
     g_rewrites      = 0;
+    g_resumed       = 0;
+    g_past_ob       = 0;
     report();
 }
 
@@ -504,9 +529,14 @@ static swd_err_t flash_unlock(uint8_t *unlocked) {
     }
     if (err == SWD_OK) err = swd_mem_write32(ADDR_FLASH_SR,
                                              FLASH_SR_EOP | FLASH_SR_WRPERR | FLASH_SR_OPTVERR);
-    if (err == SWD_OK) err = swd_mem_write32(ADDR_FLASH_KEYR, FLASH_KEY1);
-    if (err == SWD_OK) err = swd_mem_write32(ADDR_FLASH_KEYR, FLASH_KEY2);
+    /* the key sequence only when locked: a key write to an unlocked
+     * controller locks it until the next reset */
     if (err == SWD_OK) err = swd_mem_read32(ADDR_FLASH_CR, &cr);
+    if (err == SWD_OK && (cr & FLASH_CR_LOCK)) {
+        err = swd_mem_write32(ADDR_FLASH_KEYR, FLASH_KEY1);
+        if (err == SWD_OK) err = swd_mem_write32(ADDR_FLASH_KEYR, FLASH_KEY2);
+        if (err == SWD_OK) err = swd_mem_read32(ADDR_FLASH_CR, &cr);
+    }
     *unlocked = (cr & FLASH_CR_LOCK) == 0;
     return err;
 }
@@ -637,9 +667,12 @@ static swd_err_t ob_program(uint8_t *started) {
     if (err != SWD_OK || !unlocked) {
         return err;
     }
-    err = swd_mem_write32(ADDR_FLASH_OPTKEYR, FLASH_OPTKEY1);
-    if (err == SWD_OK) err = swd_mem_write32(ADDR_FLASH_OPTKEYR, FLASH_OPTKEY2);
-    if (err == SWD_OK) err = swd_mem_read32(ADDR_FLASH_CR, &cr);
+    err = swd_mem_read32(ADDR_FLASH_CR, &cr);
+    if (err == SWD_OK && (cr & FLASH_CR_OPTLOCK)) {
+        err = swd_mem_write32(ADDR_FLASH_OPTKEYR, FLASH_OPTKEY1);
+        if (err == SWD_OK) err = swd_mem_write32(ADDR_FLASH_OPTKEYR, FLASH_OPTKEY2);
+        if (err == SWD_OK) err = swd_mem_read32(ADDR_FLASH_CR, &cr);
+    }
     if (err != SWD_OK || (cr & FLASH_CR_OPTLOCK)) {
         return err;
     }
@@ -672,15 +705,29 @@ static uint8_t auto_arm(armed_t *a) {
         !hal_swd_wired(g_clk)) {
         return 0;
     }
+    *a = (armed_t){ ARMED_MAGIC, PHASE_ARMED, ARMED_BOOTS, 0 };
+    hal_nvm_write(NV_ITEM_MCU_FLASHER_JOB, sizeof(*a), (uint8_t *)a);  /* the job first */
     used = AUTO_MAGIC;
     hal_nvm_write(NV_ITEM_MCU_FLASHER_AUTO, 1, &used);
-    *a = (armed_t){ ARMED_MAGIC, PHASE_ARMED, ARMED_BOOTS, 0 };
-    hal_nvm_write(NV_ITEM_MCU_FLASHER_JOB, sizeof(*a), (uint8_t *)a);
     return 1;
 }
 
+/* Read protection, twice alike (a garbled read must not decide). */
+static swd_err_t read_optr(uint32_t *optr) {
+    uint32_t  again = 0;
+    swd_err_t err   = swd_mem_read32(ADDR_FLASH_OPTR, optr);
+
+    if (err == SWD_OK) err = swd_mem_read32(ADDR_FLASH_OPTR, &again);
+    if (err == SWD_OK && again != *optr) err = SWD_ERR_PROTOCOL;
+    return err;
+}
+
 /* The armed install of this power-up: attach before the factory firmware
- * takes the SWD pins, halt; the rest runs from the main loop. */
+ * takes the SWD pins, halt; the rest runs from the main loop. An install past
+ * its option bytes (PHASE_OB_WRITTEN) is taken up the same way: at read
+ * protection level 0 with Open Dimmer's option bytes it goes on with the
+ * bootloader (STEP_REATTACH), else (still or again a factory or corrupt state,
+ * level 1) from its start. */
 void mcu_flasher_early(void) {
     armed_t a;
 
@@ -692,25 +739,23 @@ void mcu_flasher_early(void) {
         !auto_arm(&a)) {
         return;
     }
+    uint8_t resumed = a.phase == PHASE_OB_WRITTEN;
+
     g_status.state = MCU_FLASHER_STATE_RUNNING;
     g_status.job   = MCU_FLASHER_JOB_INSTALL;
     g_status.step  = STEP_BEGIN;
     g_started      = hal_millis();
-    if (a.boots_left == 0) {
+    g_resumed      = resumed;
+    g_past_ob      = resumed;
+    g_rewrites     = 0;
+    if (!resumed && a.boots_left == 0) {
         finish(MCU_FLASHER_STATE_FAILED, MCU_FLASHER_ERR_NO_ATTACH, SWD_OK);
-        return;
-    }
-    a.boots_left--;
-    hal_nvm_write(NV_ITEM_MCU_FLASHER_JOB, sizeof(a), (uint8_t *)&a);
-    if (a.phase == PHASE_OB_WRITTEN) {
-        /* the flash is blank by now: nothing takes the pins, no hurry */
-        g_step_at     = hal_millis();
-        g_status.step = STEP_REATTACH;
         return;
     }
     uint32_t  dpidr  = 0;
     uint32_t  optr   = 0;
     uint8_t   halted = 0;
+    uint8_t   held   = 0;            /* the pins were taken at the first try */
     uint8_t   stage  = STEP_BEGIN;   /* how far it got, shown when it fails */
     swd_err_t err    = SWD_ERR_NO_TARGET;
 
@@ -728,6 +773,7 @@ void mcu_flasher_early(void) {
         stage = STEP_BEGIN;
         err   = swd_begin(g_clk, g_dio);
         if (err != SWD_OK) {
+            held = attempt == 0;
             break;                 /* the pins are taken: no point in more tries */
         }
         if (err == SWD_OK) {
@@ -742,10 +788,11 @@ void mcu_flasher_early(void) {
             err   = swd_power_up();
         }
         if (err == SWD_OK) {
-            /* read protection first, the core untouched: an MCU at level 0 is
-             * not a factory one (Open Dimmer runs there) and keeps running */
+            /* read protection first, the core untouched: level 0 is not a
+             * factory MCU (Open Dimmer runs there) and keeps running; for a
+             * taken-up install it is the state after the protection change */
             stage = STEP_IDENTITY;
-            err   = swd_mem_read32(ADDR_FLASH_OPTR, &optr);
+            err   = read_optr(&optr);
             if (err == SWD_OK && (uint8_t)optr == 0xAAu) {
                 break;
             }
@@ -755,11 +802,17 @@ void mcu_flasher_early(void) {
             err   = halt_now(&halted);
         }
     }
+    g_status.dpidr = dpidr;
+    if (err == SWD_OK && (uint8_t)optr == 0xAAu && resumed) {
+        g_status.optr = optr;
+        g_step_at     = hal_millis();
+        next_step(STEP_REATTACH);   /* the link is up: the checks, then the bootloader */
+        return;
+    }
     if (err == SWD_OK && (uint8_t)optr == 0xAAu) {
         swd_power_down();
         swd_end();
         hal_nvm_delete(NV_ITEM_MCU_FLASHER_JOB);
-        g_status.dpidr       = dpidr;
         g_status.optr        = optr;
         g_status.state       = MCU_FLASHER_STATE_FAILED;
         g_status.error       = MCU_FLASHER_ERR_WRONG_CLASS;
@@ -767,19 +820,24 @@ void mcu_flasher_early(void) {
         return;
     }
     if (err == SWD_OK && halted) {
-        g_status.dpidr     = dpidr;
         g_status.app_build = sat16(hal_millis());   /* attach time: shown for an install */
         next_step(STEP_IDENTITY);
         return;
     }
 
-    /* not this time: kept armed; the status tells how far it got, the
-     * transfer error and when (ms since the module's start) */
+    /* Not this time: kept armed; the status tells how far it got, the transfer
+     * error and when (ms since the module's start). A power-up is counted only
+     * when the pins were free at the start: held at once, the MCU ran on through
+     * a restart of the module alone (an OTA, a config write), it was not a
+     * power-up. A taken-up install is never given up. */
+    if (!resumed && !held) {
+        a.boots_left--;
+        hal_nvm_write(NV_ITEM_MCU_FLASHER_JOB, sizeof(a), (uint8_t *)&a);
+    }
     swd_end();
     g_status.state = MCU_FLASHER_STATE_ARMED;
-    g_status.page  = a.boots_left;
+    g_status.page  = resumed ? RESUME_ALWAYS : a.boots_left;
     g_status.step  = stage;
-    g_status.dpidr = dpidr;
     g_status.error = stage == STEP_BEGIN ? MCU_FLASHER_ERR_PINS_DRIVEN :
                      err == SWD_OK ? MCU_FLASHER_ERR_HALT :
                      err == SWD_ERR_NO_TARGET ? MCU_FLASHER_ERR_NO_TARGET : MCU_FLASHER_ERR_SWD;
@@ -839,7 +897,7 @@ void mcu_flasher_task(void) {
              * until a power cycle) */
             uint32_t optr = 0;
 
-            err = swd_mem_read32(ADDR_FLASH_OPTR, &optr);
+            err = read_optr(&optr);
             g_status.optr = optr;   /* packed: assigned, never through a pointer */
             if (err == SWD_OK && (uint8_t)optr == 0xAAu) {
                 fail = MCU_FLASHER_ERR_WRONG_CLASS;
@@ -878,13 +936,17 @@ void mcu_flasher_task(void) {
              * Dimmer), sector 0 not write-protected. */
             uint8_t user = (uint8_t)(g_status.optr >> 8);
             /* install: a factory MCU, read-protected (level 1) */
-            if (is_install() &&
+            if (is_install() && (uint8_t)g_status.optr == 0xAA && g_resumed) {
+                /* a taken-up install at level 0: its option bytes again */
+            } else if (is_install() &&
                 ((uint8_t)g_status.optr == 0xAA || (uint8_t)g_status.optr == 0xCC)) {
                 fail = (uint8_t)g_status.optr ==
                        0xAA ? MCU_FLASHER_ERR_WRONG_CLASS : MCU_FLASHER_ERR_PROTECTED;
                 break;
             }
-            if (is_install() && user != 0xF0 && user != 0xF9) {
+            if (is_install() && !g_resumed && user != 0xF0 && user != 0xF9) {
+                /* (a taken-up install writes its option bytes again, whatever
+                 * a cut left there) */
                 fail = MCU_FLASHER_ERR_PROTECTED;
                 break;
             }
@@ -1060,7 +1122,12 @@ void mcu_flasher_task(void) {
 
     case STEP_OB: {
         uint8_t started;
+        armed_t a = { ARMED_MAGIC, PHASE_OB_WRITTEN, RESUME_ALWAYS, 0 };
 
+        /* before the programming starts: a power cut from here on takes the
+         * install up at the next power-up (the flash may be erased by then) */
+        hal_nvm_write(NV_ITEM_MCU_FLASHER_JOB, sizeof(a), (uint8_t *)&a);
+        g_past_ob = 1;
         err = ob_program(&started);
         if (err == SWD_OK && !started) {
             fail = MCU_FLASHER_ERR_FLASH;
@@ -1118,10 +1185,8 @@ void mcu_flasher_task(void) {
         break;
 
     case STEP_RELOAD: {
-        armed_t a = { ARMED_MAGIC, PHASE_OB_WRITTEN, ARMED_BOOTS, 0 };
-
-        /* if the link does not come back, the next power-up loads them */
-        hal_nvm_write(NV_ITEM_MCU_FLASHER_JOB, sizeof(a), (uint8_t *)&a);
+        /* PHASE_OB_WRITTEN is in NV (STEP_OB): if the link does not come back,
+         * the next power-up loads them and takes the install up */
         swd_mem_write32(ADDR_FLASH_CR, FLASH_CR_OBL_LAUNCH);   /* resets: the link drops */
         g_step_at = hal_millis();
         next_step(STEP_REATTACH);
@@ -1137,14 +1202,23 @@ void mcu_flasher_task(void) {
             swd_mem_read32(ADDR_FLASH, &word[3]) == SWD_OK) {
             g_status.optr = word[1];
             g_status.wrpr = (uint16_t)word[2];
-            if ((word[1] & 0xFFFFu) != (OB_OPTR & 0xFFFFu) || (word[2] & 0xFFFFu) != OB_WRPR ||
-                word[3] != 0xFFFFFFFFu) {
+            uint8_t ours = (word[1] & 0xFFFFu) == (OB_OPTR & 0xFFFFu) && (word[2] & 0xFFFFu) == OB_WRPR;
+            if (ours && (g_resumed || word[3] == 0xFFFFFFFFu)) {
+                /* right after the reload the flash must be blank (the mass
+                 * erase); taken up later, a part of the bootloader may be there */
+                g_rewrites = 0;
+                next_step(STEP_HALT);           /* the bootloader as update_bootloader writes it */
+            } else if (g_resumed && (uint8_t)word[1] != 0xCCu) {
+                /* not the state after the change: the install from its start
+                 * (level 0 with other option bytes too: written again, no erase) */
+                g_resumed = 1;
+                next_step(STEP_STOP);
+            } else {
                 fail = MCU_FLASHER_ERR_RELOAD;
                 break;
             }
-            next_step(STEP_HALT);               /* the bootloader as update_bootloader writes it */
         } else if (hal_millis() - g_step_at > REATTACH_MS) {
-            arm(PHASE_OB_WRITTEN, ARMED_BOOTS); /* power-cycle the module */
+            arm(PHASE_OB_WRITTEN, RESUME_ALWAYS); /* power-cycle the module */
             return;
         }
         break;

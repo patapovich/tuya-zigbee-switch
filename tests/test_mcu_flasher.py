@@ -418,13 +418,15 @@ def run_install(proc, device) -> dict:
     return run_until_settled(proc, device, passes=4000)
 
 
-def check_installed(proc, st):
+def check_installed(proc, st, reloaded: bool = True):
+    """reloaded=False: an install taken up after a power cut, where the power-up loaded the
+    option bytes (no OBL_LAUNCH needed)."""
     boot = carried_boot()
     assert (st["state"], st["error"]) == (STATE_DONE, ERR_NONE), st
     assert st["sector0_crc"] == crc(sector(boot)) and st["boot_version"] == boot[0x14]
     stats = target(proc, "stats")
     assert stats["rdp2_written"] == "0"                     # never level 2
-    assert int(stats["mass_erases"]) == 1 and int(stats["obl_launches"]) >= 1
+    assert int(stats["mass_erases"]) == 1 and int(stats["obl_launches"]) >= (1 if reloaded else 0)
     assert stats["core"] == "running" and int(stats["contention"]) == 0
     assert flash_read(proc, 0x1FFF0E80, 4) == OB_OPEN_DIMMER  # Open Dimmer's option bytes
     assert flash_read(proc, 0x08000000, 0x400) == sector(boot)
@@ -591,14 +593,20 @@ def test_auto_arms_when_the_factory_firmware_has_the_pins(stock, monkeypatch):
 
 
 def test_auto_gives_up_once_for_good(stock, monkeypatch):
-    """Armed by itself but never attached (something holds SWCLK low at every start): failed
-    after its power-ups, and no new automatic try at the next ones."""
+    """Armed by itself: a start-up that finds SWCLK held at once (the MCU ran on, a restart of
+    the module alone) costs no power-up; power-ups without an answer do, and after them the
+    install has failed and is not armed by itself again."""
     monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "1500")
     monkeypatch.setenv("SWD_TARGET_CONNECT", "0")
     with StubProc(device_config=WITH_TOKEN) as proc:            # no wires yet: nothing
         Device(proc)
         target(proc, "clk_held_low", 1)                         # kept in the model's state
     monkeypatch.setenv("SWD_TARGET_CONNECT", "1")
+    for _ in range(2):
+        with StubProc(device_config=WITH_TOKEN) as proc:        # SWCLK held at once
+            st = status(Device(proc))
+            assert (st["state"], st["error"], st["page"]) == (STATE_ARMED, ERR_PINS_DRIVEN, 3)
+    monkeypatch.setenv("SWD_TARGET_CONNECT", "0")               # the wires come off
     monkeypatch.setenv("SWD_TARGET_POWER_CYCLE", "1")
     seen = []
     for _ in range(5):
@@ -609,3 +617,63 @@ def test_auto_gives_up_once_for_good(stock, monkeypatch):
             assert stats["option_programs"] == "0" and int(stats["contention"]) == 0
     assert seen == [(STATE_ARMED, 2), (STATE_ARMED, 1), (STATE_ARMED, 0),
                     (STATE_FAILED, 0), (STATE_IDLE, 0)], seen
+
+
+# ---- power cuts during an install (review 2026-11-19: a cut past the option bytes left a blank
+# MCU that the next start-ups never took up) -------------------------------------------------
+
+STEP_PROGRAM_, STEP_OB_WAIT_, STEP_OB_CHECK_, STEP_REATTACH_ = 11, 16, 17, 19
+RESUME_ALWAYS = 0xFF
+
+
+def install_until(proc, device, step: int, page: int = 0) -> dict:
+    """A manual install of a factory MCU, run until it reaches step (and page)."""
+    mcu_tells(proc)
+    confirm(device, "install")
+    start_job(device, JOB_INSTALL)
+    for _ in range(4000):
+        proc.exec("s")
+        st = status(device)
+        if st["step"] == step and st["page"] >= page:
+            return st
+        assert st["state"] == STATE_RUNNING, st
+    raise AssertionError(f"never reached step {step}")
+
+
+@pytest.mark.parametrize("step,page", [(STEP_PROGRAM_, 1), (STEP_PROGRAM_, 6), (STEP_OB_WAIT_, 0),
+                                       (STEP_OB_CHECK_, 0), (STEP_REATTACH_, 0)])
+def test_a_power_cut_past_the_option_bytes_is_taken_up_at_the_next_power_up(stock, monkeypatch, step, page):
+    monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "0")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        install_until(proc, Device(proc), step, page)       # mains off here
+    monkeypatch.setenv("SWD_TARGET_POWER_CYCLE", "1")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        proc.exec("step_time 3000")
+        check_installed(proc, run_until_settled(proc, device, passes=4000), reloaded=False)
+    with StubProc(device_config=WITH_TOKEN) as proc:         # the job is gone from NV
+        assert status(Device(proc))["state"] == STATE_IDLE
+
+
+def test_a_failure_past_the_option_bytes_keeps_the_job(stock, monkeypatch):
+    """The link lost while the bootloader is written: the job is armed again (no limit), and
+    the power-up with the link back installs."""
+    monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "0")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        install_until(proc, device, STEP_PROGRAM_, 3)
+        target(proc, "connect", 0)                           # a wire comes off
+        st = run_until_settled(proc, device, passes=4000)
+        assert (st["state"], st["page"]) == (STATE_ARMED, RESUME_ALWAYS), st
+    monkeypatch.setenv("SWD_TARGET_POWER_CYCLE", "1")
+    for _ in range(4):                                       # never given up while it is off
+        with StubProc(device_config=WITH_TOKEN) as proc:
+            device = Device(proc)
+            proc.exec("step_time 3000")
+            st = run_until_settled(proc, device, passes=400)
+            assert (st["state"], st["page"]) == (STATE_ARMED, RESUME_ALWAYS), st
+    monkeypatch.setenv("SWD_TARGET_CONNECT", "1")            # soldered again
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        proc.exec("step_time 3000")
+        check_installed(proc, run_until_settled(proc, device, passes=4000))

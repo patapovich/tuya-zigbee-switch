@@ -158,5 +158,8 @@ def test_install_and_its_armed_state():
     armed = decode(status(state=5, job=5, step=0, page=3))
     assert armed == [{"mcu_flasher_status":
                       "armed install; power-cycle the module now (3 power-ups left); 1.2 s"}]
+    resumed = decode(status(state=5, job=5, step=0, page=255))   # past its option bytes
+    assert resumed == [{"mcu_flasher_status": "armed install; power-cycle the module now "
+                        "(the install goes on at every power-up); 1.2 s"}]
     wrong = decode(status(state=0, job=5, step=0, error=12))
     assert "not a factory MCU" in wrong[0]["mcu_flasher_status"]
