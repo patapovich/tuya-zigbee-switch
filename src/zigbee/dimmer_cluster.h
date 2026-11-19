@@ -89,6 +89,15 @@ typedef struct {
     uint16_t             brightness_fade_time;
     uint16_t             brightness_fade_time_saved;
 
+    /* The last timed lit-to-lit move sent (MCU values from / to, its ms, when; fade_ms 0:
+     * none running): where the light is during it, the "from" of the next change (a slider
+     * drag sends one before the move ends). fade_pending: the level write that follows it. */
+    uint16_t             fade_from;
+    uint16_t             fade_to;
+    uint16_t             fade_ms;
+    uint32_t             fade_at;
+    uint8_t              fade_pending;
+
     /* Level Control Options (bit 0 ExecuteIfOff), NV-kept. A level command without OnOff
      * while off, with ExecuteIfOff in effect, sets the level the light comes on at: Open
      * Dimmer keeps a level written while off; a stock MCU does not, so it is kept here

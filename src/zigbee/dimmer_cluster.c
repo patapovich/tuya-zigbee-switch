@@ -149,6 +149,8 @@ static void dimmer_set_on(zigbee_dimmer_cluster *cluster, uint8_t on) {
     cluster->on = on;
     if (on)
         cluster->pending_level = 0; /* applied by whoever switched it on */
+    else
+        cluster->fade_ms = 0;
     dimmer_notify_onoff(cluster);
     /* Open Dimmer: any off (ours, the wall switch, the countdown's own end) ends it. */
     if (!on && cluster->countdown) {
@@ -197,6 +199,10 @@ static void dimmer_write_level(zigbee_dimmer_cluster *cluster, uint8_t level) {
     dimmer_write_tuya_value(cluster->level_dpid, value);
     cluster->last_written_value = value;
     cluster->level_value        = value;
+    if (cluster->fade_pending)
+        cluster->fade_pending = 0;  /* the level of the timed move just sent */
+    else
+        cluster->fade_ms = 0;       /* a move the module does not time: no estimate */
     dimmer_start_holdoff(cluster);
 }
 
@@ -273,17 +279,31 @@ static void dimmer_send_transition(zigbee_dimmer_cluster *cluster, const uint8_t
     dimmer_send_time(cluster, dimmer_zcl_time_ms(tt));
 }
 
+/* Where the light is (MCU value): during the last timed lit-to-lit move sent, the even point of
+ * it for the time gone (the MCU moves evenly from where it was); else the value the module
+ * knows (the last written or reported). No overflow: d <= 1000, t < 65536. */
+static uint32_t dimmer_fade_position(const zigbee_dimmer_cluster *cluster, uint32_t now) {
+    if (cluster->fade_ms) {
+        uint32_t t = now - cluster->fade_at;
+        if (t < cluster->fade_ms) {
+            uint32_t a = cluster->fade_from, b = cluster->fade_to;
+            uint32_t m = (b > a ? b - a : a - b) * t / cluster->fade_ms;
+            return b > a ? a + m : a - m;
+        }
+    }
+    return cluster->level_value ? cluster->level_value
+                                : dimmer_level_to_value(cluster, cluster->current_level);
+}
+
 /* A lit-to-lit level change without a time with a brightness fade time set: that time for the
  * whole range, so a part of it for this change (ms = time * |to - from| / range in MCU values,
- * from the value the module knows; the range is the channel's min..max as the levels map to it,
- * 10..1000 without scaling); at least 1 ms for any change, none for no change. No overflow:
- * the time is at most 6553.4 s, and (time / range) * d + (time % range) * d / range stays
- * below 2^32 with d <= range <= 990. */
-static uint32_t dimmer_fade_time_ms(const zigbee_dimmer_cluster *cluster, uint8_t level) {
+ * from where the light is, dimmer_fade_position(); the range is the channel's min..max as the
+ * levels map to it, 10..1000 without scaling); at least 1 ms for any change, none for no
+ * change. No overflow: the time is at most 6553.4 s, and (time / range) * d + (time % range) *
+ * d / range stays below 2^32 with d <= range <= 990. */
+static uint32_t dimmer_fade_time_ms(const zigbee_dimmer_cluster *cluster, uint32_t from,
+                                    uint32_t to) {
     uint32_t full = (uint32_t)cluster->brightness_fade_time * 100u;
-    uint32_t to   = dimmer_level_to_value(cluster, level);
-    uint32_t from = cluster->level_value ? cluster->level_value
-                                         : dimmer_level_to_value(cluster, cluster->current_level);
     uint32_t span = dimmer_scaling_active(cluster) ? (uint32_t)(cluster->mcu_max - cluster->mcu_min)
                                                    : TUYA_BRIGHTNESS_MAX - TUYA_BRIGHTNESS_MIN;
     uint32_t d = to > from ? to - from : from - to;
@@ -303,11 +323,25 @@ static uint32_t dimmer_fade_time_ms(const zigbee_dimmer_cluster *cluster, uint8_
  * settings; a given time wins. */
 static void dimmer_send_level_transition(zigbee_dimmer_cluster *cluster, const uint8_t *tt,
                                          uint8_t level) {
-    uint32_t ms = tt ? dimmer_zcl_time_ms(tt) : DIMMER_TIME_NONE;
+    uint32_t ms   = tt ? dimmer_zcl_time_ms(tt) : DIMMER_TIME_NONE;
+    uint8_t  lit  = cluster->on && level;
+    uint32_t now  = hal_millis();
+    uint32_t from = dimmer_fade_position(cluster, now);
+    uint32_t to   = level ? dimmer_level_to_value(cluster, level) : 0;
 
-    if (ms == DIMMER_TIME_NONE && cluster->on && level && cluster->brightness_fade_time != 0xFFFF)
-        ms = dimmer_fade_time_ms(cluster, level);
+    if (ms == DIMMER_TIME_NONE && lit && cluster->brightness_fade_time != 0xFFFF)
+        ms = dimmer_fade_time_ms(cluster, from, to);
     dimmer_send_time(cluster, ms);
+
+    /* Keep the move for the next change's "from" (a timed one to Open Dimmer only). */
+    cluster->fade_pending = 0;
+    if (lit && ms != DIMMER_TIME_NONE && dimmer_od_from(cluster, OPEN_DIMMER_TRANSITION_BUILD)) {
+        cluster->fade_from    = (uint16_t)from;
+        cluster->fade_to      = (uint16_t)to;
+        cluster->fade_ms      = (uint16_t)(ms > 0xFFFFu ? 0xFFFFu : ms);
+        cluster->fade_at      = now;
+        cluster->fade_pending = 1;
+    }
 }
 
 /* ---- Open Dimmer settings (from OPEN_DIMMER_FEATURES_BUILD) -----------------
@@ -978,6 +1012,7 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
                 cluster->has_held_report   = 1;
             } else {
                 cluster->level_value = number;
+                cluster->fade_ms     = 0; /* the MCU's word now */
                 dimmer_set_current_level(cluster, dimmer_value_to_level(cluster, number));
             }
         } else if (dp_type == TUYA_DP_TYPE_VALUE && cluster->min_level_dpid &&
