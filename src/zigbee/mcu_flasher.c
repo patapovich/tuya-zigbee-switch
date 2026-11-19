@@ -72,54 +72,48 @@ static uint16_t sat16(uint32_t v) {
 }
 
 void mcu_flasher_parse_token(const char *entry) {
-    /* SW<clk><dio>, e.g. SWD3D7 */
-    if (strlen(entry) != 6) {
+    /* SW<clk><dio>, e.g. SWD3D7. Never the MCU link's default pins (B1, B7)
+     * or the Telink single-wire debug pad (A7), never twice the same pin:
+     * else the feature stays off. */
+    static const char forbidden[] = "B1B7A7";
+
+    if (strlen(entry) != 6 || memcmp(entry + 2, entry + 4, 2) == 0) {
         return;
+    }
+    for (uint8_t i = 0; i < sizeof(forbidden) - 1; i += 2) {
+        if (memcmp(entry + 2, forbidden + i, 2) == 0 || memcmp(entry + 4, forbidden + i, 2) == 0) {
+            return;
+        }
     }
     g_clk = hal_gpio_parse_pin(entry + 2);
     g_dio = hal_gpio_parse_pin(entry + 4);
 }
 
-/* Never a pin of the MCU link, the Telink single-wire debug pad, or twice the
- * same pin: the feature stays off. */
-static uint8_t pins_usable(void) {
-    if (g_clk == HAL_INVALID_PIN || g_dio == HAL_INVALID_PIN || g_clk == g_dio) {
-        return 0;
-    }
-    const hal_gpio_pin_t forbidden[] = {
-        hal_gpio_parse_pin("B1"),               hal_gpio_parse_pin("B7"),
-        hal_gpio_parse_pin("A7"),
-        (hal_gpio_pin_t)mcu_uart_config.tx_pin, (hal_gpio_pin_t)mcu_uart_config.rx_pin,
-    };
-    for (uint8_t i = 0; i < sizeof(forbidden) / sizeof(forbidden[0]); i++) {
-        /* tx_pin / rx_pin are 0 without a W token */
-        if (forbidden[i] != 0 && (forbidden[i] == g_clk || forbidden[i] == g_dio)) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-static void attr(hal_zigbee_attribute *a, uint16_t id, uint8_t type, uint8_t flag,
-                 void *value, uint8_t size) {
-    a->attribute_id = id;
-    a->data_type_id = type;
-    a->flag         = flag;
-    a->size         = size;
-    a->value        = (uint8_t *)value;
-}
-
 uint8_t mcu_flasher_register_attrs(hal_zigbee_attribute *table, uint8_t start_index) {
-    g_enabled = pins_usable();
+    /* A W token's UART pins (0 without one) are not ours either. */
+    hal_gpio_pin_t tx = (hal_gpio_pin_t)mcu_uart_config.tx_pin;
+    hal_gpio_pin_t rx = (hal_gpio_pin_t)mcu_uart_config.rx_pin;
+
+    g_enabled = g_clk != HAL_INVALID_PIN && g_dio != HAL_INVALID_PIN &&
+                !(tx != 0 && (tx == g_clk || tx == g_dio)) &&
+                !(rx != 0 && (rx == g_clk || rx == g_dio));
     if (!g_enabled) {
         return 0;
     }
     g_status.len    = (uint8_t)(sizeof(g_status) - 1);
     g_status.format = 1;
-    attr(&table[start_index], ZCL_ATTR_BASIC_MCU_FLASHER_STATUS, ZCL_DATA_TYPE_OCTET_STR,
-         ATTR_READONLY, &g_status, (uint8_t)sizeof(g_status));
-    attr(&table[start_index + 1], ZCL_ATTR_BASIC_MCU_FLASHER_CONTROL, ZCL_DATA_TYPE_UINT8,
-         ATTR_WRITABLE, &g_control, (uint8_t)sizeof(g_control));
+    hal_zigbee_attribute *a = &table[start_index];
+
+    a[0].attribute_id = ZCL_ATTR_BASIC_MCU_FLASHER_STATUS;
+    a[0].data_type_id = ZCL_DATA_TYPE_OCTET_STR;
+    a[0].flag         = ATTR_READONLY;
+    a[0].size         = (uint8_t)sizeof(g_status);
+    a[0].value        = (uint8_t *)&g_status;
+    a[1].attribute_id = ZCL_ATTR_BASIC_MCU_FLASHER_CONTROL;
+    a[1].data_type_id = ZCL_DATA_TYPE_UINT8;
+    a[1].flag         = ATTR_WRITABLE;
+    a[1].size         = (uint8_t)sizeof(g_control);
+    a[1].value        = &g_control;
     return MCU_FLASHER_ATTRS;
 }
 
@@ -243,8 +237,9 @@ static swd_err_t crc_slice(uint32_t base, uint16_t count, uint8_t *result, uint8
 }
 
 static void next_step(uint8_t step) {
-    g_status.step = step;
-    g_tries       = 0;
+    g_status.step     = step;
+    g_status.progress = (uint8_t)(step * (100u / STEP_END));
+    g_tries           = 0;
 }
 
 void mcu_flasher_task(void) {
@@ -308,21 +303,17 @@ void mcu_flasher_task(void) {
         break;
 
     case STEP_ROM:
-        err = crc_slice(ADDR_ROM, ROM_WORDS, STATUS_AT(rom_crc), &complete);
-        g_status.progress = (uint8_t)(10u + 50u * g_word / ROM_WORDS);
+    case STEP_SECTOR0: {
+        uint8_t rom = g_status.step == STEP_ROM;
+
+        err = crc_slice(rom ? ADDR_ROM : ADDR_FLASH, rom ? ROM_WORDS : SECTOR0_WORDS,
+                        rom ? STATUS_AT(rom_crc) : STATUS_AT(sector0_crc), &complete);
         if (err == SWD_OK && complete) {
             /* Flash reads only at RDP level 0: at level 1 they are bus errors. */
-            next_step(g_status.rdp == 0xAA ? STEP_SECTOR0 : STEP_END);
+            next_step(!rom ? STEP_HEADERS : g_status.rdp == 0xAA ? STEP_SECTOR0 : STEP_END);
         }
         break;
-
-    case STEP_SECTOR0:
-        err = crc_slice(ADDR_FLASH, SECTOR0_WORDS, STATUS_AT(sector0_crc), &complete);
-        g_status.progress = (uint8_t)(60u + 35u * g_word / SECTOR0_WORDS);
-        if (err == SWD_OK && complete) {
-            next_step(STEP_HEADERS);
-        }
-        break;
+    }
 
     case STEP_HEADERS:
         /* boot_id + the next word, then the app header: in this order in the status */
