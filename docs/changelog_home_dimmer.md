@@ -14,6 +14,9 @@ zdms16-py32 release notes.
 
 ## Next
 
+## 1.1.3-d15ab6b1 (2026-11-19), carries Open Dimmer 2.2.1
+
+- Carries Open Dimmer 2.2.1.
 - The light comes on at once again after a power cut (Open Dimmer on the v2 bootloader): while
   the module carries an image it may not send yet, the bootloader's start-up check now gets an
   answer that there is nothing new, instead of no answer and a 3 s wait.
