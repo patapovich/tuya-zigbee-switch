@@ -90,8 +90,8 @@ typedef char   ob_optr_is_level_0[((OB_OPTR & 0xFFu) == 0xAAu) ? 1 : -1];
 typedef char   ob_user_byte_is_open_dimmers[(((OB_OPTR >> 8) & 0xFFu) == 0xF9u) ? 1 : -1];
 #define OB_PROGRAM_MS            2000u
 #define REATTACH_MS              2000u
-#define EARLY_TRIES              8u   /* mcu_flasher_early: attach tries ... */
-#define EARLY_GAP_MS             10u  /* ... this far apart */
+#define EARLY_TRIES              60u  /* mcu_flasher_early: attach tries ... */
+#define EARLY_GAP_MS             20u  /* ... this far apart: ~1.2 s in all */
 #define ADDR_FLASH_SR            0x40022010u
 #define ADDR_FLASH_CR            0x40022014u
 #define ADDR_FLASH_TS0           0x40022100u
@@ -687,8 +687,10 @@ void mcu_flasher_early(void) {
     uint8_t   stage  = STEP_BEGIN;   /* how far it got, shown when it fails */
     swd_err_t err    = SWD_ERR_NO_TARGET;
 
-    /* a few tries ~10 ms apart (well inside the factory firmware's start-up
-     * delay), in case the MCU is not ready at the first */
+    /* Tries 20 ms apart for ~1.2 s: on the bench the read-protected MCU's
+     * debug port did not answer in its first ~0.3 s after power-up (the factory
+     * firmware keeps the pins for ~1.5 s, a bootloader runs before it); given up
+     * at once when the pins are taken */
     for (uint8_t attempt = 0; attempt < EARLY_TRIES && !(err == SWD_OK && halted); attempt++) {
         if (attempt > 0) {
             swd_end();
@@ -698,6 +700,9 @@ void mcu_flasher_early(void) {
         }
         stage = STEP_BEGIN;
         err   = swd_begin(g_clk, g_dio);
+        if (err != SWD_OK) {
+            break;                 /* the pins are taken: no point in more tries */
+        }
         if (err == SWD_OK) {
             stage = STEP_CONNECT;
             err   = swd_connect(&dpidr);
@@ -715,7 +720,8 @@ void mcu_flasher_early(void) {
         }
     }
     if (err == SWD_OK && halted) {
-        g_status.dpidr = dpidr;
+        g_status.dpidr     = dpidr;
+        g_status.app_build = sat16(hal_millis());   /* attach time: shown for an install */
         next_step(STEP_IDENTITY);
         return;
     }

@@ -1258,6 +1258,7 @@ const romasku = {
             if (w(40)) parts.push(`sector 0 CRC ${hex(w(40))}`);
             if (b[6]) parts.push(`bootloader v${b[6]}`);
             if (b[7]) parts.push(`app ${b[7] >> 6}.${(b[7] >> 4) & 3}.${b[7] & 15} build ${b.readUInt16LE(30)}`);
+            else if (b[2] === 5 && b.readUInt16LE(30)) parts.push(`attached ${b.readUInt16LE(30)} ms after the module's start`);
             if (b[1] >= 2) parts.push(`${(b.readUInt16LE(44) / 1000).toFixed(1)} s`);
             return parts.join("; ");
         };
