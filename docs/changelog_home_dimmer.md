@@ -14,6 +14,13 @@ zdms16-py32 release notes.
 
 ## Next
 
+- The light comes on at once again after a power cut (Open Dimmer on the v2 bootloader): while
+  the module carries an image it may not send yet, the bootloader's start-up check now gets an
+  answer that there is nothing new, instead of no answer and a 3 s wait.
+- Zigbee2MQTT learns a new Open Dimmer version after an update of the dimming MCU alone: the
+  module's version report reaches it for every Open Dimmer (Reconfigure once). Modules with the
+  factory MCU: no change.
+
 ## 1.1.3-f596756a (2026-11-19), carries Open Dimmer 2.2.0
 
 - Wall switch actions (single, double, hold, ...) reach Zigbee2MQTT again: the builds
