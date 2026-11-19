@@ -335,7 +335,8 @@ static void dimmer_send_level_transition(zigbee_dimmer_cluster *cluster, const u
 
     /* Keep the move for the next change's "from" (a timed one to Open Dimmer only). */
     cluster->fade_pending = 0;
-    if (lit && ms != DIMMER_TIME_NONE && dimmer_od_from(cluster, OPEN_DIMMER_TRANSITION_BUILD)) {
+    if (lit && ms != DIMMER_TIME_NONE && from != to &&
+        dimmer_od_from(cluster, OPEN_DIMMER_TRANSITION_BUILD)) {
         cluster->fade_from    = (uint16_t)from;
         cluster->fade_to      = (uint16_t)to;
         cluster->fade_ms      = (uint16_t)(ms > 0xFFFFu ? 0xFFFFu : ms);
@@ -883,6 +884,7 @@ static hal_zigbee_cmd_result_t dimmer_cluster_level_callback(zigbee_dimmer_clust
     default:
         return HAL_ZIGBEE_CMD_SKIPPED;
     }
+    cluster->fade_pending = 0; /* a timed move's level is written within its command */
     return HAL_ZIGBEE_CMD_PROCESSED;
 }
 
