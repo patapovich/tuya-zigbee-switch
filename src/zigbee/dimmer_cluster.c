@@ -8,6 +8,13 @@
 #include "zigbee/tuya_mcu_app.h"
 #include "zigbee/tuya_mcu_ota.h"
 #include "zigbee/tuya_secondary_mcu.h"
+#ifdef DIMMER_SCENES
+#include "zigbee/scene_cluster.h"
+/* SceneValid goes 0 when the light changes other than by a recall. */
+#define DIMMER_SCENE_CHANGED(endpoint)    scene_cluster_light_changed(endpoint)
+#else
+#define DIMMER_SCENE_CHANGED(endpoint)    ((void)0)
+#endif
 
 /* Gestures of Open Dimmer (DP 105 / 106): 1 single, 2 double, 3 triple, 4 hold, 5 release,
  * 6 press (from 2.2.0: the fast press, in the detached mode at once, no multi-taps). */
@@ -980,7 +987,9 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
         if (cluster == NULL)
             continue;
 
-        uint32_t number = dimmer_decode_tuya_value(value, value_len);
+        uint32_t number    = dimmer_decode_tuya_value(value, value_len);
+        uint8_t  was_on    = cluster->on;
+        uint8_t  was_level = cluster->current_level;
 
         if (dp_type == TUYA_DP_TYPE_BOOL && dpid == cluster->onoff_dpid) {
             /* Our own "on" has already set cluster->on, so only the MCU
@@ -1065,6 +1074,8 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
             dimmer_on_od_value(cluster, dpid, number);
         }
 #endif
+        if (cluster->on != was_on || cluster->current_level != was_level)
+            DIMMER_SCENE_CHANGED(cluster->endpoint);
     }
 }
 
@@ -1073,6 +1084,7 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
 static hal_zigbee_cmd_result_t dimmer_cluster_callback_trampoline(
     uint8_t endpoint, uint16_t cluster_id, uint8_t command_id,
     void *cmd_payload, uint16_t cmd_payload_len) {
+    DIMMER_SCENE_CHANGED(endpoint);
     return dimmer_cluster_callback(dimmer_by_endpoint(endpoint),
                                    command_id, cmd_payload, cmd_payload_len);
 }
@@ -1080,10 +1092,52 @@ static hal_zigbee_cmd_result_t dimmer_cluster_callback_trampoline(
 static hal_zigbee_cmd_result_t dimmer_cluster_level_callback_trampoline(
     uint8_t endpoint, uint16_t cluster_id, uint8_t command_id,
     void *cmd_payload, uint16_t cmd_payload_len) {
+    DIMMER_SCENE_CHANGED(endpoint);
     return dimmer_cluster_level_callback(dimmer_by_endpoint(endpoint),
                                          command_id, cmd_payload,
                                          cmd_payload_len);
 }
+
+#ifdef DIMMER_SCENES
+void dimmer_cluster_scene_state(uint8_t endpoint, uint8_t *flags, uint8_t *level) {
+    zigbee_dimmer_cluster *cluster = dimmer_by_endpoint(endpoint);
+
+    *flags = 0;
+    *level = 0;
+    if (cluster == NULL)
+        return;
+
+    *flags = (uint8_t)(SCENE_HAS_ONOFF | (cluster->on ? SCENE_ON : 0));
+    if (cluster->current_level) {               /* 0: not known yet */
+        *flags |= SCENE_HAS_LEVEL;
+        *level  = cluster->current_level;
+    }
+}
+
+/* The writes of the commands that set that state (nothing new for any MCU): an off scene and
+ * one on at a level as MoveToLevelWithOnOff (0 / the level, the time), on alone as On, a level
+ * alone as MoveToLevel (only a lit channel moves, or one with ExecuteIfOff). */
+void dimmer_cluster_scene_recall(uint8_t endpoint, uint8_t flags, uint8_t level,
+                                 uint16_t transition) {
+    zigbee_dimmer_cluster *cluster = dimmer_by_endpoint(endpoint);
+    uint8_t cmd[3] = { 0, (uint8_t)transition, (uint8_t)(transition >> 8) };
+
+    if (cluster == NULL)
+        return;
+
+    if ((flags & SCENE_HAS_ONOFF) && !(flags & SCENE_ON)) {
+        dimmer_cluster_level_callback(cluster, ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF, cmd, 3);
+    } else if (flags & SCENE_HAS_LEVEL) {
+        cmd[0] = level;
+        dimmer_cluster_level_callback(cluster, (flags & SCENE_HAS_ONOFF)
+                                      ? ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF
+                                      : ZCL_CMD_LEVEL_MOVE_TO_LEVEL, cmd, 3);
+    } else if (flags & SCENE_HAS_ONOFF) {
+        dimmer_cluster_callback(cluster, ZCL_CMD_ONOFF_ON, NULL, 0);
+    }
+}
+
+#endif
 
 #ifdef SECONDARY_MCU_IMAGE
 static hal_zigbee_cmd_result_t dimmer_cluster_identify_callback_trampoline(

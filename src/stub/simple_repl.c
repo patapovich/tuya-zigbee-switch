@@ -69,7 +69,7 @@ int simple_repl_dispatch_line(const SimpleReplConfig *cfg, char *line) {
         return -1;
 
     rtrim_(line);
-    char *argv[16];
+    char *argv[72]; /* a command, 3 arguments and a 64-byte ZCL payload (zcl_cmd) */
     int   argc = split_tokens_(line, argv, (int)(sizeof(argv) / sizeof(argv[0])));
     if (argc == 0)
         return 0;

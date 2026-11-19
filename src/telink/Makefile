@@ -90,7 +90,7 @@ DEVICE_DEFS := \
 	-DDEFAULT_CONFIG="$(CONFIG_STR)" \
 	-DDEFAULT_DP_CONFIG="$(DP_CONFIG_STR)" \
 	$(if $(SECONDARY_MCU_IMAGE),-DSECONDARY_MCU_IMAGE) \
-	$(if $(DIMMER_ONLY),-DDIMMER_ONLY) \
+	$(if $(DIMMER_ONLY),-DDIMMER_ONLY -DDIMMER_SCENES) \
 	-DIMAGE_TYPE=$(IMAGE_TYPE) \
 	-DHAL_TELINK \
 	$(TEL_CHIP) 
@@ -147,6 +147,7 @@ TELINK_SOURCES := \
 	custom_zcl/zcl_cover_switch_config.c \
 	custom_zcl/zcl_window_covering_custom.c \
 	custom_zcl/zcl_ballast_config.c \
+	custom_zcl/zcl_scenes_custom.c \
 	patch_sdk/drv_nv.c
 
 # Common source files (shared with Silicon Labs build)
@@ -170,6 +171,7 @@ COMMON_SOURCES := \
 	$(SRC_DIR)/zigbee/tuya_mcu_ota.c \
 	$(SRC_DIR)/zigbee/secondary_mcu_image.c \
 	$(SRC_DIR)/zigbee/dimmer_cluster.c \
+	$(SRC_DIR)/zigbee/scene_cluster.c \
 	$(SRC_DIR)/zigbee/general_commands.c \
 	$(SRC_DIR)/zigbee/group_cluster.c \
 	$(SRC_DIR)/zigbee/tuya_dp_relay.c \

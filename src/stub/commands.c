@@ -344,7 +344,17 @@ static int cmd_uart_info(int argc, char **argv) {
     return 0;
 }
 
-static int cmd_zcl_cmd_impl(int argc, char **argv, bool trigger_activity) {
+static int cmd_zcl_cmd_impl(int argc, char **argv, bool trigger_activity, bool to_group) {
+    uint16_t group = 0;
+
+    if (to_group) {
+        /* zcl_group_cmd <group:dec> <cluster> <cmd> [payload]: the ep argument is the group */
+        if (argc < 4 || parse_u16_dec(argv[1], &group)) {
+            io_res_err("usage");
+            return -1;
+        }
+        argv[1] = "0";
+    }
     if (argc < 4) {
         fprintf(stderr, "Usage: zcl_cmd <ep:dec> <cluster:hex> <cmd:hex> "
                 "[payload:hex_bytes...]\n");
@@ -378,7 +388,11 @@ static int cmd_zcl_cmd_impl(int argc, char **argv, bool trigger_activity) {
     }
 
     hal_zigbee_cmd_result_t result;
-    if (trigger_activity) {
+    if (to_group) {
+        result = stub_zigbee_simulate_group_command(group, cluster, cmd_id,
+                                                    payload_len > 0 ? payload : NULL,
+                                                    payload_len);
+    } else if (trigger_activity) {
         result = stub_zigbee_simulate_command(ep, cluster, cmd_id,
                                               payload_len > 0 ? payload : NULL,
                                               payload_len);
@@ -405,6 +419,14 @@ static int cmd_zcl_cmd_impl(int argc, char **argv, bool trigger_activity) {
     case HAL_ZIGBEE_CMD_SKIPPED:
         result_str = "SKIPPED";
         break;
+#ifdef DIMMER_SCENES
+    case HAL_ZIGBEE_NOT_FOUND:
+        result_str = "NOT_FOUND";
+        break;
+    case HAL_ZIGBEE_INVALID_FIELD:
+        result_str = "INVALID_FIELD";
+        break;
+#endif
     default:
         result_str = "UNKNOWN";
         break;
@@ -420,11 +442,11 @@ static int cmd_zcl_cmd_impl(int argc, char **argv, bool trigger_activity) {
 }
 
 static int cmd_zcl_cmd(int argc, char **argv) {
-    return cmd_zcl_cmd_impl(argc, argv, true);
+    return cmd_zcl_cmd_impl(argc, argv, true, false);
 }
 
 static int cmd_zcl_cmd_no_activity(int argc, char **argv) {
-    return cmd_zcl_cmd_impl(argc, argv, false);
+    return cmd_zcl_cmd_impl(argc, argv, false, false);
 }
 
 static int cmd_freeze_time(int argc, char **argv) {
@@ -485,6 +507,36 @@ static int cmd_set_battery_voltage(int argc, char **argv) {
     return 0;
 }
 
+static int cmd_zcl_group_cmd(int argc, char **argv) {
+    return cmd_zcl_cmd_impl(argc, argv, true, true);
+}
+
+/* zcl_group <add|remove|remove_all> <ep> [<group:dec>]: the stack's group table. */
+static int cmd_zcl_group(int argc, char **argv) {
+    uint8_t  ep;
+    uint16_t group = 0;
+    bool     all   = argc == 3 && strcmp(argv[1], "remove_all") == 0;
+
+    if ((argc != 4 && !all) || parse_u8_dec(argv[2], &ep) ||
+        (!all && parse_u16_dec(argv[3], &group))) {
+        io_res_err("usage");
+        return -1;
+    }
+    if (strcmp(argv[1], "add") == 0) {
+        if (stub_zigbee_group_add(ep, group)) {
+            io_res_err("table_full");
+            return -1;
+        }
+    } else if (all || strcmp(argv[1], "remove") == 0) {
+        stub_zigbee_group_remove(ep, group, all);
+    } else {
+        io_res_err("usage");
+        return -1;
+    }
+    io_res_ok("ep=%u group=%u", ep, group);
+    return 0;
+}
+
 /* Command table */
 static const SimpleReplCommand kCmds[] = {
     { "machine",             cmd_machine             },
@@ -504,6 +556,8 @@ static const SimpleReplCommand kCmds[] = {
     { "zcl_list_attrs",      cmd_zcl_list_attrs      },
     { "zcl_cmd",             cmd_zcl_cmd             },
     { "zcl_cmd_no_activity", cmd_zcl_cmd_no_activity },
+    { "zcl_group_cmd",       cmd_zcl_group_cmd       },
+    { "zcl_group",           cmd_zcl_group           },
     { "freeze_time",         cmd_freeze_time         },
     { "step_time",           cmd_step_time           },
     { "set_battery_voltage", cmd_set_battery_voltage },

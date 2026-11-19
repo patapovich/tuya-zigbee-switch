@@ -68,6 +68,7 @@ SOURCES := \
 	$(SRC_DIR)/zigbee/tuya_mcu_ota.c \
 	$(MCU_IMAGE_SRC) \
 	$(SRC_DIR)/zigbee/dimmer_cluster.c \
+	$(SRC_DIR)/zigbee/scene_cluster.c \
 	$(SRC_DIR)/zigbee/tuya_dp_relay.c \
 	$(SRC_DIR)/zigbee/dp_attr.c \
 	$(SRC_DIR)/zigbee/relay_cluster.c \
@@ -84,7 +85,7 @@ INCLUDES := \
 
 CFLAGS := -Wall -Wno-unused-parameter -Wno-unused-variable -g -O0 \
     -DHAL_STUB -DSTACK_BUILD=1001 -D_DEFAULT_SOURCE -DVERSION_STR="0.0.0" \
-	-DNVM_MIGRATIONS_VERSION=1 -DSECONDARY_MCU_IMAGE \
+	-DNVM_MIGRATIONS_VERSION=1 -DSECONDARY_MCU_IMAGE -DDIMMER_SCENES \
 	-std=c99
 
 LDFLAGS := -lpthread

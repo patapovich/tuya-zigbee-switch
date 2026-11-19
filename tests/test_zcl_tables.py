@@ -63,8 +63,9 @@ def test_the_zdms16_2_counts_and_headroom(tmp_path):
     board = boards()["MODULE_AVATTO_ZDMS16_2"]
     got = counts(tmp_path, board["config_str"], dp_config_of(board))
     print("ZDMS16-2 ZCL tables:", got)
-    assert got == {"endpoints": (2, 8), "in_clusters": (15, 32), "out_clusters": (1, 32),
-                   "zcl_clusters": (16, 32), "attributes": (80, 128)}     # 15 + the SDK's OTA
+    # Scenes (DIMMER_SCENES): +1 cluster and +5 attributes per dimmer endpoint.
+    assert got == {"endpoints": (2, 8), "in_clusters": (17, 32), "out_clusters": (1, 32),
+                   "zcl_clusters": (18, 32), "attributes": (90, 128)}     # 17 + the SDK's OTA
 
 
 def test_a_config_over_the_limits_is_said_so(tmp_path):
@@ -97,7 +98,8 @@ def test_a_config_with_every_dp_listener_starts(tmp_path):
 SDK_CLUSTER_IDS = {
     "ZCL_CLUSTER_GEN_BASIC": 0x0000, "ZCL_CLUSTER_GEN_POWER_CFG": 0x0001,
     "ZCL_CLUSTER_POWER_CFG": 0x0001, "ZCL_CLUSTER_GEN_IDENTIFY": 0x0003,
-    "ZCL_CLUSTER_GEN_GROUPS": 0x0004, "ZCL_CLUSTER_GEN_ON_OFF": 0x0006,
+    "ZCL_CLUSTER_GEN_GROUPS": 0x0004, "ZCL_CLUSTER_GEN_SCENES": 0x0005,
+    "ZCL_CLUSTER_GEN_ON_OFF": 0x0006,
     "ZCL_CLUSTER_GEN_ON_OFF_SWITCH_CONFIG": 0x0007, "ZCL_CLUSTER_GEN_LEVEL_CONTROL": 0x0008,
     "ZCL_CLUSTER_GEN_MULTISTATE_INPUT_BASIC": 0x0012, "ZCL_CLUSTER_GEN_POLL_CONTROL": 0x0020,
     "ZCL_CLUSTER_CLOSURES_WINDOW_COVERING": 0x0102, "0x0301": 0x0301,
@@ -115,6 +117,8 @@ def registered_clusters(dimmer_only: bool) -> set[int]:
     body = body[:body.index("\n}\n")]
     if dimmer_only:
         body = re.sub(r"#ifndef DIMMER_ONLY.*?#endif", "", body, flags=re.S)
+    else:  # DIMMER_SCENES: the dimmer_only builds' (src/telink/Makefile)
+        body = re.sub(r"#ifdef DIMMER_SCENES.*?#endif", "", body, flags=re.S)
     names = re.findall(r"cluster_id == (\w+)", body)
     unknown = [n for n in names if n not in SDK_CLUSTER_IDS]
     assert not unknown, f"add their ids to SDK_CLUSTER_IDS: {unknown}"
@@ -135,7 +139,8 @@ def test_the_zdms16_2_gesture_cluster_is_registered_in_its_dimmer_only_build():
     """Its dimmer endpoints report Open Dimmer's wall switch gestures on genMultistateInput:
     without a register function the cluster never reached the stack (no reports)."""
     assert 0x0012 in registered_clusters(dimmer_only=True)
-    assert {0x0003, 0x0006, 0x0007, 0x0008, 0x0301} <= registered_clusters(dimmer_only=True)
+    assert {0x0003, 0x0005, 0x0006, 0x0007, 0x0008, 0x0301} <= registered_clusters(dimmer_only=True)
+    assert 0x0005 not in registered_clusters(dimmer_only=False)
 
 
 def test_every_cluster_of_every_telink_board_reaches_the_stack(tmp_path):

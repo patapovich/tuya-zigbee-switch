@@ -14,6 +14,14 @@ zdms16-py32 release notes.
 
 ## Next
 
+- Zigbee Scenes on both channels (genScenes: Zigbee2MQTT's `scene_store`, `scene_add`,
+  `scene_recall`, `scene_remove`, also for groups). A scene keeps the channel's on/off state and
+  brightness; a recall fades in the scene's transition time, or with the channel's fade
+  settings when the scene has none (a stored scene, one added without a transition). 16 scenes
+  for the module, kept over power cuts; a group's scenes go when the channel leaves the group.
+  Zigbee2MQTT lists the Scenes cluster after a re-interview of the device. Other boards: no
+  change.
+
 ## 1.1.3-ab06b9a0 (2026-11-19), carries Open Dimmer 2.2.3
 
 - Conversion from the stock firmware: the outgoing NWK frame counter starts at 0x10000000 once
