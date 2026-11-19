@@ -14,6 +14,9 @@ zdms16-py32 release notes.
 
 ## Next
 
+## 1.1.3-522e1825 (2026-11-19), carries Open Dimmer 2.2.0
+
+- Carries Open Dimmer 2.2.0.
 - Open Dimmer 2.2.0 settings (shown in Zigbee2MQTT for Open Dimmer 2.2 and later only; a module
   with the factory MCU keeps its entities as they were): `countdown` (auto-off, also ZCL
   OnWithTimedOff: the longer time wins), `switch_mode` (normal / detached / off), `fast_press`
