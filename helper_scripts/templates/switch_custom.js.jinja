@@ -62,12 +62,15 @@ const ownVersionNumbers = (v) => {
     return m ? m.slice(1).map(Number) : undefined;
 };
 
-// Whether an Open Dimmer version ([major, minor, patch]) is at least minMcu: a major (2) or
-// "major.minor" ("2.2", the settings of Open Dimmer 2.2.0).
+// Whether an Open Dimmer version ([major, minor, patch]) is at least minMcu: a major (2),
+// "major.minor" ("2.2", the settings of Open Dimmer 2.2.0) or "major.minor.patch" ("2.1.14").
 const ownVersionAtLeast = (numbers, minMcu) => {
     if (!numbers) return false;
-    const [major, minor = 0] = String(minMcu).split(".").map(Number);
-    return numbers[0] > major || (numbers[0] === major && numbers[1] >= minor);
+    const want = String(minMcu).split(".").map(Number);
+    for (let i = 0; i < 3; i++) {
+        if ((numbers[i] ?? 0) !== (want[i] ?? 0)) return (numbers[i] ?? 0) > (want[i] ?? 0);
+    }
+    return true;
 };
 
 // Whether the settings of Open Dimmer (from version minMcu) are shown: device
@@ -915,9 +918,10 @@ const romasku = {
     // A per-channel attribute of Open Dimmer 2.2.0 on the channel's own endpoint: shown, stored
     // and written like the other Open Dimmer settings (ownMcuShown). attr: its id (or name, for
     // one zigbee-herdsman knows), type, and what a report means: fromValue(raw) -> published.
-    dimmerOwnAttr: ({expose, endpointName, cluster, attr, type, fromValue, toValue, extraFz}) => {
+    dimmerOwnAttr: ({expose, endpointName, cluster, attr, type, fromValue, toValue, extraFz,
+                     minMcu = OPEN_DIMMER_2_2}) => {
         const property = `${expose.name}_${endpointName}`;
-        const shown = (device, options) => ownMcuShown(device, options, OPEN_DIMMER_2_2);
+        const shown = (device, options) => ownMcuShown(device, options, minMcu);
         return {
             isModernExtend: true,
             exposes: [(device, options) => (shown(device, options) ? [expose] : [])],
@@ -939,7 +943,7 @@ const romasku = {
                 convertSet: async (entity, key, value, meta) => {
                     // Not shown for this device (a stock MCU, an older Open Dimmer): the
                     // module would not pass it on, so no state that is not there.
-                    if (!shown(meta.device, meta.options)) throw new Error(`${key}: an Open Dimmer 2.2 setting (see open_dimmer_settings)`);
+                    if (!shown(meta.device, meta.options)) throw new Error(`${key}: an Open Dimmer ${minMcu} setting (see open_dimmer_settings)`);
                     const raw = toValue(value);
                     await entity.write(cluster, {[attr.ID]: {value: raw, type}});
                     return {state: {[key]: fromValue(raw)}};
@@ -1004,6 +1008,28 @@ const romasku = {
                 const v = Number(value);
                 if (!Number.isInteger(v) || v < 0 || v > 255) throw new Error("current_level_startup: 0..255, minimum or previous");
                 return v;
+            },
+        });
+    },
+    // Fade time of the brightness changes without a transition while lit, as the time for
+    // the whole range (Level Control 0xff12, 1/10 s, kept by the module; 0xFFFF unset: the
+    // MCU's 2 s for the whole range). Open Dimmer 2.1.14 and later (its transition time).
+    // Unset again: the preset default (or an empty value or a negative one); shown as null.
+    dimmerBrightnessFadeTime: (endpointName) => {
+        const expose = e.numeric("brightness_fade_time", ea.ALL).withEndpoint(endpointName)
+            .withValueMin(0).withValueMax(60).withValueStep(0.1).withUnit("s")
+            .withPreset("default", "default", "The module's default: 2 s for the whole range")
+            .withDescription("Fade time of brightness changes from Zigbee2MQTT / Home Assistant while the light is on, as the time for the whole range (a smaller change is quicker). Empty: the module's default, 2 s for the whole range (the preset default sets it back). An explicit transition is used as given. Open Dimmer firmware")
+            .withCategory("config");
+        return romasku.dimmerOwnAttr({
+            expose, endpointName, cluster: "genLevelCtrl", attr: {ID: 0xff12}, type: Zcl.DataType.UINT16,
+            minMcu: "2.1.14",
+            fromValue: (v) => (v === 0xffff ? null : v / 10),
+            toValue: (value) => {
+                if (value === "default" || value === "" || value === null || value === undefined) return 0xffff;
+                const v = Number(value);
+                if (Number.isNaN(v) || v > 60) throw new Error("brightness_fade_time: 0..60 s, or default");
+                return v < 0 ? 0xffff : Math.round(v * 10);
             },
         });
     },
@@ -1381,6 +1407,7 @@ const definitions = [
             romasku.dimmerStartBoost("{{dimmerName}}"),
             romasku.dimmerExecuteIfOff("{{dimmerName}}"),
             romasku.dimmerOnLevelLocal("{{dimmerName}}"),
+            romasku.dimmerBrightnessFadeTime("{{dimmerName}}"),
             {% endif %}
             {% endfor %}
             {% if device.dimmerNames and device.secondary_mcu_image %}
@@ -1459,6 +1486,7 @@ const definitions = [
             // MCU: nothing of it. From 2.2.0 its settings per channel are read once too.
             const openDimmer = ownVersionNumbers(mcuVersion) !== undefined;
             const openDimmer22 = ownVersionAtLeast(ownVersionNumbers(mcuVersion), OPEN_DIMMER_2_2);
+            const openDimmer2114 = ownVersionAtLeast(ownVersionNumbers(mcuVersion), "2.1.14");
             if (openDimmer) {
                 try {
                     await reporting.bind(mcuEndpoint, coordinatorEndpoint, ["genBasic"]);
@@ -1584,6 +1612,13 @@ const definitions = [
                 ]);
             } catch (error) {
                 // not there: no gestures
+            }
+            if (openDimmer2114) {
+                try {
+                    await dimmer{{loop.index}}.read("genLevelCtrl", [0xff12]); // brightness_fade_time
+                } catch (error) {
+                    // not answered now; read on the next configure or with a refresh
+                }
             }
             if (openDimmer22) {
                 for (const [cluster, attrs] of [["genOnOff", [0xff10]], ["genOnOffSwitchCfg", [0xff10, 0xff11]],

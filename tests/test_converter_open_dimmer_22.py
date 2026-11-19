@@ -34,6 +34,7 @@ OWN_2_1 = ["dimming_curve_dimmer_left", "power_on_behavior_dimmer_left", "fade_o
            "fade_on_time_dimmer_right", "fade_off_time_dimmer_right", "soft_dim_end_dimmer_right",
            "hold_time_dimmer_right", "hold_dim_end_dimmer_right", "action", "mcu_firmware"]
 STOCK = ["power_on_behavior", "mcu_firmware"]
+FADE = ["brightness_fade_time_dimmer_left", "brightness_fade_time_dimmer_right"]   # from 2.1.14
 
 
 def test_the_new_exposes_follow_the_open_dimmer_version():
@@ -47,13 +48,13 @@ console.log(JSON.stringify({
     fakeOwn: all(ver("2.2.0 own")).filter((n) => n.includes(":")),
 }));
 """))
-    assert sorted(out["own22"]) == sorted(OWN_2_1 + NEW)
+    assert sorted(out["own22"]) == sorted(OWN_2_1 + NEW + FADE)
     assert out["own23"] == out["own3"] == out["own22"]
-    assert out["own2114"] == OWN_2_1                      # no 2.2.0 setting for 2.1.x
+    assert sorted(out["own2114"]) == sorted(OWN_2_1 + FADE)  # no 2.2.0 setting for 2.1.x
     assert out["bare22"] == STOCK                         # not identified: as a stock MCU
     assert out["stock"] == STOCK                          # the house units: unchanged
     assert out["hide"] == STOCK
-    assert sorted(out["show"]) == sorted(OWN_2_1 + NEW)
+    assert sorted(out["show"]) == sorted(OWN_2_1 + NEW + FADE)
     assert out["fakeStock"] == out["fakeOwn"]             # the static extends are the same
 
 
@@ -253,14 +254,15 @@ def test_configure_binds_basic_for_open_dimmer_and_reads_the_new_settings_of_2_2
                  ("genOnOff:65296", "genOnOffSwitchCfg:65296+65297",
                   "genLevelCtrl:startUpCurrentLevel+options+65297", "lightingBallastCfg:65296")]
     assert [r for r in own["dimmerReads"] if r in new_reads] == new_reads
-    assert len(own["dimmerReads"]) == 8 + 8
+    assert len(own["dimmerReads"]) == 8 + 8 + 2
     assert "1:genBasic" in out["2.1.14 own"]["binds"]     # any Open Dimmer: its version reports
     for v in ("1.0.7", "2.2.0"):                            # stock, not identified: no bind
         assert "1:genBasic" not in out[v]["binds"], v
+    assert out["2.1.14 own"]["dimmerReads"][-1] == "2:genLevelCtrl:65298"   # brightness_fade_time
     for v in ("2.1.14 own", "1.0.7", "2.2.0"):
         run = out[v]
         assert "ff48" not in run["ownReads"], v
-        assert len(run["dimmerReads"]) == 8, v
+        assert len(run["dimmerReads"]) == (10 if v == "2.1.14 own" else 8), v
         assert run["reporting"] == own["reporting"]      # no reporting added for any of it
     assert len(own["reporting"]) == 6
 
@@ -384,3 +386,30 @@ console.log(JSON.stringify(def.extend.flatMap((x) => x.options ?? []).filter((o)
     assert (o["type"], o["access"], o["min"], o["step"]) == ("numeric", 2, 0, 0.1)
     for words in ("Empty: the module's fade settings", "0: at once", "factory MCU", "wall switch"):
         assert words in o["description"], words
+
+
+
+def test_brightness_fade_time_is_an_open_dimmer_2_1_14_setting_in_seconds():
+    out = json.loads(run_node(SET.replace('"2.2.0 own"', '"2.1.14 own"') + """
+const ver = (v) => { const d = h.device(); d.getEndpoint(1).clusters.genBasic.attributes[0xff12] = v; return d; };
+(async () => console.log(JSON.stringify({
+    set12: await set("brightness_fade_time", 1.2, 2),
+    set0: await set("brightness_fade_time", 0),
+    unset: [await set("brightness_fade_time", "default"), await set("brightness_fade_time", ""),
+            await set("brightness_fade_time", -1)],
+    bad: await set("brightness_fade_time", 61),
+    reports: [fz(ver("2.1.14 own"), 1, {[0xff12]: 25}), fz(ver("2.1.14 own"), 2, {[0xff12]: 0xffff}),
+              fz(ver("2.1.13 own"), 1, {[0xff12]: 25}), fz(ver("1.0.7"), 1, {[0xff12]: 25})],
+    presets: def.extend.flatMap((x) => x.exposes ?? []).flatMap((x) => (typeof x === "function" ? x(ver("2.1.14 own"), {}) : [x]))
+        .filter((x) => x.name === "brightness_fade_time").map((x) => [x.endpoint, x.value_min, x.value_max, x.value_step, x.unit, x.presets.map((p) => p.name)]),
+})))();
+"""))
+    w = lambda ep, v: [["write", ep, "genLevelCtrl", {str(0xff12): {"value": v, "type": 0x21}}]]
+    assert out["set12"] == [w(2, 12), {"brightness_fade_time": 1.2}]
+    assert out["set0"] == [w(1, 0), {"brightness_fade_time": 0}]
+    assert out["unset"] == [[w(1, 0xFFFF), {"brightness_fade_time": None}]] * 3
+    assert "0..60" in out["bad"]
+    assert out["reports"] == [[{"brightness_fade_time_dimmer_left": 2.5}],
+                              [{"brightness_fade_time_dimmer_right": None}], [], []]
+    assert out["presets"] == [["dimmer_left", 0, 60, 0.1, "s", ["default"]],
+                              ["dimmer_right", 0, 60, 0.1, "s", ["default"]]]

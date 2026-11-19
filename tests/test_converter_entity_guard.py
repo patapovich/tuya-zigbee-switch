@@ -45,6 +45,7 @@ ZDMS16_2_EXTENDS = [
             f"romasku.dimmerStartBoost({dimmer})",
             f"romasku.dimmerExecuteIfOff({dimmer})",
             f"romasku.dimmerOnLevelLocal({dimmer})",
+            f"romasku.dimmerBrightnessFadeTime({dimmer})",
         )
     ],
     "romasku.dimmerGestures(dimmer_left, dimmer_right)",
