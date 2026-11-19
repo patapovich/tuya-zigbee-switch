@@ -14,6 +14,8 @@ zdms16-py32 release notes.
 
 ## Next
 
+## 1.1.3-e45f44da (2026-11-19), carries Open Dimmer 2.2.2
+
 - Z2M converter: the channels are `l1` / `l2` (were `dimmer_left` / `dimmer_right`), as the
   stock definition of zigbee-herdsman-converters names them; `mcu_version`,
   `multi_press_reset_count`, `device_config` and `device_config_ext` are on the device, not on
