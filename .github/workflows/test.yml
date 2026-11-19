@@ -2,13 +2,38 @@ name: test
 
 on: [push, pull_request]
 
+# apt goes through .github/ci/apt.sh: Azure's Ubuntu mirror first, a time limit per call and one
+# retry on the main archive, and the .deb files cached under a key of their exact versions (a
+# mirror outage then only touches the package index, which is retried on the other mirror).
+
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
+      - name: Packages (versions)
+        id: apt
+        timeout-minutes: 6
+        run: |
+          .github/ci/apt.sh --mirrors
+          .github/ci/apt.sh update -q
+          .github/ci/apt.sh key lint uncrustify
+      - name: Packages cache
+        id: apt-cache
+        if: steps.apt.outputs.key != ''
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/apt-cache/*.deb
+          key: ${{ steps.apt.outputs.key }}
       - name: Install uncrustify
-        run: sudo apt-get update && sudo apt-get install -y uncrustify
+        timeout-minutes: 10
+        run: .github/ci/apt.sh install-cached uncrustify
+      - name: Packages cache (save)
+        if: steps.apt.outputs.key != '' && steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/apt-cache/*.deb
+          key: ${{ steps.apt.outputs.key }}
       - name: Check code formatting
         run: |
           find src -name '*.c' -o -name '*.h' | xargs uncrustify -c uncrustify.cfg --check
@@ -16,10 +41,29 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - name: Install pytests
+      - uses: actions/checkout@v7
+      - name: Packages (versions)
+        id: apt
+        timeout-minutes: 6
         run: |
-          sudo apt-get update
-          sudo apt-get install -y make python3 python3-pytest python3-yaml python3-jinja2 python3-click
+          .github/ci/apt.sh --mirrors
+          .github/ci/apt.sh update -q
+          .github/ci/apt.sh key test make python3 python3-pytest python3-yaml python3-jinja2 python3-click
+      - name: Packages cache
+        id: apt-cache
+        if: steps.apt.outputs.key != ''
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/apt-cache/*.deb
+          key: ${{ steps.apt.outputs.key }}
+      - name: Install pytests
+        timeout-minutes: 10
+        run: .github/ci/apt.sh install-cached make python3 python3-pytest python3-yaml python3-jinja2 python3-click
+      - name: Packages cache (save)
+        if: steps.apt.outputs.key != '' && steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/apt-cache/*.deb
+          key: ${{ steps.apt.outputs.key }}
       - name: Run tests
         run: make tests

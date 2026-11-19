@@ -19,10 +19,35 @@ jobs:
       with:
         fetch-depth: 0  
 
-    - name: Install dependencies
+    # apt through .github/ci/apt.sh (Azure mirror first, time limits, one retry on the archive; the
+    # .deb files cached by their exact versions; no recommends: gcc-arm-none-eabi would pull a
+    # 463 MB C++ library nothing here links).
+    - name: Packages (versions)
+      id: apt
+      timeout-minutes: 6
       run: |
-        sudo apt-get update
-        sudo apt-get install -y make python3 yq unzip wget gcc-arm-none-eabi
+        .github/ci/apt.sh --mirrors
+        .github/ci/apt.sh update -q
+        .github/ci/apt.sh key build make python3 yq unzip wget gcc-arm-none-eabi
+
+    - name: Packages cache
+      id: apt-cache
+      if: steps.apt.outputs.key != ''
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/apt-cache/*.deb
+        key: ${{ steps.apt.outputs.key }}
+
+    - name: Install dependencies
+      timeout-minutes: 12
+      run: .github/ci/apt.sh install-cached make python3 yq unzip wget gcc-arm-none-eabi
+
+    - name: Packages cache (save)
+      if: steps.apt.outputs.key != '' && steps.apt-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ~/apt-cache/*.deb
+        key: ${{ steps.apt.outputs.key }}
 
     - name: Set up JDK 21
       uses: actions/setup-java@v4
