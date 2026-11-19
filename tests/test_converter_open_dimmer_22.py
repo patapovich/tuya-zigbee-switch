@@ -322,11 +322,12 @@ console.log(JSON.stringify({
 SEND = ZDMS + """
 const tzFor = (key, ep) => def.extend.flatMap((x) => x.toZigbee ?? [])
     .find((t) => t.key?.includes(key) && (!t.endpoints || t.endpoints.includes(ep)));
-const send = async (version, message, options = {}, ep = "dimmer_right") => {
+const send = async (version, message, options = {}, ep = "dimmer_right", state = {state: "ON", brightness: 100}) => {
+    h.globalStore.clear();
     const dev = h.device(); dev.getEndpoint(1).clusters.genBasic.attributes[0xff12] = version;
     const key = Object.keys(message).find((k) => k !== "transition");
     h.log.length = 0;
-    await tzFor(key, ep).convertSet(dev.getEndpoint(2), key, message[key], {device: dev, message, options,
+    await tzFor(key, ep).convertSet(dev.getEndpoint(2), key, message[key], {device: dev, message, options, state,
                                                                          endpoint_name: ep, mapped: model});
     return h.log.filter((l) => l[0] === "command").map((l) => [l[2], l[3], l[4].transtime ?? null]);
 };
@@ -349,6 +350,10 @@ def test_a_level_change_without_a_transition_goes_out_as_none_for_open_dimmer():
             option12: await send(v, {brightness: 100}, {transition: 1.2}),
             option12Off: await send(v, {state: "OFF"}, {transition: 1.2}),
             option0On: await send(v, {state: "ON"}, {transition: 0}),
+            option12On: await send(v, {state: "ON"}, {transition: 1.2}, "dimmer_right", {state: "OFF", brightness: 100}),
+            option12Toggle: await send(v, {state: "TOGGLE"}, {transition: 1.2}, "dimmer_right", {state: "OFF", brightness: 100}),
+            option12ToggleOff: await send(v, {state: "TOGGLE"}, {transition: 1.2}),
+            given12On: await send(v, {state: "ON", transition: 1.2}, {}, "dimmer_right", {state: "OFF", brightness: 100}),
             emptyOption: await send(v, {brightness: 100}, {transition: ""}),
             move: await send(v, {brightness_move: 40}),
         };
@@ -366,14 +371,59 @@ def test_a_level_change_without_a_transition_goes_out_as_none_for_open_dimmer():
         assert r["on"] == [["genOnOff", "on", None]] and r["off"] == [["genOnOff", "off", None]]
         assert r["given0"] == [["genLevelCtrl", mtl, 0]]          # explicit 0: at once
         assert r["given12"] == r["option12"] == [["genLevelCtrl", mtl, 12]]
-        assert r["option12Off"] == [["genLevelCtrl", mtl, 12]]   # on/off with a time: a level move
-        assert r["option0On"] == [["genLevelCtrl", mtl, 0]]
+        assert r["option12Off"] == r["option12ToggleOff"] == [["genLevelCtrl", mtl, 12]]  # off: a level move
+        # A plain on: the module's own on (fade_on_time), the option set or not.
+        assert r["option0On"] == r["option12On"] == [["genOnOff", "on", None]]
+        assert r["option12Toggle"] == [["genOnOff", "toggle", None]]
+        assert r["given12On"] == [["genLevelCtrl", mtl, 12]]     # a time in the message wins
         assert r["move"] == [["genLevelCtrl", "move", None]]    # a rate: unchanged
     s = out["1.0.7"]                                          # stock: zhc's frames as they are
     assert s["brightness"] == s["on100"] == s["emptyOption"] == [["genLevelCtrl", mtl, 0]]
     assert s["step"] == [["genLevelCtrl", "step", 0]]
     assert s["given12"] == s["option12"] == [["genLevelCtrl", mtl, 12]]
-    assert s["on"] == [["genOnOff", "on", None]]
+    assert s["on"] == s["option0On"] == s["option12On"] == [["genOnOff", "on", None]]
+    assert s["option12Toggle"] == [["genOnOff", "toggle", None]]
+    assert s["option12Off"] == [["genLevelCtrl", mtl, 12]]
+
+
+def test_after_an_off_with_a_time_a_plain_on_is_still_an_on():
+    """zhc marks an off with a time ("turned off with a transition") and turns the next plain
+    on into a level move to the level it remembered, a time given or not. The plain on goes
+    out as genOnOff on all the same (the module keeps the level over an off with a time) and
+    the mark is cleared; a brightness after it as zhc sends it."""
+    out = json.loads(run_node(SEND + """
+(async () => {
+    const r = {};
+    for (const v of ["2.1.14 own", "1.0.7"]) {
+        const seq = async (steps) => {
+            h.globalStore.clear();
+            const dev = h.device(); dev.getEndpoint(1).clusters.genBasic.attributes[0xff12] = v;
+            const got = [];
+            for (const [message, options, state] of steps) {
+                const key = Object.keys(message).find((k) => k !== "transition");
+                h.log.length = 0;
+                await tzFor(key, "dimmer_left").convertSet(dev.getEndpoint(1), key, message[key],
+                    {device: dev, message, options, state, endpoint_name: "dimmer_left", mapped: model});
+                got.push(h.log.filter((l) => l[0] === "command").map((l) => [l[2], l[3], l[4].level ?? null, l[4].transtime ?? null]));
+            }
+            return {got, mark: h.globalStore.getValue(dev.getEndpoint(1), "turnedOffWithTransition") ?? null};
+        };
+        const lit = {state: "ON", brightness: 120}, dark = {state: "OFF", brightness: 120};
+        r[v] = {
+            message: await seq([[{state: "OFF", transition: 2}, {}, lit], [{state: "ON"}, {}, dark]]),
+            option: await seq([[{state: "OFF"}, {transition: 2}, lit], [{state: "ON"}, {transition: 2}, dark],
+                               [{brightness: 60}, {transition: 2}, lit]]),
+        };
+    }
+    console.log(JSON.stringify(r));
+})();
+"""))
+    mtl = "moveToLevelWithOnOff"
+    for v in ("2.1.14 own", "1.0.7"):
+        assert out[v]["message"] == {"got": [[["genLevelCtrl", mtl, 0, 20]], [["genOnOff", "on", None, None]]],
+                                     "mark": None}, v
+        assert out[v]["option"]["got"] == [[["genLevelCtrl", mtl, 0, 20]], [["genOnOff", "on", None, None]],
+                                           [["genLevelCtrl", mtl, 60, 20]]], v
 
 
 def test_the_transition_option_says_what_it_does_here():
@@ -384,8 +434,11 @@ console.log(JSON.stringify(def.extend.flatMap((x) => x.options ?? []).filter((o)
     assert len(out) == 1
     o = out[0]
     assert (o["type"], o["access"], o["min"], o["step"]) == ("numeric", 2, 0, 0.1)
-    for words in ("Empty: the module's fade settings", "0: at once", "factory MCU", "wall switch"):
+    for words in ("of brightness changes and off", "A plain on (no brightness) uses the module's fade_on_time",
+                  "Empty: the module's fade settings", "brightness_fade_time while lit",
+                  "the whole range in 2 s", "0: at once", "factory MCU", "wall switch"):
         assert words in o["description"], words
+    assert "brightness_transition" not in o["description"]
 
 
 
@@ -401,7 +454,7 @@ const ver = (v) => { const d = h.device(); d.getEndpoint(1).clusters.genBasic.at
     reports: [fz(ver("2.1.14 own"), 1, {[0xff12]: 25}), fz(ver("2.1.14 own"), 2, {[0xff12]: 0xffff}),
               fz(ver("2.1.13 own"), 1, {[0xff12]: 25}), fz(ver("1.0.7"), 1, {[0xff12]: 25})],
     presets: def.extend.flatMap((x) => x.exposes ?? []).flatMap((x) => (typeof x === "function" ? x(ver("2.1.14 own"), {}) : [x]))
-        .filter((x) => x.name === "brightness_fade_time").map((x) => [x.endpoint, x.value_min, x.value_max, x.value_step, x.unit, x.presets.map((p) => p.name)]),
+        .filter((x) => x.name === "brightness_fade_time").map((x) => [x.endpoint, x.value_min, x.value_max, x.value_step, x.unit, x.presets.map((p) => p.name), x.description]),
 })))();
 """))
     w = lambda ep, v: [["write", ep, "genLevelCtrl", {str(0xff12): {"value": v, "type": 0x21}}]]
@@ -411,5 +464,8 @@ const ver = (v) => { const d = h.device(); d.getEndpoint(1).clusters.genBasic.at
     assert "0..60" in out["bad"]
     assert out["reports"] == [[{"brightness_fade_time_dimmer_left": 2.5}],
                               [{"brightness_fade_time_dimmer_right": None}], [], []]
-    assert out["presets"] == [["dimmer_left", 0, 60, 0.1, "s", ["default"]],
-                              ["dimmer_right", 0, 60, 0.1, "s", ["default"]]]
+    assert [p[:6] for p in out["presets"]] == [["dimmer_left", 0, 60, 0.1, "s", ["default"]],
+                                               ["dimmer_right", 0, 60, 0.1, "s", ["default"]]]
+    for words in ("as the time for the whole range", "Empty: the module's default, the whole range in 2 s",
+                  "A transition (in the message or the device option transition) wins", "Open Dimmer 2.1.14"):
+        assert all(words in p[6] for p in out["presets"]), words

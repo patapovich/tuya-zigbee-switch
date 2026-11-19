@@ -14,6 +14,14 @@ zdms16-py32 release notes.
 
 ## Next
 
+- A plain on (no brightness) is always the module's own on (`fade_on_time`, the level it
+  kept), also with the Z2M option `transition` set or after an off with a transition; the
+  option times brightness changes and off. Factory MCUs get on and no level for it, as before.
+- No transition while the MCU version is not known yet (just paired): the module's fade, not
+  at once (Open Dimmer jumped until the version was read).
+- `brightness_fade_time`: a change during a running fade (a slider drag) is timed from where
+  the light is, not from the last target, so the speed stays even.
+
 ## 1.1.3-bf2e8f2b (2026-11-19), carries Open Dimmer 2.2.2
 
 - Transitions (Open Dimmer 2.1.14 and later): transition 0 is instant; without a transition the

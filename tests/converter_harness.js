@@ -36,11 +36,14 @@ const fakeConvert = (fn, args) => {
     };
 };
 
-/* light()'s toZigbee as zigbee-herdsman-converters has them (toZigbee.ts light_onoff_brightness,
- * light_brightness_step, light_brightness_move; utils.getTransition): what they send for a
- * message, in short. The time: the message's transition, else the device option transition, in
- * 1/10 s; none: 0 and not "specified". State on / off without brightness: genOnOff, unless a time
- * is specified (then moveToLevelWithOnOff). */
+/* light()'s toZigbee as zigbee-herdsman-converters 26.125.0 has them (dist/converters/
+ * toZigbee.js light_onoff_brightness, on_off, light_brightness_step, light_brightness_move;
+ * lib/utils.js getTransition), ported for the paths the dimmers use (no
+ * moveToLevelWithOnOffDisable, no turnsOffAtBrightness1, no IKEA): the time is the message's
+ * transition, else the device option, in 1/10 s ("specified"), else 0. Off with a time:
+ * moveToLevelWithOnOff 0, and the level is remembered (globalStore brightness,
+ * turnedOffWithTransition); a plain on with a time, or after an off with one: OnLevel (read
+ * from the device) or the remembered level as moveToLevelWithOnOff; else genOnOff. */
 const getTransition = (meta) => {
     if (meta.message?.transition != null) return {time: Number(meta.message.transition) * 10, specified: true};
     if (meta.options?.transition != null && meta.options.transition !== "") {
@@ -48,40 +51,101 @@ const getTransition = (meta) => {
     }
     return {time: 0, specified: false};
 };
+/* zhc's lib/store: values per endpoint, by "<ieee>_<endpoint id>" (so a wrapped endpoint, a
+ * Proxy, is the same one). */
+const storeMap = new Map();
+const storeKey = (entity) => `${entity.deviceIeeeAddress}_${entity.ID}`;
+const globalStore = {
+    getValue: (entity, key, fallback = undefined) => {
+        const entry = storeMap.get(storeKey(entity));
+        return entry !== undefined && key in entry ? entry[key] : fallback;
+    },
+    putValue: (entity, key, value) => {
+        const k = storeKey(entity);
+        if (!storeMap.has(k)) storeMap.set(k, {});
+        storeMap.get(k)[key] = value;
+    },
+    clearValue: (entity, key) => { delete storeMap.get(storeKey(entity))?.[key]; },
+    hasValue: (entity, key) => storeMap.get(storeKey(entity)) !== undefined && key in storeMap.get(storeKey(entity)),
+    clear: () => storeMap.clear(),
+};
+const onOff = async (entity, state, meta) => {
+    if (state === "on" && (meta.message.on_time != null || meta.message.off_wait_time != null)) {
+        await entity.command("genOnOff", "onWithTimedOff", {ctrlbits: 0, ontime: Math.round((meta.message.on_time ?? 0) * 10),
+                                                            offwaittime: Math.round((meta.message.off_wait_time ?? 0) * 10)}, {});
+        return undefined;
+    }
+    await entity.command("genOnOff", state, {}, {});
+    if (state === "toggle") {
+        const current = meta.state?.[`state${meta.endpoint_name ? `_${meta.endpoint_name}` : ""}`];
+        return current ? {state: {state: current === "OFF" ? "ON" : "OFF"}} : {};
+    }
+    return {state: {state: state.toUpperCase()}};
+};
+const lightOnOffBrightness = async (entity, key, value, meta) => {
+    const {message} = meta;
+    const transition = getTransition(meta);
+    const optionalParams = {optionsMask: 0, optionsOverride: 0};
+    let state = message.state !== undefined ? (typeof message.state === "string" ? message.state.toLowerCase() : null) : undefined;
+    let brightness;
+    if (message.brightness != null) brightness = Number(message.brightness);
+    else if (message.brightness_percent != null) brightness = Math.round(Number(message.brightness_percent) * 255 / 100);
+    if (brightness === 255) brightness = 254;
+    if (state === undefined) state = meta.message.state = brightness === 0 ? "off" : "on";
+    let publishBrightness = brightness !== undefined;
+    const st = meta.state;
+    const targetState = state === "toggle" ? (st.state === "ON" ? "off" : "on") : state;
+    if (targetState === "off") {
+        brightness = transition.specified || brightness === 0 ? 0 : undefined;
+        if (st.brightness !== undefined && st.state === "ON") {
+            globalStore.putValue(entity, "brightness", st.brightness);
+            globalStore.putValue(entity, "turnedOffWithTransition", brightness !== undefined);
+        }
+    } else if (targetState === "on" && brightness === undefined) {
+        if (transition.specified || globalStore.getValue(entity, "turnedOffWithTransition") === true) {
+            let onLevel = st.level_config?.on_level ?? 0;
+            if (onLevel === 0) {
+                const read = await entity.read("genLevelCtrl", ["onLevel"]);
+                if (read !== undefined) onLevel = read.onLevel;
+            }
+            if (onLevel === 0) onLevel = "previous";
+            brightness = onLevel === 255 || onLevel === "previous"
+                ? globalStore.getValue(entity, "brightness", st.brightness ?? 254) : onLevel;
+            publishBrightness = true;
+        }
+    }
+    if (brightness === undefined) return onOff(entity, state, meta);
+    if (brightness === 0 && (targetState === "on" || state === null)) brightness = 1;
+    if (targetState !== "off") {
+        globalStore.putValue(entity, "brightness", brightness);
+        globalStore.clearValue(entity, "turnedOffWithTransition");
+    }
+    await entity.command("genLevelCtrl", state === null ? "moveToLevel" : "moveToLevelWithOnOff",
+                         {level: Number(brightness), transtime: transition.time, ...optionalParams}, {});
+    const result = {state: {}};
+    if (publishBrightness) result.state.brightness = Number(brightness);
+    if (state !== null) result.state.state = brightness === 0 ? "OFF" : "ON";
+    return result;
+};
 const lightToZigbee = (args) => [
     {
         key: ["state", "brightness", "brightness_percent", "on_time", "off_wait_time"],
         ...(args?.endpointNames ? {endpoints: args.endpointNames} : {}),
-        convertSet: async (entity, key, value, meta) => {
-            const t = getTransition(meta);
-            const state = typeof meta.message.state === "string" ? meta.message.state.toLowerCase() : undefined;
-            const brightness = meta.message.brightness;
-            if (brightness === undefined && state !== undefined) {
-                if (t.specified && state !== "toggle") {
-                    await entity.command("genLevelCtrl", "moveToLevelWithOnOff",
-                                         {level: state === "off" ? 0 : 254, transtime: t.time});
-                } else {
-                    await entity.command("genOnOff", state, {});
-                }
-                return {state: {state: state.toUpperCase()}};
-            }
-            await entity.command("genLevelCtrl", "moveToLevelWithOnOff", {level: brightness, transtime: t.time});
-            return {state: {brightness}};
-        },
+        convertSet: lightOnOffBrightness,
     },
     {
         key: ["brightness_step", "brightness_step_onoff"],
         convertSet: async (entity, key, value, meta) => {
             await entity.command("genLevelCtrl", key.endsWith("_onoff") ? "stepWithOnOff" : "step",
                                  {stepmode: value > 0 ? 0 : 1, stepsize: Math.abs(value),
-                                  transtime: getTransition(meta).time});
+                                  transtime: getTransition(meta).time, optionsMask: 0, optionsOverride: 0}, {});
         },
     },
     {
         key: ["brightness_move", "brightness_move_onoff"],
         convertSet: async (entity, key, value, meta) => {
             await entity.command("genLevelCtrl", key.endsWith("onoff") ? "moveWithOnOff" : "move",
-                                 {movemode: value > 0 ? 0 : 1, rate: Math.abs(value)});
+                                 {movemode: value > 0 ? 0 : 1, rate: Math.abs(value)}, {});
         },
     },
 ];
@@ -103,7 +167,11 @@ const delays = [];     // setTimeout delays it asked for
 
 const fakes = {
     "zigbee-herdsman-converters/lib/modernExtend": modernExtend,
-    "zigbee-herdsman-converters/lib/utils": {assertString: (v) => { if (typeof v !== "string") throw new Error("not a string"); }},
+    "zigbee-herdsman-converters/lib/utils": {
+        assertString: (v) => { if (typeof v !== "string") throw new Error("not a string"); },
+        getOptions: () => ({}),
+    },
+    "zigbee-herdsman-converters/lib/store": globalStore,
     "zigbee-herdsman-converters/lib/reporting": {
         bind: async (endpoint, coordinator, clusters) => log.push(["bind", endpoint.ID, clusters]),
         onOff: async (endpoint, config) => log.push(["report", endpoint.ID, "genOnOff", config]),
@@ -134,14 +202,16 @@ const realSetTimeout = setTimeout;
 global.setTimeout = (fn, ms) => { delays.push(ms); return realSetTimeout(fn, 0); };
 
 /* A device whose endpoint 1 answers mcu_version reads with the next of
- * versions (the last one repeats; an Error is thrown), and every other read
- * with {}. Reads, writes and reporting land in log. */
-const device = ({versions = [""], meta = {}} = {}) => {
+ * versions (the last one repeats; an Error is thrown), a genLevelCtrl onLevel read with
+ * onLevel (255: none, as the module has it by default), and every other read with {}.
+ * Reads, writes and reporting land in log. */
+const device = ({versions = [""], meta = {}, onLevel = 255} = {}) => {
     const cache = {};
     const queue = [...versions];
     const endpoints = {};
     const endpoint = (id) => (endpoints[id] ??= {
         ID: id,
+        deviceIeeeAddress: "0x0000000000000001",
         clusters: {genBasic: {attributes: cache}},
         read: async (cluster, attrs) => {
             log.push(["read", id, cluster, attrs]);
@@ -151,6 +221,7 @@ const device = ({versions = [""], meta = {}} = {}) => {
                 cache[0xff12] = v;
                 return {[0xff12]: v};
             }
+            if (cluster === "genLevelCtrl" && attrs.length === 1 && attrs[0] === "onLevel") return {onLevel};
             return {};
         },
         write: async (cluster, payload) => log.push(["write", id, cluster, payload]),
@@ -176,6 +247,7 @@ module.exports = {
     device,
     log,
     delays,
+    globalStore,
     // The extends of a definition built from the fake modernExtend functions.
     fakeExtends: (definition) => definition.extend.filter((x) => x.fake),
 };
