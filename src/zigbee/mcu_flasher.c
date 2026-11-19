@@ -12,6 +12,7 @@
 #include "device_config/nvm_items.h"
 #include "hal/gpio.h"
 #include "hal/nvm.h"
+#include "hal/swd_io.h"
 #include "hal/uart.h"
 #include "hal/timer.h"
 #include "zigbee/consts.h"
@@ -89,6 +90,8 @@ typedef char   ob_optr_is_level_0[((OB_OPTR & 0xFFu) == 0xAAu) ? 1 : -1];
 typedef char   ob_user_byte_is_open_dimmers[(((OB_OPTR >> 8) & 0xFFu) == 0xF9u) ? 1 : -1];
 #define OB_PROGRAM_MS            2000u
 #define REATTACH_MS              2000u
+#define EARLY_TRIES              8u   /* mcu_flasher_early: attach tries ... */
+#define EARLY_GAP_MS             10u  /* ... this far apart */
 #define ADDR_FLASH_SR            0x40022010u
 #define ADDR_FLASH_CR            0x40022014u
 #define ADDR_FLASH_TS0           0x40022100u
@@ -679,18 +682,56 @@ void mcu_flasher_early(void) {
         g_status.step = STEP_REATTACH;
         return;
     }
-    uint32_t dpidr  = 0;
-    uint8_t  halted = 0;
+    uint32_t  dpidr  = 0;
+    uint8_t   halted = 0;
+    uint8_t   stage  = STEP_BEGIN;   /* how far it got, shown when it fails */
+    swd_err_t err    = SWD_ERR_NO_TARGET;
 
-    if (swd_begin(g_clk, g_dio) == SWD_OK && swd_connect(&dpidr) == SWD_OK && dpidr == PY32_DPIDR &&
-        swd_power_up() == SWD_OK && halt_now(&halted) == SWD_OK && halted) {
+    /* a few tries ~10 ms apart (well inside the factory firmware's start-up
+     * delay), in case the MCU is not ready at the first */
+    for (uint8_t attempt = 0; attempt < EARLY_TRIES && !(err == SWD_OK && halted); attempt++) {
+        if (attempt > 0) {
+            swd_end();
+            for (uint32_t us = 0; us < EARLY_GAP_MS * 1000u; us++) {
+                hal_swd_delay();   /* 1 us on the module (no clock in the stub) */
+            }
+        }
+        stage = STEP_BEGIN;
+        err   = swd_begin(g_clk, g_dio);
+        if (err == SWD_OK) {
+            stage = STEP_CONNECT;
+            err   = swd_connect(&dpidr);
+        }
+        if (err == SWD_OK && dpidr != PY32_DPIDR) {
+            err = SWD_ERR_PROTOCOL;
+        }
+        if (err == SWD_OK) {
+            stage = STEP_POWER;
+            err   = swd_power_up();
+        }
+        if (err == SWD_OK) {
+            stage = STEP_STOP;
+            err   = halt_now(&halted);
+        }
+    }
+    if (err == SWD_OK && halted) {
         g_status.dpidr = dpidr;
         next_step(STEP_IDENTITY);
         return;
     }
+
+    /* not this time: kept armed; the status tells how far it got, the
+     * transfer error and when (ms since the module's start) */
     swd_end();
     g_status.state = MCU_FLASHER_STATE_ARMED;
     g_status.page  = a.boots_left;
+    g_status.step  = stage;
+    g_status.dpidr = dpidr;
+    g_status.error = stage == STEP_BEGIN ? MCU_FLASHER_ERR_PINS_DRIVEN :
+                     err == SWD_OK ? MCU_FLASHER_ERR_HALT :
+                     err == SWD_ERR_NO_TARGET ? MCU_FLASHER_ERR_NO_TARGET : MCU_FLASHER_ERR_SWD;
+    g_status.swd_err     = (uint8_t)err;
+    g_status.duration_ms = sat16(hal_millis());
 }
 
 void mcu_flasher_task(void) {
