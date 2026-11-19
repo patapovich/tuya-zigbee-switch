@@ -25,10 +25,8 @@
 #define ADDR_CPUID            0xE000ED00u
 #define ADDR_DBGMCU_IDCODE    0x40015800u
 #define ADDR_FLASH_OPTR       0x40022020u
-#define ADDR_FLASH_SDKR       0x40022024u
 #define ADDR_FLASH_WRPR       0x4002202Cu
 #define ADDR_OPTION_AREA      0x1FFF0E80u
-#define ADDR_UID              0x1FFF0E00u
 #define ADDR_ROM              0x1FFF0000u
 #define ROM_WORDS             (0xE00u / 4u)
 #define ADDR_FLASH            0x08000000u
@@ -36,9 +34,16 @@
 #define ADDR_BOOT_ID          0x08000010u
 #define ADDR_APP_HEADER       0x080010C0u
 
-#define SLICE_WORDS           32u /* per main-loop pass: a few ms of SWD */
-#define TRIES_PER_STEP        3u
-#define REPORT_EVERY_MS       1000u
+#define BOOT_ID_MAGIC         0x4C42444Fu /* "ODBL" */
+#define APP_MAGIC             0x5A445041u /* "APDZ" */
+
+/* One frame per read response or report: the Telink gcc has no _Static_assert. */
+typedef char mcu_flasher_status_fits_one_frame[
+        (sizeof(mcu_flasher_status_t) - 1 <= MCU_FLASHER_STATUS_MAX) ? 1 : -1];
+
+#define SLICE_WORDS        32u    /* per main-loop pass: a few ms of SWD */
+#define TRIES_PER_STEP     3u
+#define REPORT_EVERY_MS    1000u
 
 /* Steps; survey_dp stops after STEP_CONNECT. */
 enum {
@@ -101,7 +106,7 @@ uint8_t mcu_flasher_register_attrs(hal_zigbee_attribute *table, uint8_t start_in
         return 0;
     }
     g_status.len    = (uint8_t)(sizeof(g_status) - 1);
-    g_status.format = 1;
+    g_status.format = 2;
     hal_zigbee_attribute *a = &table[start_index];
 
     a[0].attribute_id = ZCL_ATTR_BASIC_MCU_FLASHER_STATUS;
@@ -133,9 +138,6 @@ static void finish(uint8_t state, uint8_t error, swd_err_t swd_err) {
     g_status.error       = error;
     g_status.swd_err     = (uint8_t)swd_err;
     g_status.duration_ms = sat16(hal_millis() - g_started);
-    if (state == MCU_FLASHER_STATE_DONE) {
-        g_status.progress = 100;
-    }
     report();
 }
 
@@ -161,15 +163,14 @@ void mcu_flasher_on_write(uint16_t attribute_id) {
     uint8_t len = g_status.len, format = g_status.format;
 
     memset(&g_status, 0, sizeof(g_status));
-    g_status.len        = len;
-    g_status.format     = format;
-    g_status.state      = MCU_FLASHER_STATE_RUNNING;
-    g_status.job        = job;
-    g_status.step       = STEP_BEGIN;
-    g_started           = hal_millis();
-    g_status.started_ms = sat16(g_started);
-    g_abort             = 0;
-    g_tries             = 0;
+    g_status.len    = len;
+    g_status.format = format;
+    g_status.state  = MCU_FLASHER_STATE_RUNNING;
+    g_status.job    = job;
+    g_status.step   = STEP_BEGIN;
+    g_started       = hal_millis();
+    g_abort         = 0;
+    g_tries         = 0;
     report();
 }
 
@@ -187,27 +188,25 @@ static swd_err_t read_crc16(uint32_t addr, uint32_t *crc) {
  * through a uint32_t pointer (unaligned on the TC32). */
 #define STATUS_AT(field)    ((uint8_t *)&g_status + offsetof(mcu_flasher_status_t, field))
 
-/* AP IDR, CPUID, IDCODE, OPTR, SDKR, WRPR, option bytes CRC, UID CRC: in this
- * order in the status. */
+/* AP IDR, CPUID, IDCODE, OPTR (in this order in the status), WRPR, the option
+ * bytes' CRC. */
 static swd_err_t identity(void) {
     static const uint32_t addr[] = {
-        ADDR_CPUID, ADDR_DBGMCU_IDCODE, ADDR_FLASH_OPTR, ADDR_FLASH_SDKR, ADDR_FLASH_WRPR,
+        ADDR_CPUID, ADDR_DBGMCU_IDCODE, ADDR_FLASH_OPTR, ADDR_FLASH_WRPR,
     };
-    uint32_t  v[8];
+    uint32_t  v[6];
     swd_err_t err = swd_ap_read(SWD_AP_IDR, &v[0]);
 
     for (uint8_t i = 0; err == SWD_OK && i < sizeof(addr) / sizeof(addr[0]); i++) {
         err = swd_mem_read32(addr[i], &v[1 + i]);
     }
     if (err == SWD_OK) {
-        err = read_crc16(ADDR_OPTION_AREA, &v[6]);
+        err = read_crc16(ADDR_OPTION_AREA, &v[5]);
     }
     if (err == SWD_OK) {
-        err = read_crc16(ADDR_UID, &v[7]);
-    }
-    if (err == SWD_OK) {
-        memcpy(STATUS_AT(ap_idr), v, sizeof(v));
-        g_status.rdp = (uint8_t)(v[3] & 0xFFu);
+        memcpy(STATUS_AT(ap_idr), v, 4 * sizeof(v[0]));
+        g_status.wrpr = (uint16_t)v[4];
+        memcpy(STATUS_AT(option_crc), &v[5], sizeof(v[5]));
     }
     return err;
 }
@@ -237,9 +236,8 @@ static swd_err_t crc_slice(uint32_t base, uint16_t count, uint8_t *result, uint8
 }
 
 static void next_step(uint8_t step) {
-    g_status.step     = step;
-    g_status.progress = (uint8_t)(step * (100u / STEP_END));
-    g_tries           = 0;
+    g_status.step = step;
+    g_tries       = 0;
 }
 
 void mcu_flasher_task(void) {
@@ -310,19 +308,27 @@ void mcu_flasher_task(void) {
                         rom ? STATUS_AT(rom_crc) : STATUS_AT(sector0_crc), &complete);
         if (err == SWD_OK && complete) {
             /* Flash reads only at RDP level 0: at level 1 they are bus errors. */
-            next_step(!rom ? STEP_HEADERS : g_status.rdp == 0xAA ? STEP_SECTOR0 : STEP_END);
+            next_step(!rom ? STEP_HEADERS : (uint8_t)g_status.optr ==
+                      0xAA ? STEP_SECTOR0 : STEP_END);
         }
         break;
     }
 
     case STEP_HEADERS:
-        /* boot_id + the next word, then the app header: in this order in the status */
+        /* boot_id (magic, version...) and the app header (magic, size, crc,
+         * version / flags / build) */
         err = swd_mem_read_block(ADDR_BOOT_ID, &word[0], 2);
         if (err == SWD_OK) {
             err = swd_mem_read_block(ADDR_APP_HEADER, &word[2], 4);
         }
         if (err == SWD_OK) {
-            memcpy(STATUS_AT(boot_id), word, 6 * sizeof(word[0]));
+            if (word[0] == BOOT_ID_MAGIC) {
+                g_status.boot_version = (uint8_t)word[1];
+            }
+            if (word[2] == APP_MAGIC) {
+                g_status.app_version = (uint8_t)word[5];
+                g_status.app_build   = (uint16_t)(word[5] >> 16);
+            }
             next_step(STEP_END);
         }
         break;

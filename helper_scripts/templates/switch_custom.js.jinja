@@ -1214,7 +1214,8 @@ const romasku = {
     // names its two wires (SW<clk><dio> token), and only shown with the device option
     // mcu_flasher: show (default hide: no expose, no state). One write of mcu_flasher starts a
     // job (phase 1: the read-only surveys); mcu_flasher_status shows its result (Basic 0xff50
-    // on endpoint 1, format 1, reported at every change and about once a second while it runs).
+    // on endpoint 1, format 2: 47 bytes, mcu_flasher_status_t; reported at every change and
+    // about once a second while it runs).
     mcuFlasher: () => {
         const jobs = {survey_dp: 1, survey_full: 2, abort: 0xff};
         const states = ["idle", "running", "done", "failed", "aborted"];
@@ -1234,20 +1235,17 @@ const romasku = {
             const state = states[b[1]] ?? `state ${b[1]}`;
             const job = Object.keys(jobs).find((k) => jobs[k] === b[2]) ?? `job ${b[2]}`;
             const parts = [`${state} ${job}`];
-            if (b[1] === 1) parts.push(`step ${b[3]}, ${b[4]} %`);
-            if (b[5]) parts.push(`error: ${errors[b[5]] ?? b[5]}` + (b[6] ? ` (SWD ${b[6]})` : ""));
+            if (b[1] === 1) parts.push(`step ${b[3]}`);
+            if (b[4]) parts.push(`error: ${errors[b[4]] ?? b[4]}` + (b[5] ? ` (SWD ${b[5]})` : ""));
             const w = (i) => b.readUInt32LE(i);
             if (w(8)) parts.push(`DPIDR ${hex(w(8))}`);
             if (w(16)) parts.push(`CPUID ${hex(w(16))}, IDCODE ${hex(w(20))}, AP ${hex(w(12))}`);
-            if (w(24)) parts.push(`OPTR ${hex(w(24))} (RDP ${b[7] === 0xaa ? 0 : b[7] === 0xcc ? 2 : 1}), WRPR ${hex(w(32))}, option bytes CRC ${hex(w(36))}`);
-            if (w(44)) parts.push(`ROM CRC ${hex(w(44))}`);
-            if (w(48)) parts.push(`sector 0 CRC ${hex(w(48))}`);
-            if (w(52) === 0x4c42444f) parts.push(`bootloader v${b[56]}`);
-            if (w(60) === 0x5a445041) {
-                const v = b[72];
-                parts.push(`app ${v >> 6}.${(v >> 4) & 3}.${v & 15} build ${b.readUInt16LE(74)} (${w(64)} B)`);
-            }
-            if (b[1] >= 2) parts.push(`${(b.readUInt16LE(78) / 1000).toFixed(1)} s`);
+            if (w(24)) parts.push(`OPTR ${hex(w(24))} (RDP ${b[24] === 0xaa ? 0 : b[24] === 0xcc ? 2 : 1}), WRPR ${hex(b.readUInt16LE(28))}, option bytes CRC ${hex(w(32))}`);
+            if (w(36)) parts.push(`ROM CRC ${hex(w(36))}`);
+            if (w(40)) parts.push(`sector 0 CRC ${hex(w(40))}`);
+            if (b[6]) parts.push(`bootloader v${b[6]}`);
+            if (b[7]) parts.push(`app ${b[7] >> 6}.${(b[7] >> 4) & 3}.${b[7] & 15} build ${b.readUInt16LE(30)}`);
+            if (b[1] >= 2) parts.push(`${(b.readUInt16LE(44) / 1000).toFixed(1)} s`);
             return parts.join("; ");
         };
         return {
@@ -1264,7 +1262,7 @@ const romasku = {
                     const raw = msg.data?.[0xff50];
                     if (msg.endpoint?.ID !== 1 || raw === undefined || !shown(options)) return;
                     const b = Buffer.from(raw);
-                    if (b.length < 80 || b[0] !== 1) return;
+                    if (b.length < 47 || b[0] !== 2) return;
                     return {mcu_flasher_status: describe(b)};
                 },
             }],

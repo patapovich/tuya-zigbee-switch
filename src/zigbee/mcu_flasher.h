@@ -39,37 +39,36 @@ enum {
     MCU_FLASHER_ERR_BAD_JOB,       /* unknown job */
 };
 
-/* Status attribute (Basic 0xff50, octet string), little-endian. */
+/* Status attribute (Basic 0xff50, octet string), little-endian. At most 48
+ * bytes after the length byte, as every octet string attribute of this
+ * firmware (tuya_mcu_diag.c): a read response or report must fit one frame
+ * (a bigger one is not sent by the stack, and format 1's 80 bytes left a
+ * module mute until a power cycle). */
 typedef struct __attribute__((packed)) {
     uint8_t  len;          /* ZCL octet string length byte */
-    uint8_t  format;       /* 1 */
+    uint8_t  format;       /* 2 */
     uint8_t  state;        /* MCU_FLASHER_STATE_* */
     uint8_t  job;          /* MCU_FLASHER_JOB_* */
     uint8_t  step;         /* the job's step reached (see mcu_flasher.c) */
-    uint8_t  progress;     /* % */
     uint8_t  error;        /* MCU_FLASHER_ERR_* */
     uint8_t  swd_err;      /* swd_err_t of the failed transfer */
-    uint8_t  rdp;          /* 0xAA level 0, 0xCC level 2, else level 1; 0 = not read */
+    uint8_t  boot_version; /* boot_id version byte (0: no "ODBL" boot_id) */
+    uint8_t  app_version;  /* app header version byte, Tuya packed (0: no "APDZ" header) */
     uint32_t dpidr;
     uint32_t ap_idr;
     uint32_t cpuid;
     uint32_t idcode;       /* DBGMCU IDCODE */
-    uint32_t optr;         /* FLASH_OPTR */
-    uint32_t sdkr;
-    uint32_t wrpr;
+    uint32_t optr;         /* FLASH_OPTR (RDP level in the low byte) */
+    uint16_t wrpr;         /* FLASH_WRPR */
+    uint16_t app_build;    /* app header build */
     uint32_t option_crc;   /* CRC-32 of the stored option bytes 0x1FFF0E80, 16 B */
-    uint32_t uid_crc;      /* CRC-32 of the UID 0x1FFF0E00, 16 B */
     uint32_t rom_crc;      /* CRC-32 of the system ROM 0x1FFF0000..0x1FFF0DFF */
     uint32_t sector0_crc;  /* CRC-32 of 0x08000000..0x08000FFF (RDP 0 only) */
-    uint32_t boot_id;      /* boot_id magic word at 0x08000010 */
-    uint32_t boot_info;    /* the next word: version, features, reserved */
-    uint32_t app_magic;    /* app header at 0x080010C0: magic */
-    uint32_t app_size;
-    uint32_t app_crc;
-    uint32_t app_info;     /* version, flags, build */
-    uint16_t started_ms;   /* ZTU uptime (ms, saturated) when the job started */
     uint16_t duration_ms;  /* how long it ran (saturated) */
+    uint8_t  reserved;
 } mcu_flasher_status_t;
+
+#define MCU_FLASHER_STATUS_MAX    48 /* bytes after the length byte */
 
 /* config_parser.c: an SW<clk><dio> token. */
 void mcu_flasher_parse_token(const char *entry);

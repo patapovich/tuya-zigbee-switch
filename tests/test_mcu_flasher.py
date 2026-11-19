@@ -21,12 +21,11 @@ STEP_END = 7
 TOKEN = "SWD3D7;"
 WITH_TOKEN = ZDMS16_2 + TOKEN
 
-FIELDS = ("format state job step progress error swd_err rdp dpidr ap_idr cpuid idcode optr sdkr "
-          "wrpr option_crc uid_crc rom_crc sector0_crc boot_id boot_info app_magic app_size app_crc "
-          "app_info started_ms duration_ms").split()
+FIELDS = ("format state job step error swd_err boot_version app_version dpidr ap_idr cpuid idcode "
+          "optr wrpr app_build option_crc rom_crc sector0_crc duration_ms reserved").split()
+STATUS_FORMAT = "<8B5IHH3IHB"   # mcu_flasher_status_t without its length byte
 
 OPTION_BYTES = bytes.fromhex("aaf95506ff0000ffffffffffffff0000")
-UID = bytes(range(0x10, 0x20))
 ROM = bytes((i * 37 + 11) & 0xFF for i in range(0xE00))
 
 
@@ -36,7 +35,8 @@ def crc(data: bytes) -> int:
 
 def status(device: Device) -> dict:
     raw = bytes.fromhex(device.read_zigbee_attr(1, BASIC, ATTR_STATUS))
-    return dict(zip(FIELDS, struct.unpack("<8B17I2H", raw)))
+    assert len(raw) <= 48  # one frame (mcu_flasher.h MCU_FLASHER_STATUS_MAX)
+    return dict(zip(FIELDS, struct.unpack(STATUS_FORMAT, raw)))
 
 
 def start_job(device: Device, job: int) -> None:
@@ -94,7 +94,7 @@ def test_with_the_token_the_pins_stay_untouched_until_a_job(flasher):
     for _ in range(20):
         proc.exec("s")
     st = status(device)
-    assert st["state"] == STATE_IDLE and st["format"] == 1
+    assert st["state"] == STATE_IDLE and st["format"] == 2
     stats = target(proc, "stats")
     assert int(stats["line_resets"]) == 0 and int(stats["dpidr_reads"]) == 0
 
@@ -123,17 +123,14 @@ def test_survey_full_reads_identity_and_checksums(flasher, tmp_path):
     target(proc, "load", "0x08000000", path)
     start_job(device, JOB_SURVEY_FULL)
     st = run_until_settled(proc, device)
-    assert (st["state"], st["error"], st["step"], st["progress"]) == (STATE_DONE, ERR_NONE, STEP_END, 100)
+    assert (st["state"], st["error"], st["step"]) == (STATE_DONE, ERR_NONE, STEP_END)
     assert (st["dpidr"], st["ap_idr"], st["cpuid"], st["idcode"]) == (
         0x0BC11477, 0x04770031, 0x410CC601, 0x60001000)
-    assert (st["optr"], st["sdkr"], st["wrpr"], st["rdp"]) == (0xF9AA, 0x1F, 0xFFFF, 0xAA)
+    assert (st["optr"], st["wrpr"]) == (0xF9AA, 0xFFFF)
     assert st["option_crc"] == crc(OPTION_BYTES)
-    assert st["uid_crc"] == crc(UID)
     assert st["rom_crc"] == crc(ROM)
     assert st["sector0_crc"] == crc(bytes(image[:0x1000]))
-    assert struct.pack("<II", st["boot_id"], st["boot_info"]) == bytes(image[0x10:0x18])
-    assert struct.pack("<IIII", st["app_magic"], st["app_size"], st["app_crc"], st["app_info"]) == \
-        bytes(image[0x10C0:0x10D0])
+    assert (st["boot_version"], st["app_version"], st["app_build"]) == (2, 0xA2, 700)
     stats = target(proc, "stats")
     assert int(stats["mem_writes"]) == 0          # a survey never writes the target
     assert int(stats["contention"]) == 0
@@ -148,8 +145,8 @@ def test_survey_full_under_read_protection_skips_the_flash(flasher):
     start_job(device, JOB_SURVEY_FULL)
     st = run_until_settled(proc, device)
     assert (st["state"], st["error"]) == (STATE_DONE, ERR_NONE)
-    assert st["rdp"] == 0x55 and st["rom_crc"] == crc(ROM)
-    assert st["sector0_crc"] == 0 and st["app_magic"] == 0
+    assert st["optr"] & 0xFF == 0x55 and st["rom_crc"] == crc(ROM)
+    assert st["sector0_crc"] == 0 and st["app_version"] == 0 and st["boot_version"] == 0
     assert int(target(proc, "stats")["faults"]) == 0
 
 
