@@ -35,6 +35,7 @@ stub_zigbee_simulate_command_without_activity(uint8_t endpoint,
                                               uint8_t command_id,
                                               void *payload,
                                               uint16_t payload_len);
+
 /* Scenes support: the group table (Groups cluster commands are the stack's on Telink), a
  * command to a group (to every member endpoint, no responses) and its removal hook. */
 int  stub_zigbee_group_add(uint8_t endpoint, uint16_t group_id);

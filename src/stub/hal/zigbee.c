@@ -363,6 +363,7 @@ bool hal_zigbee_group_has_endpoint(uint16_t group_id, uint8_t endpoint) {
     for (int i = 0; i < STUB_GROUPS; i++)
         if (groups[i].endpoint == endpoint && groups[i].group_id == group_id)
             return true;
+
     return false;
 }
 
@@ -373,6 +374,7 @@ void hal_zigbee_register_on_group_removed_callback(hal_group_removed_callback_t 
 int stub_zigbee_group_add(uint8_t endpoint, uint16_t group_id) {
     if (hal_zigbee_group_has_endpoint(group_id, endpoint))
         return 0;
+
     for (int i = 0; i < STUB_GROUPS; i++) {
         if (!groups[i].endpoint) {
             groups[i].endpoint = endpoint;

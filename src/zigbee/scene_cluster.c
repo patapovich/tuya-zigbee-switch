@@ -58,6 +58,7 @@ static scene_entry_t *scene_find(uint8_t ep, uint16_t group, uint8_t scene) {
     for (int i = 0; i < SCENE_TABLE_SIZE; i++)
         if (scenes[i].endpoint == ep && scenes[i].group_id == group && scenes[i].scene_id == scene)
             return &scenes[i];
+
     return NULL;
 }
 
@@ -66,9 +67,11 @@ static scene_entry_t *scene_find_or_free(uint8_t ep, uint16_t group, uint8_t sce
 
     if (e)
         return e;
+
     for (int i = 0; i < SCENE_TABLE_SIZE; i++)
         if (!scenes[i].endpoint)
             return &scenes[i];
+
     return NULL;
 }
 
@@ -124,6 +127,7 @@ static uint8_t scene_add(uint8_t ep, const uint8_t *p, uint16_t len, uint8_t enh
 
     if (len < 6)
         return 0;
+
     t  = get16(p + 3);
     at = (uint16_t)(6 + (p[5] == 0xFF ? 0 : p[5]));
     if (at > len)
@@ -161,11 +165,11 @@ static hal_zigbee_cmd_result_t scene_cmd(uint8_t ep, uint16_t cluster_id, uint8_
                                          void *payload, uint16_t len) {
     zigbee_scene_cluster *c = ep < SCENE_MAX_ENDPOINTS ? scene_by_endpoint[ep] : NULL;
     const uint8_t *       p = (const uint8_t *)payload;
-    uint8_t               enhanced = cmd == ZCL_CMD_SCENE_ENHANCED_ADD ||
-                                     cmd == ZCL_CMD_SCENE_ENHANCED_VIEW;
-    uint8_t               base     = enhanced ? (uint8_t)(cmd - ZCL_CMD_SCENE_ENHANCED_ADD) : cmd;
-    uint8_t               rsp[5 + SCENE_TABLE_SIZE];
-    uint8_t               n;
+    uint8_t enhanced        = cmd == ZCL_CMD_SCENE_ENHANCED_ADD ||
+                              cmd == ZCL_CMD_SCENE_ENHANCED_VIEW;
+    uint8_t base = enhanced ? (uint8_t)(cmd - ZCL_CMD_SCENE_ENHANCED_ADD) : cmd;
+    uint8_t rsp[5 + SCENE_TABLE_SIZE];
+    uint8_t n;
 
     if (c == NULL || (base > ZCL_CMD_SCENE_GET_MEMBERSHIP && !enhanced))
         return HAL_ZIGBEE_CMD_SKIPPED; /* Copy Scene and anything else: not supported */
@@ -174,8 +178,8 @@ static hal_zigbee_cmd_result_t scene_cmd(uint8_t ep, uint16_t cluster_id, uint8_
     if (p == NULL || len < (with_scene ? 3 : 2))
         return HAL_ZIGBEE_MALFORMED_COMMAND;
 
-    uint16_t       group  = get16(p);
-    uint8_t        status = scene_group_ok(group, ep) ? ZCL_STATUS_SUCCESS
+    uint16_t group  = get16(p);
+    uint8_t  status = scene_group_ok(group, ep) ? ZCL_STATUS_SUCCESS
                                                       : ZCL_STATUS_INVALID_FIELD;
     scene_entry_t *e;
 
@@ -192,6 +196,7 @@ static hal_zigbee_cmd_result_t scene_cmd(uint8_t ep, uint16_t cluster_id, uint8_
     case ZCL_CMD_SCENE_ADD:
         if (!scene_add(ep, p, len, enhanced, &rsp[0]))
             return HAL_ZIGBEE_MALFORMED_COMMAND;
+
         break;
 
     case ZCL_CMD_SCENE_VIEW:
@@ -248,11 +253,13 @@ static hal_zigbee_cmd_result_t scene_cmd(uint8_t ep, uint16_t cluster_id, uint8_
 
     case ZCL_CMD_SCENE_RECALL:
         /* No response; the default response tells the status. A time in the command (ZCL 7,
-         * not 0xFFFF) wins over the scene's: 0 there is "at once", as in a level command. */
+        * not 0xFFFF) wins over the scene's: 0 there is "at once", as in a level command. */
         if (status != ZCL_STATUS_SUCCESS)
             return HAL_ZIGBEE_INVALID_FIELD;
+
         if (e == NULL)
             return HAL_ZIGBEE_NOT_FOUND;
+
         dimmer_cluster_scene_recall(ep, e->flags, e->level,
                                     len >= 5 && get16(p + 3) != 0xFFFF ? get16(p + 3)
                                     : e->transition ? e->transition : 0xFFFF);
@@ -301,10 +308,13 @@ void scene_cluster_add_to_endpoint(zigbee_scene_cluster *cluster, hal_zigbee_end
     cluster->scene_valid   = 0;
 
     /* SceneCount, CurrentScene, CurrentGroup, SceneValid, NameSupport (ids 0..4), read-only. */
-    static const uint8_t types[5] = { ZCL_DATA_TYPE_UINT8, ZCL_DATA_TYPE_UINT8, ZCL_DATA_TYPE_UINT16,
+    static const uint8_t types[5] = { ZCL_DATA_TYPE_UINT8,   ZCL_DATA_TYPE_UINT8,
+                                      ZCL_DATA_TYPE_UINT16,
                                       ZCL_DATA_TYPE_BOOLEAN, ZCL_DATA_TYPE_BITMAP8 };
-    uint8_t *values[5] = { &scene_count, &cluster->current_scene, (uint8_t *)&cluster->current_group,
-                           &cluster->scene_valid, (uint8_t *)&scene_name_support };
+    uint8_t *            values[5] = { &scene_count,           &cluster->current_scene,
+                                       (uint8_t *)&cluster->current_group,
+                                       &cluster->scene_valid,
+                                       (uint8_t *)&scene_name_support };
     for (uint8_t i = 0; i < 5; i++) {
         hal_zigbee_attribute *a = &cluster->attr_infos[i];
         a->attribute_id = i;

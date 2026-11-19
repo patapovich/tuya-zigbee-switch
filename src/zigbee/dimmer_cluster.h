@@ -170,13 +170,16 @@ void dimmer_cluster_callback_attr_write_trampoline(uint8_t endpoint,
                                                    uint16_t attribute_id);
 
 #ifdef DIMMER_BINDINGS
+
 /** The endpoint of the dimmer's wall switch: On/Off and Level Control clients, for bindings of
  *  other lights to it (Dimmer Switch). */
 void dimmer_cluster_add_switch_endpoint(zigbee_dimmer_cluster *cluster,
                                         hal_zigbee_endpoint *endpoint);
+
 #endif
 
 #ifdef DIMMER_SCENES
+
 /** For Store Scene: the endpoint's state as scene flags (scene_cluster.h; the level only when
  *  one is known) and level. */
 void dimmer_cluster_scene_state(uint8_t endpoint, uint8_t *flags, uint8_t *level);
@@ -184,6 +187,7 @@ void dimmer_cluster_scene_state(uint8_t endpoint, uint8_t *flags, uint8_t *level
 /** Recall Scene: flags and level as stored, transition in 1/10 s (0xFFFF: the fade settings). */
 void dimmer_cluster_scene_recall(uint8_t endpoint, uint8_t flags, uint8_t level,
                                  uint16_t transition);
+
 #endif
 
 #endif

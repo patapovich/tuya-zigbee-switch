@@ -29,6 +29,7 @@ void scene_cluster_add_to_endpoint(zigbee_scene_cluster *cluster, hal_zigbee_end
 /** The light of the endpoint changed other than by a recall (a command, the wall switch):
  *  SceneValid goes 0. */
 void scene_cluster_light_changed(uint8_t endpoint);
+
 #endif
 
 #endif

@@ -57,6 +57,6 @@
 #define NV_ITEM_MCU_FLASHER_AUTO    59
 
 /* The Scenes table of the dimmer endpoints (DIMMER_SCENES, src/zigbee/scene_cluster.c). */
-#define NV_ITEM_SCENE_TABLE        60
+#define NV_ITEM_SCENE_TABLE         60
 
 #endif /* DEVICE_CONFIG_NVM_ITEMS_H_ */
