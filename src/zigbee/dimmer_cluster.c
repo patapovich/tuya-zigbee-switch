@@ -448,10 +448,11 @@ static void dimmer_turn_on_default(zigbee_dimmer_cluster *cluster) {
 }
 
 /* The level a wall switch on goes to (0: where the MCU goes by itself): the
- * wall switch's OnLevel, else OnLevel, else a level set while off for a stock
- * MCU (pending: as it was before the on). */
+ * wall switch's OnLevel (Open Dimmer from OPEN_DIMMER_FEATURES_BUILD only: any
+ * other MCU gets exactly what it got before), else OnLevel, else a level set
+ * while off for a stock MCU (pending: as it was before the on). */
 static uint8_t dimmer_local_on_level(const zigbee_dimmer_cluster *cluster, uint8_t pending) {
-    if (dimmer_level_set(cluster->on_level_local))
+    if (dimmer_od_features(cluster) && dimmer_level_set(cluster->on_level_local))
         return cluster->on_level_local;
 
     if (dimmer_on_level_set(cluster))

@@ -5,8 +5,9 @@
   comes on at and leaves it off. Open Dimmer keeps a level written while off, so it gets that
   write; a stock MCU would forget it, so it gets nothing and the module writes the level at
   the next on. Options 0 (the default): ignored while off, as before.
-- The wall switch's own OnLevel (Level Control 0xff11): a wall switch on goes there, a network
-  On to OnLevel. 0xFF (the default): OnLevel for both, as before.
+- The wall switch's own OnLevel (Level Control 0xff11): with Open Dimmer 2.2.0 a wall switch
+  on goes there, a network On to OnLevel; 0xFF (the default): OnLevel for both, as before.
+  Any other MCU gets what it got before, whatever is set.
 Both are kept in NV like OnLevel."""
 import pytest
 from own_mcu import own_mcu_contact
@@ -181,50 +182,101 @@ def test_open_dimmer_keeps_a_level_written_while_off():
         proc.stop()
 
 
-# ---- the wall switch's OnLevel ------------------------------------------------------------
+# ---- the wall switch's OnLevel (Open Dimmer 2.2.0 only) ------------------------------------
 
-def wall_on(proc, device) -> list[tuple[int, int]]:
-    known_off(proc)
-    mcu_report(proc, bool_dp(DP_ON_L1, 1))
-    return writes_after(proc, device)
+OD_MIN, OD_MAX = 200, 1000          # OwnMcu's range
+
+
+def od_wall_on(proc, device, mcu) -> list[tuple[int, int]]:
+    """Open Dimmer: off, then the wall switch turns channel 1 on (an active report)."""
+    device.call_zigbee_cmd(1, ON_OFF, CMD_OFF)
+    mcu.serve()
+    mcu.writes.clear()
+    mcu.ch[0]["on"] = 1
+    mcu.send([mcu._report([mcu._dp(DP_ON_L1)], passive=False)])
+    mcu.serve()
+    return list(mcu.writes)
+
+
+def od(build: int | None = 500):
+    proc, device = start()
+    mcu = own_mcu_contact(proc, device, build=build)
+    take_tx(proc)
+    return proc, device, mcu
 
 
 def test_the_wall_switch_on_level_defaults_to_on_level():
-    proc, device = start()
+    proc, device, mcu = od()
     try:
-        dump_range(proc, MN, MX)
         assert int(device.read_zigbee_attr(1, LEVEL, ATTR_ON_LEVEL_LOCAL)) == 0xFF
         set_on_level(device, 100)
-        assert wall_on(proc, device) == [(DP_LEVEL_L1, scaled_to_tuya(100, MN, MX))]   # as before
+        assert od_wall_on(proc, device, mcu) == [(DP_LEVEL_L1, scaled_to_tuya(100, OD_MIN, OD_MAX))]
     finally:
         proc.stop()
 
 
 def test_the_wall_switch_and_the_network_have_their_own_on_levels():
-    proc, device = start()
+    proc, device, mcu = od()
     try:
-        dump_range(proc, MN, MX)
         set_on_level(device, 60)
         device.write_zigbee_attr(1, LEVEL, ATTR_ON_LEVEL_LOCAL, 200)
-        assert wall_on(proc, device) == [(DP_LEVEL_L1, scaled_to_tuya(200, MN, MX))]
-        known_off(proc)
+        assert od_wall_on(proc, device, mcu) == [(DP_LEVEL_L1, scaled_to_tuya(200, OD_MIN, OD_MAX))]
+        device.call_zigbee_cmd(1, ON_OFF, CMD_OFF)
+        mcu.serve()
+        mcu.writes.clear()
         device.call_zigbee_cmd(1, ON_OFF, CMD_ON)
-        assert writes_after(proc, device) == [(DP_ON_L1, 1), (DP_LEVEL_L1, scaled_to_tuya(60, MN, MX))]
+        mcu.serve()
+        assert mcu.writes == [(DP_ON_L1, 1), (DP_LEVEL_L1, scaled_to_tuya(60, OD_MIN, OD_MAX))]
     finally:
         proc.stop()
 
 
 def test_a_wall_switch_on_level_alone_leaves_the_network_on_to_the_mcu():
-    proc, device = start()
+    proc, device, mcu = od()
     try:
-        dump_range(proc, MN, MX)
         device.write_zigbee_attr(1, LEVEL, ATTR_ON_LEVEL_LOCAL, 200)
-        assert wall_on(proc, device) == [(DP_LEVEL_L1, scaled_to_tuya(200, MN, MX))]
-        known_off(proc)
+        assert od_wall_on(proc, device, mcu) == [(DP_LEVEL_L1, scaled_to_tuya(200, OD_MIN, OD_MAX))]
+        device.call_zigbee_cmd(1, ON_OFF, CMD_OFF)
+        mcu.serve()
+        mcu.writes.clear()
         device.call_zigbee_cmd(1, ON_OFF, CMD_ON)
-        assert writes_after(proc, device) == [(DP_ON_L1, 1)]
+        mcu.serve()
+        assert mcu.writes == [(DP_ON_L1, 1)]
     finally:
         proc.stop()
+
+
+@pytest.mark.parametrize("build", [400, None])
+def test_an_older_open_dimmer_ignores_the_wall_switch_on_level(build):
+    proc, device, mcu = od(build)
+    try:
+        set_on_level(device, 60)
+        device.write_zigbee_attr(1, LEVEL, ATTR_ON_LEVEL_LOCAL, 200)
+        assert od_wall_on(proc, device, mcu) == [(DP_LEVEL_L1, scaled_to_tuya(60, OD_MIN, OD_MAX))]
+    finally:
+        proc.stop()
+
+
+def test_a_stock_mcu_gets_what_it_got_before_whatever_the_wall_switch_on_level():
+    for local in (0xFF, 200):
+        proc, device = start()
+        try:
+            dump_range(proc, MN, MX)
+            set_on_level(device, 100)
+            if local != 0xFF:
+                device.write_zigbee_attr(1, LEVEL, ATTR_ON_LEVEL_LOCAL, local)
+            assert wall_on(proc, device) == [(DP_LEVEL_L1, scaled_to_tuya(100, MN, MX))], local
+            known_off(proc)
+            device.call_zigbee_cmd(1, ON_OFF, CMD_ON)
+            assert writes_after(proc, device) == [(DP_ON_L1, 1), (DP_LEVEL_L1, scaled_to_tuya(100, MN, MX))]
+        finally:
+            proc.stop()
+
+
+def wall_on(proc, device) -> list[tuple[int, int]]:
+    known_off(proc)
+    mcu_report(proc, bool_dp(DP_ON_L1, 1))
+    return writes_after(proc, device)
 
 
 def test_the_wall_switch_on_level_survives_a_restart_and_0_reads_as_none():

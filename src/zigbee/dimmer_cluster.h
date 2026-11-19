@@ -75,7 +75,8 @@ typedef struct {
     uint8_t              on_level;
 
     /* The OnLevel of the wall switch (Level Control 0xff11, same values, NV-kept like it):
-     * when set, a wall switch on goes there instead of to OnLevel; 0xFF (default): OnLevel. */
+     * when set, a wall switch on goes there instead of to OnLevel; 0xFF (default): OnLevel.
+     * Used with Open Dimmer from OPEN_DIMMER_FEATURES_BUILD only (kept for any MCU). */
     uint8_t              on_level_local;
     uint8_t              on_level_local_saved;
 
