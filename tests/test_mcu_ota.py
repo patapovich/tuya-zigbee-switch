@@ -1309,6 +1309,31 @@ def test_an_offset_0_request_is_a_restart_sign_also_when_the_gate_keeps_the_imag
         proc.stop()
 
 
+def test_an_offset_0_request_is_a_restart_sign_also_during_the_failure_pause():
+    """Contract item 4 (a): the pause keeps the image from the bootloader, not the restart."""
+    proc, device = start()
+    try:
+        contact_as_own(proc, device, VERSION)
+        for _ in range(3):
+            fail(proc, device)
+        assert ota_state(device)[1] > 0                              # paused
+        assert answers(proc, device, block_request(0, 64, MODE_PROBE)) == []
+        assert TUYA_CMD_MCU_VERSION in mcu_query_seq(proc, device, 7)
+        assert OTA_IDENT in version_then_ident(proc, device)
+    finally:
+        proc.stop()
+
+
+def test_an_offset_0_request_is_a_restart_sign_also_with_an_unusable_image(variant_stubs):
+    proc, device = start_with(variant_stubs["crc"])
+    try:
+        contact_as_own(proc, device, VERSION)
+        assert answers(proc, device, block_request(0, 64, MODE_PROBE)) == []
+        assert TUYA_CMD_MCU_VERSION in mcu_query_seq(proc, device, 7)
+    finally:
+        proc.stop()
+
+
 def test_an_image_up_to_12_kb_needs_no_report():
     if SIZE > 12 * 1024:
         pytest.skip("the carried image is over 12 KB: gated, see the tests above")

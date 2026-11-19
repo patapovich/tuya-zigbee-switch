@@ -411,17 +411,18 @@ static void answer_block(uint16_t seq, const uint8_t *data, uint16_t len) {
         return;
     }
     note_request(data, len);
-    if (!image_info(&img)) {
-        return;
-    }
     uint32_t off  = be32(data);
     uint16_t want = (uint16_t)((data[4] << 8) | data[5]);
 
     if (off == 0) {
         /* The MCU is in its bootloader: its app's next query is a first
-         * contact again, even if the result frame gets lost. Also when the
-         * ring gate keeps the image from it (contract item 4 (a)). */
+         * contact again, even if the result frame gets lost. Whether it is
+         * served or not: the failure pause, an unusable image and the ring
+         * gate keep the image from it, not the restart (contract item 4 (a)). */
         tuya_mcu_app_mcu_restarted();
+    }
+    if (!image_info(&img)) {
+        return;
     }
     if (!ring_gate_open(&img) && !(len >= REQUEST_LEN && data[7] == REQUEST_MODE_NO_APP)) {
         return;
