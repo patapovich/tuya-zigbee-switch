@@ -34,8 +34,8 @@ static volatile unsigned char *g_dio_oen; /* output enable, active low */
 static volatile unsigned char *g_dio_in;
 static unsigned char           g_clk_bit;
 static unsigned char           g_dio_bit;
-static uint8_t                 g_dio_host;  /* the module's turn on SWDIO */
-static uint8_t                 g_dio_level; /* the level it sends then */
+static uint8_t g_dio_host;                  /* the module's turn on SWDIO */
+static uint8_t g_dio_level;                 /* the level it sends then */
 
 static void pin_released(GPIO_PinTypeDef pin) {
     gpio_set_output_en(pin, 0);
@@ -81,14 +81,14 @@ void hal_swd_take(hal_gpio_pin_t clk, hal_gpio_pin_t dio) {
     gpio_setup_up_down_resistor(g_dio, PM_PIN_PULLUP_10K);
     gpio_set_input_en(g_dio, 1);
     gpio_set_output_en(g_dio, 0);
-    g_clk_out = &reg_gpio_out(g_clk);
-    g_dio_oen = &reg_gpio_oen(g_dio);
-    g_dio_in  = &reg_gpio_in(g_dio);
-    g_clk_bit = (unsigned char)(g_clk & 0xff);
-    g_dio_bit = (unsigned char)(g_dio & 0xff);
+    g_clk_out   = &reg_gpio_out(g_clk);
+    g_dio_oen   = &reg_gpio_oen(g_dio);
+    g_dio_in    = &reg_gpio_in(g_dio);
+    g_clk_bit   = (unsigned char)(g_clk & 0xff);
+    g_dio_bit   = (unsigned char)(g_dio & 0xff);
     g_dio_host  = 0;
     g_dio_level = 1;
-    g_taken   = 1;
+    g_taken     = 1;
 }
 
 void hal_swd_release(void) {

@@ -7,15 +7,14 @@
 // callback below is the SDK's server-to-client branch, word for word, and answers
 // a client-to-server command (which only an OTA server receives) as unsupported,
 // as a device without an OTA server does.
-#define zcl_otaCb zcl_otaCb_sdk_unused
+#define zcl_otaCb    zcl_otaCb_sdk_unused
 #include "ota/ota.c"
 #undef zcl_otaCb
 
 #ifdef ZCL_OTA
 status_t zcl_otaCb(zclIncomingAddrInfo_t *pAddrInfo, u8 cmdId, void *cmdPayload);
 
-status_t zcl_otaCb(zclIncomingAddrInfo_t *pAddrInfo, u8 cmdId, void *cmdPayload)
-{
+status_t zcl_otaCb(zclIncomingAddrInfo_t *pAddrInfo, u8 cmdId, void *cmdPayload) {
     status_t status = ZCL_STA_UNSUP_CLUSTER_COMMAND;
 
     if (pAddrInfo->dstEp == g_otaCtx.simpleDesc->endpoint) {
@@ -36,7 +35,8 @@ status_t zcl_otaCb(zclIncomingAddrInfo_t *pAddrInfo, u8 cmdId, void *cmdPayload)
             status = ota_upgradeEndRspHandler(pAddrInfo, (ota_upgradeEndRsp_t *)cmdPayload);
             break;
         case ZCL_CMD_OTA_QUERY_DEVICE_SPECIFIC_FILE_RSP:
-            status = ota_queryDevSpecFileRspHandler(pAddrInfo, (ota_querySpecFileRsp_t *)cmdPayload);
+            status = ota_queryDevSpecFileRspHandler(pAddrInfo,
+                                                    (ota_querySpecFileRsp_t *)cmdPayload);
             break;
         default:
             status = ZCL_STA_UNSUP_CLUSTER_COMMAND;
@@ -49,4 +49,5 @@ status_t zcl_otaCb(zclIncomingAddrInfo_t *pAddrInfo, u8 cmdId, void *cmdPayload)
 
     return status;
 }
+
 #endif
