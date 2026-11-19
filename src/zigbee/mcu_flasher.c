@@ -164,11 +164,16 @@ enum {
 /* PHASE_OB_WRITTEN: the factory firmware may be gone (the protection change
  * erased the flash): the install goes on at every power-up until it is done. */
 #define RESUME_ALWAYS       0xFFu
+/* Start-ups that found the pins held at once (a restart of the module alone, the
+ * MCU running on) do not count as power-ups; this many of them count as one, so
+ * a pin held low at every real power-up (a short, a firmware that takes it at
+ * once) still ends the job. */
+#define HELD_STARTS         20u
 typedef struct {
     uint8_t magic;
     uint8_t phase;
     uint8_t boots_left;
-    uint8_t reserved;
+    uint8_t held;          /* start-ups with the pins held at once (HELD_STARTS) */
 } armed_t;
 
 extern hal_uart_config_t mcu_uart_config; /* config_parser.c: the W token */
@@ -337,6 +342,9 @@ void mcu_flasher_on_write(uint16_t attribute_id) {
         return;
     }
     if (attribute_id == ZCL_ATTR_BASIC_MCU_FLASHER_CONFIRM) {
+        if (g_confirm.len > 23u) {
+            g_confirm.len = 0;   /* no job has such a name; read back it would not fit a frame */
+        }
         g_confirm_at = hal_millis();
         return;
     }
@@ -819,6 +827,17 @@ void mcu_flasher_early(void) {
         g_status.duration_ms = sat16(hal_millis());
         return;
     }
+    if (err == SWD_OK && halted && resumed) {
+        /* level 1 again: the protection change never took (or option bytes a
+         * cut left corrupt load as level 1): the factory firmware may still be
+         * there, so from here a limited armed install (its gates relaxed for
+         * what a cut may leave), not one taken up at every power-up */
+        a.phase      = PHASE_ARMED;
+        a.boots_left = ARMED_BOOTS;
+        a.held       = 0;
+        hal_nvm_write(NV_ITEM_MCU_FLASHER_JOB, sizeof(a), (uint8_t *)&a);
+        g_past_ob = 0;
+    }
     if (err == SWD_OK && halted) {
         g_status.app_build = sat16(hal_millis());   /* attach time: shown for an install */
         next_step(STEP_IDENTITY);
@@ -830,7 +849,10 @@ void mcu_flasher_early(void) {
      * when the pins were free at the start: held at once, the MCU ran on through
      * a restart of the module alone (an OTA, a config write), it was not a
      * power-up. A taken-up install is never given up. */
-    if (!resumed && !held) {
+    if (!resumed && held && ++a.held < HELD_STARTS) {
+        hal_nvm_write(NV_ITEM_MCU_FLASHER_JOB, sizeof(a), (uint8_t *)&a);
+    } else if (!resumed) {
+        a.held = 0;
         a.boots_left--;
         hal_nvm_write(NV_ITEM_MCU_FLASHER_JOB, sizeof(a), (uint8_t *)&a);
     }
@@ -1127,8 +1149,12 @@ void mcu_flasher_task(void) {
         /* before the programming starts: a power cut from here on takes the
          * install up at the next power-up (the flash may be erased by then) */
         hal_nvm_write(NV_ITEM_MCU_FLASHER_JOB, sizeof(a), (uint8_t *)&a);
-        g_past_ob = 1;
         err = ob_program(&started);
+        if (started || err != SWD_OK) {
+            g_past_ob = 1;   /* started, or a transfer failed on the way: maybe */
+        }
+        /* not started (the controller stayed locked): nothing changed, a
+         * failure drops the job as before the option bytes */
         if (err == SWD_OK && !started) {
             fail = MCU_FLASHER_ERR_FLASH;
             break;

@@ -677,3 +677,54 @@ def test_a_failure_past_the_option_bytes_keeps_the_job(stock, monkeypatch):
         device = Device(proc)
         proc.exec("step_time 3000")
         check_installed(proc, run_until_settled(proc, device, passes=4000))
+
+
+JOB_ITEM = Path("./stub_nvm_data/item_3a.bin")   # NV_ITEM_MCU_FLASHER_JOB (58)
+ERR_WRONG_TARGET_ = 3
+
+
+def test_a_taken_up_install_that_finds_the_factory_firmware_is_a_limited_one(stock, monkeypatch):
+    """PHASE_OB_WRITTEN in NV but the MCU at level 1 with its factory firmware (the option bytes
+    never started): not taken up at every power-up, an armed install as any; a lasting refusal
+    (here the ROM CRC) ends it, and the next power-up leaves the MCU alone."""
+    monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "1500")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        target(proc, "poke32", "0x1FFF0100", "0x12345678")   # the ROM CRC will not match
+        target(proc, "save")
+    JOB_ITEM.write_bytes(bytes([0xA7, 0x02, 0xFF, 0x00]))   # taken up, at every power-up
+    monkeypatch.setenv("SWD_TARGET_POWER_CYCLE", "1")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        proc.exec("step_time 3000")
+        st = run_until_settled(proc, device, passes=400)
+        assert (st["state"], st["error"]) == (STATE_FAILED, ERR_WRONG_TARGET_), st
+        assert not JOB_ITEM.exists()
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        assert status(Device(proc))["state"] == STATE_IDLE
+        stats = target(proc, "stats")
+        assert stats["core"] == "running" and stats["option_programs"] == "0"
+
+
+def test_a_confirm_longer_than_a_job_name_is_dropped():
+    """The SDK takes a char string of any length into the 256-byte buffer; one longer than any
+    job name is dropped at once, so a read of it never makes a response over one frame."""
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        confirm(device, "x" * 40)
+        assert device.read_zigbee_attr(1, BASIC, ATTR_CONFIRM) == ""
+        confirm(device, "install")
+        assert device.read_zigbee_attr(1, BASIC, ATTR_CONFIRM) == "install"
+
+
+def test_held_starts_count_as_one_power_up_per_twenty(stock, monkeypatch):
+    """SWCLK held low at once at every start: 20 of them count as one power-up, so a short or a
+    firmware that takes the pin at once still ends the job."""
+    monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "1500")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        target(proc, "clk_held_low", 1)
+    JOB_ITEM.write_bytes(bytes([0xA7, 0x01, 0x03, 0x00]))   # an armed install, 3 power-ups
+    pages = []
+    for _ in range(21):
+        with StubProc(device_config=WITH_TOKEN) as proc:
+            pages.append(status(Device(proc))["page"])
+    assert pages[:19] == [3] * 19 and pages[19] == 2 and pages[20] == 2, pages
