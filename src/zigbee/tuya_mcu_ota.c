@@ -456,7 +456,7 @@ static void answer_block(uint16_t seq, const uint8_t *data, uint16_t len) {
 #define DP_HEALTH_UART_LOSSES    135
 #define DP_HEALTH_BOOT_WORD      137
 #define DP_HEALTH_TEMPERATURE    138
-#define DP_HEALTH_TEMP_CAL       139 /* right after 138, same frame: the round is done at 138 */
+#define DP_HEALTH_TEMP_CAL       139 /* right after 138, same frame: the end of the round */
 #define HEALTH_FORMAT            1
 #define BOOT_WORD_RING_MOVED     (1u << 25)
 
@@ -505,16 +505,16 @@ static void health_on_dp(uint8_t dpid, uint8_t dp_type, const uint8_t *value,
         }
         g_ring_moved = moved;
         if (g_own_build < OPEN_DIMMER_FEATURES_BUILD) {
-            health_round_done();    /* no DP 138 follows */
+            health_round_done();    /* no DPs 138, 139 follow */
         }
         break;
     }
     case DP_HEALTH_TEMPERATURE:
         g_health.temperature = (int16_t)(int32_t)v;
-        health_round_done();
         break;
     case DP_HEALTH_TEMP_CAL:
         g_health.temp_cal = v;      /* factory data: the same every round */
+        health_round_done();        /* 2.2.0: the last DP of the round */
         break;
     default:
         break;

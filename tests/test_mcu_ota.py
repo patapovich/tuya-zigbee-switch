@@ -1368,6 +1368,25 @@ def test_the_health_report_of_open_dimmer_fills_its_attribute(build, with_temper
         proc.stop()
 
 
+def test_the_first_health_report_sent_holds_the_calibration():
+    """From build 500 the round ends with DP 139 (after 138, in its frame): the report sent at
+    the end of the first round already has the temperature and its calibration."""
+    proc, device = start()
+    try:
+        contact_as_own(proc, device, VERSION, build=500, boot=2)
+        proc.exec(health_frame(RING_HIGH | RING_MOVED))
+        cmds_after(proc, device, 100)
+        assert reports_sent(device) == 0                              # 138, 139 still to come
+        proc.exec(temperature_frame(27))
+        cmds_after(proc, device, 100)
+        sent = [e for e in device._events if e.kind == "zcl_report_send"
+                and int(e.payload["attr"], 16) == ATTR_HEALTH]
+        assert len(sent) == 1
+        assert health_attr(device)["temp_cal"] == 0x047203B5 and health_attr(device)["temperature"] == 27
+    finally:
+        proc.stop()
+
+
 def test_the_health_report_goes_out_at_the_first_round_and_every_fifth():
     proc, device = start()
     try:
@@ -1397,7 +1416,8 @@ def test_the_health_dps_of_a_factory_mcu_are_not_taken():
 
 def test_the_temperature_frame_with_and_without_dp_139_does_no_harm():
     """DP 139 (the sensor's calibration) comes with 138 in one frame: kept, nothing else takes it
-    (no frame to the MCU, no dimmer attribute changes); a 2.2.0 without it is taken as well."""
+    (no frame to the MCU, no dimmer attribute changes). From build 500 it ends the round: a
+    frame without it leaves the round open (nothing shown yet), harmless."""
     proc, device = start()
     try:
         contact_as_own(proc, device, VERSION, build=500, boot=2)
@@ -1407,10 +1427,10 @@ def test_the_temperature_frame_with_and_without_dp_139_does_no_harm():
         proc.exec(health_frame(RING_HIGH | RING_MOVED))
         proc.exec(temperature_frame(29, cal=None))
         assert cmds_after(proc, device, 200) == []
-        assert health_attr(device)["temperature"] == 29 and health_attr(device)["temp_cal"] == 0
+        assert health_attr(device) is None                             # the round is still open
         proc.exec(temperature_frame(30))
         assert cmds_after(proc, device, 200) == []
-        assert health_attr(device)["temp_cal"] == 0x047203B5
+        assert health_attr(device)["temp_cal"] == 0x047203B5 and health_attr(device)["temperature"] == 30
         after = {(ep, c, a): device.read_zigbee_attr(ep, c, a) for ep in (1, 2)
                  for c, a in ((0x0006, 0xFF10), (0x0007, 0xFF10), (0x0008, 0x4000), (0x0301, 0xFF10))}
         assert after == before

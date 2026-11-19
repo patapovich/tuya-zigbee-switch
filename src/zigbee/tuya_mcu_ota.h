@@ -162,7 +162,8 @@ uint16_t tuya_mcu_ota_own_build(void);
  *
  * The health report (every 2 min, DPs 130..137 in one frame, from 2.2.0 138 the die
  * temperature and 139 its sensor's factory calibration in a frame of their own) of an
- * identified Open Dimmer is kept in Basic 0xff48 (octet string,
+ * identified Open Dimmer (a round ends with DP 139 from build 500, with 137 before) is kept
+ * in Basic 0xff48 (octet string,
  * tuya_mcu_health_t without its length byte, little endian; empty until the first report)
  * and, at the first report and every HEALTH_REPORT_EVERY-th after it, sent as an attribute
  * report to the Basic cluster's bindings (the converter binds it to the coordinator). */
