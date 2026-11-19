@@ -15,7 +15,7 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v2
+      uses: actions/checkout@v7
       with:
         fetch-depth: 0  
 
@@ -56,19 +56,19 @@ jobs:
         java-version: 21
 
     - name: Cache Silicon Labs Tools
-      uses: actions/cache@v3
+      uses: actions/cache@v6
       with:
         path: silabs_tools
         key: silabs-tools-2025.6.2
 
     - name: Cache Telink Tools
-      uses: actions/cache@v3
+      uses: actions/cache@v6
       with:
         path: telink_tools
         key: telink-tools-v3.7.2.0
 
     - name: Cache Python Virtual Environment
-      uses: actions/cache@v3
+      uses: actions/cache@v6
       with:
         path: .venv
         key: python-venv-${{ hashFiles('requirements.txt') }}
