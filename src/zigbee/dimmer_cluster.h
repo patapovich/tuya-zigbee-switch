@@ -48,6 +48,7 @@ typedef struct {
      * IdentifyTime (166 / 167, counted down here: the MCU does not report the end) and the
      * start boost in ms (168 / 169). */
     uint32_t             countdown;
+    uint32_t             countdown_end;  /* hal_millis() when it ends (countdown != 0) */
     uint16_t             startup_value;
     uint16_t             identify_time;
     uint16_t             start_boost;
@@ -121,6 +122,10 @@ typedef struct {
 
 void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
                                     hal_zigbee_endpoint *endpoint);
+
+/** The MCU (re)starts or makes contact again: what only lived in it (a countdown, an
+ *  identify blink) is gone. */
+void dimmer_cluster_mcu_restarted(void);
 
 
 // Returns HAL_ZIGBEE_CMD_SKIPPED-equivalent behavior: no-op if this endpoint

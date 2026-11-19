@@ -279,6 +279,26 @@ static uint8_t dimmer_od_features(const zigbee_dimmer_cluster *cluster) {
     return dimmer_od_from(cluster, OPEN_DIMMER_FEATURES_BUILD);
 }
 
+/* The countdown the module last wrote or the MCU last reported: s from now (0: none). */
+static void dimmer_countdown_set(zigbee_dimmer_cluster *cluster, uint32_t s) {
+    cluster->countdown     = s;
+    cluster->countdown_end = hal_millis() + s * 1000u;
+    hal_zigbee_notify_attribute_changed(cluster->endpoint, ZCL_CLUSTER_ON_OFF,
+                                        ZCL_ATTR_ONOFF_COUNTDOWN);
+}
+
+/* Its whole seconds left, rounded up. */
+static uint32_t dimmer_countdown_left(const zigbee_dimmer_cluster *cluster) {
+    int32_t ms = (int32_t)(cluster->countdown_end - hal_millis());
+
+    return cluster->countdown && ms > 0 ? ((uint32_t)ms + 999u) / 1000u : 0;
+}
+
+static void dimmer_write_countdown(zigbee_dimmer_cluster *cluster, uint32_t s) {
+    dimmer_write_tuya_value(dimmer_countdown_dp(cluster), s);
+    dimmer_countdown_set(cluster, s);
+}
+
 /* StartUpCurrentLevel from the MCU's value: 0 the last level (0xFF, previous); one below the
  * channel's minimum (by more than its steps of 4) is what a "minimum" wrote; else the level. */
 static uint8_t dimmer_startup_level(const zigbee_dimmer_cluster *cluster) {
@@ -573,13 +593,17 @@ static hal_zigbee_cmd_result_t dimmer_cluster_callback(zigbee_dimmer_cluster *cl
     switch (command_id) {
     case ZCL_CMD_ON_WITH_TIMED_OFF: {
         /* An On; Open Dimmer also goes off by itself after the on time, written once it is
-         * on (whole seconds, rounded up). An on time of 0 (or the invalid 0xFFFF) leaves a
-         * running countdown as it is (ZCL: the longer one wins, and 0 is no time). */
+         * on (whole seconds, rounded up). ZCL: while on, the longer of the time left and
+         * the new one wins, so a shorter one writes nothing; an on time of 0 (or the
+         * invalid 0xFFFF) is no time. The off wait time is not used: nothing keeps an On
+         * from coming right after the countdown's off. */
         uint16_t on_time = (uint16_t)(payload[1] | (payload[2] << 8));
+        uint32_t left    = cluster->on ? dimmer_countdown_left(cluster) : 0;
+        uint32_t s       = (on_time + 9u) / 10u;
 
         dimmer_turn_on_default(cluster);
-        if (on_time != 0 && on_time != 0xFFFF && dimmer_od_features(cluster))
-            dimmer_write_tuya_value(dimmer_countdown_dp(cluster), (on_time + 9u) / 10u);
+        if (on_time != 0 && on_time != 0xFFFF && dimmer_od_features(cluster) && s > left)
+            dimmer_write_countdown(cluster, s);
         break;
     }
     case ZCL_CMD_ONOFF_ON:
@@ -734,9 +758,7 @@ static void dimmer_on_od_value(zigbee_dimmer_cluster *cluster, uint8_t dpid, uin
     uint16_t v = (uint16_t)(number > 0xFFFF ? 0xFFFF : number);
 
     if (dpid == dimmer_countdown_dp(cluster)) {
-        cluster->countdown = number;
-        hal_zigbee_notify_attribute_changed(cluster->endpoint, ZCL_CLUSTER_ON_OFF,
-                                            ZCL_ATTR_ONOFF_COUNTDOWN);
+        dimmer_countdown_set(cluster, number);   /* 0 also when it ran out */
         return;
     }
 
@@ -1088,9 +1110,8 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
             if (!cluster->on || !dimmer_od_features(cluster)) {
                 cluster->countdown = 0;
             } else {
-                if (cluster->countdown > DIMMER_COUNTDOWN_MAX)
-                    cluster->countdown = DIMMER_COUNTDOWN_MAX;
-                dimmer_write_tuya_value(dimmer_countdown_dp(cluster), cluster->countdown);
+                dimmer_write_countdown(cluster, cluster->countdown > DIMMER_COUNTDOWN_MAX
+                                                ? DIMMER_COUNTDOWN_MAX : cluster->countdown);
             }
         }
 #endif
@@ -1173,6 +1194,24 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
 
     default:
         break;
+    }
+}
+
+void dimmer_cluster_mcu_restarted(void) {
+    for (int i = 0; i < DIMMER_MAX_ENDPOINTS; i++) {
+        zigbee_dimmer_cluster *cluster = dimmer_cluster_by_endpoint[i];
+        if (cluster == NULL)
+            continue;
+
+        if (cluster->countdown) {
+            cluster->countdown = 0;
+            hal_zigbee_notify_attribute_changed(cluster->endpoint, ZCL_CLUSTER_ON_OFF,
+                                                ZCL_ATTR_ONOFF_COUNTDOWN);
+        }
+#ifdef SECONDARY_MCU_IMAGE
+        hal_tasks_unschedule(&cluster->identify_task);
+        cluster->identify_time = 0;
+#endif
     }
 }
 

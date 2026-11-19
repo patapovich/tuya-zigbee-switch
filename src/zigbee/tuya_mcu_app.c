@@ -8,6 +8,7 @@
 #include "hal/uart.h"
 #include "hal/zigbee.h"
 #include "zigbee/consts.h"
+#include "zigbee/dimmer_cluster.h"
 #include "zigbee/dp_attr.h"
 #include "zigbee/tuya_dp_relay.h"
 #include "zigbee/tuya_mcu_diag.h"
@@ -208,6 +209,7 @@ static uint8_t first_contact(uint8_t source) {
     g_contact = source;
     g_mcu_own = 0;
     tuya_secondary_mcu_set_fast_acks(0, NULL);
+    dimmer_cluster_mcu_restarted();      /* a countdown or a blink of an earlier run is gone */
     tuya_dp_apply_inits();
     g_version_retries = 0;
     version_ask();
@@ -236,6 +238,7 @@ void tuya_mcu_app_mcu_restarted(void) {
     version_answered();                  /* asked again at the next contact */
     hal_tasks_unschedule(&g_dump_timer); /* the dump too, never retried then */
     tuya_mcu_ota_mcu_restarted();
+    dimmer_cluster_mcu_restarted();
 }
 
 /* Our own MCU firmware numbers its network queries from 0 at every start, so

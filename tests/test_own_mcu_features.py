@@ -152,6 +152,57 @@ def test_any_off_ends_the_countdown(how):
         proc.stop()
 
 
+def test_a_shorter_on_with_timed_off_leaves_the_longer_countdown():
+    """ZCL: while on, the longer of the time left and the new on time wins."""
+    proc, device, mcu = own()
+    try:
+        assert cmd(device, mcu, 1, ON_OFF, CMD_ON_WITH_TIMED_OFF, timed_off(0, 300)) == \
+            [(DP_ON[1], 1), (DP_COUNTDOWN[1], 30)]
+        device.step_time(10_000)                                  # 20 s left
+        assert cmd(device, mcu, 1, ON_OFF, CMD_ON_WITH_TIMED_OFF, timed_off(0, 150)) == \
+            [(DP_ON[1], 1)]                                        # 15 s: the 20 s stay
+        assert attr(device, 1, ON_OFF, ATTR_COUNTDOWN) == 30
+        assert cmd(device, mcu, 1, ON_OFF, CMD_ON_WITH_TIMED_OFF, timed_off(0, 250)) == \
+            [(DP_ON[1], 1), (DP_COUNTDOWN[1], 25)]                 # 25 s: longer
+        device.step_time(20_000)                                  # 5 s left
+        assert cmd(device, mcu, 1, ON_OFF, CMD_ON_WITH_TIMED_OFF, timed_off(0, 100)) == \
+            [(DP_ON[1], 1), (DP_COUNTDOWN[1], 10)]
+    finally:
+        proc.stop()
+
+
+def test_a_countdown_the_mcu_reports_ended_is_gone():
+    """2.2.0 reports DP 6 / 12 = 0 when its countdown runs out (with DP 1 = 0)."""
+    proc, device, mcu = own()
+    try:
+        cmd(device, mcu, 2, ON_OFF, CMD_ON_WITH_TIMED_OFF, timed_off(0, 600))
+        mcu.ch[1]["countdown"] = 0
+        mcu.send([mcu._report([mcu._dp(DP_COUNTDOWN[2])], passive=False)])
+        assert attr(device, 2, ON_OFF, ATTR_COUNTDOWN) == 0
+        assert cmd(device, mcu, 2, ON_OFF, CMD_ON_WITH_TIMED_OFF, timed_off(0, 50)) == \
+            [(DP_ON[2], 1), (DP_COUNTDOWN[2], 5)]                  # nothing left to keep
+    finally:
+        proc.stop()
+
+
+def test_an_mcu_restart_ends_the_countdown_and_the_identify():
+    proc, device, mcu = own()
+    try:
+        cmd(device, mcu, 1, ON_OFF, CMD_ON_WITH_TIMED_OFF, timed_off(0, 600))
+        cmd(device, mcu, 2, IDENTIFY, CMD_IDENTIFY, (100).to_bytes(2, "little"))
+        assert attr(device, 1, ON_OFF, ATTR_COUNTDOWN) == 60
+        device.clear_events()
+        mcu.restart()                                   # e.g. a watchdog reset or an update
+        mcu.query_network()
+        mcu.serve(1000)
+        assert attr(device, 1, ON_OFF, ATTR_COUNTDOWN) == 0
+        assert attr(device, 2, IDENTIFY, ATTR_IDENTIFY_TIME) == 0
+        assert any(e.kind == "zcl_attr_change" and int(e.payload["attr"], 16) == ATTR_COUNTDOWN
+                   and int(e.payload["ep"]) == 1 for e in device._events)
+    finally:
+        proc.stop()
+
+
 # ---- the dump of 2.2.0 -----------------------------------------------------------
 
 def settings(mcu):

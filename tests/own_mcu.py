@@ -247,6 +247,8 @@ class OwnMcu:
         200 ms after the start."""
         self.query_seq = 0
         self.told_state = False
+        for c in self.ch:                    # not saved: gone with the restart
+            c["countdown"] = c["identify"] = 0
 
     # ---- answering the module --------------------------------------------
 
