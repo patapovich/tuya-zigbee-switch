@@ -1590,6 +1590,16 @@ const definitions = [
         onEvent: romasku.dimmerOnLevelRefresh([{% for dimmerName in device.dimmerNames %}{{loop.index + dimmer_base}}{{ ", " if not loop.last }}{% endfor %}]),
         {% endif %}
         configure: async (device, coordinatorEndpoint, logger) => {
+            {% if device.secondary_mcu_image and device.dimmerNames %}
+            {% set last_endpoint = (device.switchNames | length) + (device.relayNames | length) + (device.coverSwitchNames | length) + (device.coverNames | length) + (device.dimmerNames | length) %}
+            // Right after the conversion from the stock firmware Zigbee2MQTT may still hold the
+            // stock firmware's endpoints (1 and 242): its interview after the OTA can run before
+            // the converted module is back, and answers from its database. The binds below
+            // would then fail on the missing endpoint {{ last_endpoint }}: interview it again first.
+            if (!device.getEndpoint({{ last_endpoint }})) {
+                await device.interview(true);
+            }
+            {% endif %}
             {% if device.dimmerNames or (device.dp_attributes | selectattr("min_mcu") | list) %}
             // Right after a module restart the module answers with defaults (0) until the MCU
             // has sent its values; reading then would leave 0 on the page. Wait for a real MCU
@@ -1789,5 +1799,35 @@ const definitions = [
     },
 {% endfor %}
 ];
+
+{% if stock_ota %}
+// The stock modules of the boards that carry the Open Dimmer image ({% for stock in stock_ota %}{{ stock.vendor }} {{ stock.model }}{{ ", " if not loop.last }}{% endfor %}):
+// zigbee-herdsman-converters' own definition, with OTA, for those boards' stock manufacturer
+// names only. Zigbee2MQTT then offers the conversion (the -from_tuya image of the OTA index)
+// with this file alone; tuya_with_ota.js gives OTA to some 60 stock models at once.
+{% for stock in stock_ota %}
+{
+    let stockDefinitions = require("zigbee-herdsman-converters/devices/{{ stock.module }}");
+    stockDefinitions = stockDefinitions.definitions ?? stockDefinitions;
+    const stock = stockDefinitions.find((d) => d.model === "{{ stock.model }}" && d.vendor === "{{ stock.vendor }}");
+    if (stock) {
+        definitions.push({
+            ...stock,
+            zigbeeModel: undefined,
+            fingerprint: [
+                {% for name in stock.manufacturer_names %}
+                {modelID: "{{ stock.zb_model }}", manufacturerName: "{{ name }}"},
+                {% endfor %}
+            ],
+            {% if z2m_v1 %}
+            ota: ota.zigbeeOTA,
+            {% else %}
+            ota: true,
+            {% endif %}
+        });
+    }
+}
+{% endfor %}
+{% endif %}
 
 module.exports = definitions;

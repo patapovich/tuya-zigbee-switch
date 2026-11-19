@@ -278,8 +278,28 @@ if __name__ == "__main__":
     if errors:
         raise SystemExit("device_db.yaml:\n  " + "\n  ".join(errors))
 
+    # Stock modules of the boards that carry an MCU image (the AVATTO ZDMS16-2): their
+    # zigbee-herdsman-converters definition gets OTA for these boards' stock manufacturer
+    # names only, so the conversion (the -from_tuya image) is offered with this one file.
+    stock_ota = {}
+    for device in db.values():
+        if not device.get("build", True) or not device.get("secondary_mcu_image"):
+            continue
+        if not (device.get("stock_converter_model") and device.get("stock_manufacturer_name")):
+            continue
+        vendor = device.get("stock_converter_manufacturer", "Tuya")
+        key = (vendor, device["stock_converter_model"], device.get("stock_model_name", "TS0601"))
+        names = stock_ota.setdefault(key, [])
+        if device["stock_manufacturer_name"] not in names:
+            names.append(device["stock_manufacturer_name"])
+    stock_ota = [
+        {"module": vendor.lower(), "vendor": vendor, "model": model, "zb_model": zb_model,
+         "manufacturer_names": names}
+        for (vendor, model, zb_model), names in sorted(stock_ota.items())
+    ]
+
     template = env.get_template("switch_custom.js.jinja")
 
-    print(template.render(devices=devices, z2m_v1=args.z2m_v1))
+    print(template.render(devices=devices, stock_ota=stock_ota, z2m_v1=args.z2m_v1))
 
     exit(0)

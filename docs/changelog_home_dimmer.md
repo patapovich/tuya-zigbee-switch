@@ -25,6 +25,12 @@ zdms16-py32 release notes.
   did, and `mcu_flasher` starts the manual jobs: `survey_dp`, `survey_full` (identity, option
   bytes, checksums, app header; read only), `update_bootloader` / `update_bootloader_force`
   and `install` (writing jobs: the job's name into `mcu_flasher_confirm` first), `abort`.
+- Z2M converter: the stock module's definition (AVATTO ZDMS16-2, the `_TZE284_jtbgusdc` and
+  `_TZE204_jtbgusdc` manufacturer names only) is in `switch_custom.js` with OTA, so the conversion
+  is offered with this one converter file (`tuya_with_ota.js` is not needed for it). Configure
+  interviews a converted module first when Zigbee2MQTT still has the stock firmware's endpoints
+  (1 and 242): its interview right after the OTA can answer from its database before the module
+  is back, and the reconfigure then failed on the missing endpoint 2.
 - Green Power is left out of the ZDMS16-2 build (`src/telink/patch_sdk/gp_stub.c`): this
   firmware never starts it, so a GP frame never got past the stack; now the frame is dropped at
   once. The OTA image is 6.2 KB smaller (room for the SWD master and Scenes). The OTA files are
