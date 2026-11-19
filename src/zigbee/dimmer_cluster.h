@@ -50,6 +50,12 @@ typedef struct {
     uint32_t             countdown;
     uint32_t             countdown_end;  /* hal_millis() when it ends (countdown != 0) */
     uint16_t             startup_value;
+
+    /* The last StartUpCurrentLevel written and the MCU value that write leaves (0xFFFF:
+     * none): shown as written while the MCU says that value (a minimum and a level 1 may be
+     * the same value). */
+    uint16_t             startup_expect;
+    uint8_t              startup_written;
     uint16_t             identify_time;
     uint16_t             start_boost;
     uint8_t              input_mode;

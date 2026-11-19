@@ -304,6 +304,9 @@ static void dimmer_write_countdown(zigbee_dimmer_cluster *cluster, uint32_t s) {
 static uint8_t dimmer_startup_level(const zigbee_dimmer_cluster *cluster) {
     uint16_t v = cluster->startup_value;
 
+    if (cluster->startup_expect != 0xFFFF && v == cluster->startup_expect)
+        return cluster->startup_written; /* what was written, not a guess */
+
     if (v == 0)
         return ZCL_START_UP_CURRENT_LEVEL_PREVIOUS;
 
@@ -777,6 +780,8 @@ static void dimmer_on_od_value(zigbee_dimmer_cluster *cluster, uint8_t dpid, uin
         }
         break;
     case DIMMER_OD_POWER_LEVEL:
+        if (v != cluster->startup_expect)
+            cluster->startup_expect = 0xFFFF; /* changed otherwise: the value tells */
         cluster->startup_value = v;
         dimmer_update_startup_level(cluster);
         break;
@@ -986,6 +991,7 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
     cluster->countdown       = 0;
     cluster->startup_value   = 0;
     cluster->startup_level   = ZCL_START_UP_CURRENT_LEVEL_PREVIOUS;
+    cluster->startup_expect  = 0xFFFF;
     cluster->identify_time   = 0;
     cluster->start_boost     = 0;
     cluster->input_mode      = 0;
@@ -1139,10 +1145,15 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
                 cluster->startup_level = dimmer_startup_level(cluster);
                 break;
             }
-            dimmer_write_tuya_value(dimmer_od_dp(cluster, DIMMER_OD_POWER_LEVEL),
-                                    l == ZCL_START_UP_CURRENT_LEVEL_PREVIOUS ? 0
-                                    : l == ZCL_START_UP_CURRENT_LEVEL_MINIMUM ? TUYA_BRIGHTNESS_MIN
-                                    : dimmer_level_to_value(cluster, l));
+            uint32_t v = l == ZCL_START_UP_CURRENT_LEVEL_PREVIOUS ? 0
+                         : l == ZCL_START_UP_CURRENT_LEVEL_MINIMUM ? TUYA_BRIGHTNESS_MIN
+                         : dimmer_level_to_value(cluster, l);
+            /* The MCU keeps it in steps of 4 within 10..1000 (its answer says so). */
+            cluster->startup_written = l;
+            cluster->startup_expect  = (uint16_t)(v ? ((v >
+                                                        TUYA_BRIGHTNESS_MAX ? TUYA_BRIGHTNESS_MAX
+                                                             : v) + 2) / 4 * 4 : 0);
+            dimmer_write_tuya_value(dimmer_od_dp(cluster, DIMMER_OD_POWER_LEVEL), v);
         }
 #endif
         break;

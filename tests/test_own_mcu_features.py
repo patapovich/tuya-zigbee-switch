@@ -255,9 +255,26 @@ def test_the_level_after_a_power_cut_is_written_scaled():
         assert attr(device, 1, LEVEL, ATTR_STARTUP_LEVEL) == MINIMUM
         value = scaled_to_tuya(128, MCU_MIN, 1000)
         assert write(device, mcu, 2, LEVEL, ATTR_STARTUP_LEVEL, 128) == [(DP_POWER_LEVEL[2], value)]
-        kept = mcu.ch[1]["power_level"]                                   # steps of 4
-        assert attr(device, 2, LEVEL, ATTR_STARTUP_LEVEL) == scaled_to_zcl(kept, MCU_MIN, 1000)
-        assert abs(attr(device, 2, LEVEL, ATTR_STARTUP_LEVEL) - 128) <= 1
+        assert mcu.ch[1]["power_level"] == (value + 2) // 4 * 4        # kept in steps of 4
+        assert attr(device, 2, LEVEL, ATTR_STARTUP_LEVEL) == 128         # read back as written
+    finally:
+        proc.stop()
+
+
+@pytest.mark.parametrize("written", [MINIMUM, 1, 2, PREVIOUS, 200])
+def test_the_level_after_a_power_cut_reads_back_as_written(written):
+    """With the absolute minimum (10) minimum and level 1 are one MCU value (12): it reads back
+    as written while the MCU keeps that value; a change made otherwise is read from the value."""
+    proc, device, mcu = own(prepare=lambda m: m.ch[0].update(min=10))
+    try:
+        write(device, mcu, 1, LEVEL, ATTR_STARTUP_LEVEL, written)
+        assert attr(device, 1, LEVEL, ATTR_STARTUP_LEVEL) == written
+        mcu_report(proc, value_dp(3, 10), cmd=TUYA_CMD_REPORT_PASSIVE)       # the dump again
+        mcu.send(mcu.dump())
+        assert attr(device, 1, LEVEL, ATTR_STARTUP_LEVEL) == written
+        mcu.ch[0]["power_level"] = 600                                     # changed otherwise
+        mcu.send([mcu._report([mcu._dp(DP_POWER_LEVEL[1])])])
+        assert attr(device, 1, LEVEL, ATTR_STARTUP_LEVEL) == scaled_to_zcl(600, 10, 1000)
     finally:
         proc.stop()
 
