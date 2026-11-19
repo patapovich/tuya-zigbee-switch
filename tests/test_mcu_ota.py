@@ -1184,14 +1184,18 @@ def test_the_health_dps_of_a_v2_app_only_reach_the_link_log():
 
 # -- the ring gate: an image over 12 KB (tuya_mcu_ota.h) -------------------------
 
-IMAGE_13K = variant(flags=APP_FLAG_CONFIRMS | APP_FLAG_RING_HIGH, build=600, pad_to=13 * 1024)
+# Newer than the carried image, whatever py32-bump carries (the requests' installed header is the
+# carried image's by default): 600 while 2.2.0 (build 500) is carried, above it later.
+IMAGE_13K_BUILD = max(600, IMAGE_BUILD + 100)
+IMAGE_13K = variant(flags=APP_FLAG_CONFIRMS | APP_FLAG_RING_HIGH, build=IMAGE_13K_BUILD,
+                    pad_to=13 * 1024)
 RING_HIGH, RING_MOVED = 1 << 24, 1 << 25
 MODE_ASKED = 1
 
 
 @pytest.fixture(scope="module")
 def stub_13k(tmp_path_factory) -> list[str]:
-    """Carries a 13 KB image (RING_HIGH, build 600), as the first Open Dimmer over 12 KB."""
+    """Carries a 13 KB image (RING_HIGH, build IMAGE_13K_BUILD), as an Open Dimmer over 12 KB."""
     return built(tmp_path_factory, "13k", IMAGE_13K)
 
 
@@ -1523,7 +1527,8 @@ def test_the_temperature_frame_with_and_without_dp_139_does_no_harm():
     frame without it leaves the round open (nothing shown yet), harmless."""
     proc, device = start()
     try:
-        contact_as_own(proc, device, VERSION, build=500, boot=2)
+        # from build 500 (DP 139 ends the round); not older than the carried one: no offer here
+        contact_as_own(proc, device, VERSION, build=max(500, IMAGE_BUILD), boot=2)
         take_tx(proc)
         before = {(ep, c, a): device.read_zigbee_attr(ep, c, a) for ep in (1, 2)
                   for c, a in ((0x0006, 0xFF10), (0x0007, 0xFF10), (0x0008, 0x4000), (0x0301, 0xFF10))}
