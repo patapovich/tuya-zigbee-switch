@@ -153,7 +153,12 @@ uint16_t tuya_mcu_ota_own_build(void);
  * (request mode 2, e.g. after a power cut during an update, which also restarted this
  * firmware, so it has heard no report) is served whatever the image: the bootloader itself
  * takes up to 14 KB there ("recovery comes before settings", BOOTLOADER.md section 1); a
- * refusal would leave the lamp dark. Images up to 12 KB are not gated.
+ * refusal would leave the lamp dark. Images up to 12 KB are not gated. A request for offset 0
+ * is a restart sign (contract item 4 (a)) whether the gate serves it or not. A factory MCU
+ * never reports, so with such an image it gets no block answer at all (to the 0xA1 requests a
+ * stock MCU should never send): fewer frames than phase 1, each one a reply it would have had
+ * to ask for, so towards the factory firmware this is the safe direction of contract item 6
+ * (tests/test_stock_mcu_compat.py takes the block answers out of the golden traces then).
  *
  * The health report (every 2 min, DPs 130..137 in one frame, from 2.2.0 138 the die
  * temperature and 139 its sensor's factory calibration in a frame of their own) of an

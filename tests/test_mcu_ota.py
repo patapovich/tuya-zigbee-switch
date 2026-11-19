@@ -1233,6 +1233,19 @@ def test_a_bootloader_without_an_app_is_served_past_the_gate(stub_13k):
         proc.stop()
 
 
+def test_an_offset_0_request_is_a_restart_sign_also_when_the_gate_keeps_the_image(stub_13k):
+    """Contract item 4 (a): the MCU is in its bootloader, served or not; its app's next query
+    is a first contact again, and it is asked who it is again."""
+    proc, device = start_with(stub_13k)
+    try:
+        contact_as_own(proc, device, VERSION, build=500, boot=2)    # no ring report: gated
+        assert answers(proc, device, block_request(0, 64, MODE_PROBE)) == []
+        assert TUYA_CMD_MCU_VERSION in mcu_query_seq(proc, device, 7)
+        assert OTA_IDENT in version_then_ident(proc, device)
+    finally:
+        proc.stop()
+
+
 def test_an_image_up_to_12_kb_needs_no_report():
     if SIZE > 12 * 1024:
         pytest.skip("the carried image is over 12 KB: gated, see the tests above")
