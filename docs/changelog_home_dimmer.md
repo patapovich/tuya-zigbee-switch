@@ -14,6 +14,8 @@ zdms16-py32 release notes.
 
 ## Next
 
+## 1.1.3-bf2e8f2b (2026-11-19), carries Open Dimmer 2.2.2
+
 - Transitions (Open Dimmer 2.1.14 and later): transition 0 is instant; without a transition the
   module's own fade; the Z2M device option `transition` (e.g. 1.2) sets a default.
 - `brightness_fade_time` per channel: the fade of brightness changes while the light is on, as
