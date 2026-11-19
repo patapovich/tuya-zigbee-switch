@@ -121,6 +121,7 @@ jobs:
           git push origin HEAD:home-dimmer
 
       - name: Build branch and module firmware
+        id: build
         if: steps.rel.outputs.change == 'true' || inputs.force
         env:
           GH_TOKEN: ${{ github.token }}
@@ -138,5 +139,32 @@ jobs:
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             cherry-pick FETCH_HEAD
           git push -f origin home-dimmer_build
+          # the build's id as board.mk makes it (VERSION_STR), from the head just pushed
+          build=$(echo "$(cat VERSION)-$(git rev-parse --short HEAD)" | cut -c1-16)
+          echo "build=$build" >> "$GITHUB_OUTPUT"
           gh workflow run build.yml --ref home-dimmer_build
-          echo "::notice::module firmware build started on home-dimmer_build"
+          echo "::notice::module firmware build $build started on home-dimmer_build"
+
+      # docs/changelog_home_dimmer.md: "Next" becomes the section of this build (with the Open
+      # Dimmer version it carries). After the build branch was cut, as its head names the build;
+      # the build itself does not depend on it. A failure here only warns.
+      - name: Changelog of the build
+        if: steps.build.outputs.build != ''
+        env:
+          BUILD: ${{ steps.build.outputs.build }}
+        run: |
+          git checkout -q home-dimmer
+          if [ ! -f helper_scripts/home_dimmer_changelog.py ]; then
+            echo "::notice::home-dimmer has no build changelog"
+            exit 0
+          fi
+          carried=$(sed -n 's/.*own MCU firmware: version \([0-9.]*\).*/\1/p' src/zigbee/secondary_mcu_image.c | head -1)
+          python3 helper_scripts/home_dimmer_changelog.py stamp --build "$BUILD" --carries "$carried" ||
+            { echo "::warning::changelog not stamped for $BUILD"; exit 0; }
+          git add docs/changelog_home_dimmer.md
+          if ! git diff --cached --quiet; then
+            git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -qm "Changelog: build $BUILD"
+            git push origin HEAD:home-dimmer || echo "::warning::changelog of $BUILD not pushed (home-dimmer moved?)"
+          fi
+          python3 helper_scripts/home_dimmer_changelog.py section "$BUILD" >> "$GITHUB_STEP_SUMMARY" || true
