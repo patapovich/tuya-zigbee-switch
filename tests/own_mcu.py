@@ -15,6 +15,13 @@ firmwares:
 The full dump is 5 passive (0x05) frames, 234 bytes: DP 14 (channel 1's
 power-on) first, then per channel DPs 1..6, the curve (101/102) and the
 power-on (103/104), then its five fade/hold settings (150..154/155..159).
+From build 500 (2.2.0) that last frame of a channel also carries its wall
+switch mode, level after a power cut and start boost (162, 164, 168 for
+channel 1; 163, 165, 169 for channel 2): 282 bytes.
+
+Writes are taken as the firmware takes them (dimmer.c dimmer_write_dp) and
+answered with an active report of the DP; a DP the build does not know, or a
+value it refuses, gets no answer.
 
 Each burst goes to the stub as one DMA chunk of the Telink router build
 (uart_dma): a burst over its RX DMA buffer would be dropped whole there too.
@@ -49,7 +56,13 @@ DP_CURVE_BASE = 101
 DP_POWER_ON_BASE = 103
 DP_PROFILE_BASE = 150
 DP_TRANSITION_BASE = 160   # transition time ms per channel, from build 400 (never in the dump)
+DP_EXTRA_BASE = 162        # + 2 * k + channel, from build 500: EXTRA_KEYS[k]
+EXTRA_KEYS = ("input", "power_level", "identify", "boost")
+DP_HEALTH_FIRST = 130      # 130..137 every 2 min, 138 (die temperature) in a frame of its own
 PROFILE_KEYS = ("fade_on", "fade_off", "soft_end", "hold", "hold_end")
+TRANSITION_BUILD = 400
+FEATURES_BUILD = 500
+COUNTDOWN_MAX = 86400
 UART_C = Path(__file__).resolve().parent.parent / "src/telink/hal/uart.c"
 
 
@@ -69,7 +82,8 @@ def channel(power_on: int) -> dict:
     """The firmware's defaults (fresh flash), with a given power-on."""
     return {"on": 0, "level": 1000, "min": 200, "switch_type": 0, "max": 1000,
             "countdown": 0, "curve": 2, "power_on": power_on, "fade_on": 950,
-            "fade_off": 950, "soft_end": 12, "hold": 3300, "hold_end": 20, "transition": 0}
+            "fade_off": 950, "soft_end": 12, "hold": 3300, "hold_end": 20, "transition": 0,
+            "input": 0, "power_level": 0, "identify": 0, "boost": 0}
 
 
 class OwnMcu:
@@ -88,7 +102,12 @@ class OwnMcu:
         self.lose: dict[int, int] = {}       # cmd -> how many answers to lose
         self.answers_ident = True
         self.log: list[tuple[str, int]] = []  # ("rx"/"tx", cmd) in wire order
+        self.writes: list[tuple[int, int]] = []   # (dpid, value) of every DP write, in order
         assert proc.exec(f"uart_dma {UART_BURST_MAX}").ok
+
+    def has(self, build: int) -> bool:
+        """Its app is of that build or later."""
+        return self.build is not None and self.build >= build
 
     # ---- frames ----------------------------------------------------------
 
@@ -111,6 +130,9 @@ class OwnMcu:
         if DP_TRANSITION_BASE <= dpid < DP_TRANSITION_BASE + 2:
             v = self.ch[dpid - DP_TRANSITION_BASE]["transition"]
             return dp_payload(dpid, TUYA_TYPE_VALUE, v.to_bytes(4, "big"))
+        if DP_EXTRA_BASE <= dpid < DP_EXTRA_BASE + 8:
+            k, ch = divmod(dpid - DP_EXTRA_BASE, 2)
+            return dp_payload(dpid, TUYA_TYPE_VALUE, self.ch[ch][EXTRA_KEYS[k]].to_bytes(4, "big"))
         if DP_CURVE_BASE <= dpid < DP_CURVE_BASE + 2:
             return dp_payload(dpid, TUYA_TYPE_ENUM, bytes([self.ch[dpid - DP_CURVE_BASE]["curve"]]))
         c = self.ch[(dpid - 1) // 6]
@@ -130,9 +152,69 @@ class OwnMcu:
             frames.append(self._report([self._dp(base + i) for i in range(6)]
                                        + [self._dp(DP_CURVE_BASE + ch),
                                           self._dp(DP_POWER_ON_BASE + ch)]))
+            extras = [DP_EXTRA_BASE + 2 * k + ch for k in (0, 1, 3)] if self.has(FEATURES_BUILD) else []
             frames.append(self._report([self._dp(DP_PROFILE_BASE + 5 * ch + k)
-                                        for k in range(5)]))
+                                        for k in range(5)] + [self._dp(dp) for dp in extras]))
         return frames
+
+    def health(self, uptime_min: int = 61, reset: int = 0x08, zc_losses: int = 0,
+               noise: int = 0, saves: int = 0, uart_losses: int = 0, boot_crc: int = 0xEAC45031,
+               boot_word: int = 0, temperature: int | None = 31) -> list[str]:
+        """health_poll(): DPs 130..137 in one active report, then (from 2.2.0) the die
+        temperature, DP 138 (signed; None: -32768, not measured yet), in a frame of its own."""
+        values = (uptime_min, reset, zc_losses, noise, saves, uart_losses, boot_crc, boot_word)
+        frames = [self._report([dp_payload(DP_HEALTH_FIRST + i, TUYA_TYPE_VALUE, v.to_bytes(4, "big"))
+                                for i, v in enumerate(values)], passive=False)]
+        if self.has(FEATURES_BUILD):
+            t = -32768 if temperature is None else temperature
+            frames.append(self._report([dp_payload(138, TUYA_TYPE_VALUE,
+                                                   (t & 0xFFFFFFFF).to_bytes(4, "big"))], passive=False))
+        return frames
+
+    def take_write(self, dpid: int, data: bytes) -> bool:
+        """dimmer_write_dp(): apply a DP write; False when the build does not take it (no
+        answer then)."""
+        vlen = int.from_bytes(data[2:4], "big")
+        value = int.from_bytes(data[4:4 + vlen], "big")
+        self.writes.append((dpid, value))
+        if DP_POWER_ON_BASE <= dpid < DP_POWER_ON_BASE + 2:
+            self.ch[dpid - DP_POWER_ON_BASE]["power_on"] = value
+        elif DP_TRANSITION_BASE <= dpid < DP_TRANSITION_BASE + 2:
+            if not self.has(TRANSITION_BUILD):
+                return False                     # an older app does not know it
+            self.ch[dpid - DP_TRANSITION_BASE]["transition"] = min(value, 0xFFFF)
+        elif DP_EXTRA_BASE <= dpid < DP_EXTRA_BASE + 8:
+            if not self.has(FEATURES_BUILD):
+                return False
+            k, ch = divmod(dpid - DP_EXTRA_BASE, 2)
+            c = self.ch[ch]
+            if k == 0:
+                if value > 2:
+                    return False
+                c["input"] = value
+            elif k == 1:                         # kept in steps of 4, within 10..1000
+                c["power_level"] = ((min(max(value, 10), 1000) + 2) >> 2) * 4 if value else 0
+            elif k == 2:
+                c["identify"] = min(value, 255)
+            else:
+                if value > 750:
+                    return False
+                c["boost"] = value // 50 * 50
+        elif dpid == DP_POWER_ON:
+            for c in self.ch:
+                c["power_on"] = value
+        elif 1 <= dpid <= 12:
+            c = self.ch[(dpid - 1) // 6]
+            idx = (dpid - 1) % 6
+            if idx == 0:
+                c["on"] = 1 if value else 0
+                if not c["on"]:
+                    c["countdown"] = 0           # an off ends a countdown
+            elif idx == 1:
+                c["level"] = min(max(value, c["min"]), c["max"])
+            elif idx == 5:                       # counts only while on
+                c["countdown"] = min(value, COUNTDOWN_MAX) if c["on"] else 0
+        return True
 
     # ---- what the MCU sends by itself ------------------------------------
 
@@ -195,18 +277,9 @@ class OwnMcu:
         if cmd == OTA_NOTIFY:
             return [tuya_frame(OTA_NOTIFY, bytes([1]), seq=0)]   # declined
         if cmd == TUYA_CMD_WRITE:
-            dpid, vlen = data[0], int.from_bytes(data[2:4], "big")
-            value = int.from_bytes(data[4:4 + vlen], "big")
-            if DP_POWER_ON_BASE <= dpid < DP_POWER_ON_BASE + 2:
-                self.ch[dpid - DP_POWER_ON_BASE]["power_on"] = value
-            elif DP_TRANSITION_BASE <= dpid < DP_TRANSITION_BASE + 2:
-                if self.build is None or self.build < 400:
-                    return []                    # an older app does not know it: no ack
-                self.ch[dpid - DP_TRANSITION_BASE]["transition"] = min(value, 0xFFFF)
-            elif dpid == DP_POWER_ON:
-                for c in self.ch:
-                    c["power_on"] = value
-            return [self._report([self._dp(dpid)], passive=False)]
+            if not self.take_write(data[0], data):
+                return []
+            return [self._report([self._dp(data[0])], passive=False)]
         return []
 
     def serve(self, ms: int = 0, step_ms: int = 50) -> list[int]:
@@ -236,11 +309,14 @@ class OwnMcu:
         return sent
 
 
-def own_mcu_contact(proc, device, **kw) -> OwnMcu:
+def own_mcu_contact(proc, device, prepare=None, **kw) -> OwnMcu:
     """Mains on: both start, the MCU's first query (seq 0, 200 ms) comes before
     the module listens, its second one (seq 1, 2.2 s) starts the first contact,
-    which then runs in the real order with the real dump."""
+    which then runs in the real order with the real dump. prepare(mcu): set its
+    saved settings before that."""
     mcu = OwnMcu(proc, device, **kw)
+    if prepare is not None:
+        prepare(mcu)
     mcu.query_seq = 1
     device.step_time(1900)          # the module's own contact timer is at 2 s
     pump(proc)
