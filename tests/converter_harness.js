@@ -16,6 +16,8 @@ const fakeExpose = (type, name, access, values) => {
         withEndpoint: set("endpoint"), withDescription: set("description"), withCategory: set("category"),
         withLabel: set("label"),
         withValueMin: set("value_min"), withValueMax: set("value_max"), withUnit: set("unit"),
+        withValueStep: set("value_step"),
+        withPreset: (name, value, description) => { (x.presets ??= []).push({name, value, description}); return x; },
     });
     return x;
 };
@@ -63,6 +65,8 @@ const fakes = {
             numeric: (name, access) => fakeExpose("numeric", name, access),
             text: (name, access) => fakeExpose("text", name, access),
             action: (values) => fakeExpose("enum", "action", 1, values),
+            binary: (name, access, valueOn, valueOff) => Object.assign(fakeExpose("binary", name, access),
+                                                                        {value_on: valueOn, value_off: valueOff}),
         },
         access: {STATE: 1, SET: 2, STATE_SET: 3, STATE_GET: 5, ALL: 7},
     },
@@ -100,6 +104,7 @@ const device = ({versions = [""], meta = {}} = {}) => {
             return {};
         },
         write: async (cluster, payload) => log.push(["write", id, cluster, payload]),
+        command: async (cluster, command, payload) => log.push(["command", id, cluster, command, payload]),
         configureReporting: async (cluster, items) => log.push(["report", id, cluster, items]),
     });
     return {ieeeAddr: "0x0000000000000001", meta, saves: 0, save() { this.saves++; }, getEndpoint: endpoint, endpoints: []};

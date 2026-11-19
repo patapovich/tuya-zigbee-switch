@@ -1,0 +1,238 @@
+"""The generated Z2M converter's Open Dimmer 2.2.0 exposes for the ZDMS16-2: per channel the
+countdown (genOnOff 0xff10), switch_mode (genOnOffSwitchCfg 0xff10), current_level_startup
+(genLevelCtrl startUpCurrentLevel) and start_boost (lightingBallastCfg 0xff10); identify (both
+channels); the health report sensors (genBasic 0xff48). Shown only for an MCU identified as Open
+Dimmer 2.2 or later (or with open_dimmer_settings: show): a stock MCU's and an older Open
+Dimmer's exposes, reads and reporting stay as they were."""
+
+import json
+
+from generated_converter import run_node
+from test_converter_own_mcu import CONFIGURE, ZDMS
+
+NEW_PER_CHANNEL = ["countdown", "switch_mode", "current_level_startup", "start_boost"]
+NEW_DEVICE = ["identify", "mcu_uptime", "mcu_reset_cause", "mcu_zero_cross_losses",
+              "mcu_uart_rx_losses", "mcu_temperature", "mcu_settings_ring_moved"]
+NEW = [f"{n}_{ch}" for ch in ("dimmer_left", "dimmer_right") for n in NEW_PER_CHANNEL] + NEW_DEVICE
+
+# Every expose of the definition, the fake (static) extends' too, by name_endpoint.
+ALL = ZDMS + """
+const ver = (v) => { const d = h.device(); d.getEndpoint(1).clusters.genBasic.attributes[0xff12] = v; return d; };
+const all = (dev, options = {}) => [
+    ...h.fakeExtends(def).map((x) => `${x.fake}:${x.args?.name ?? ""}:${x.args?.endpointName ?? x.args?.endpointNames ?? ""}`),
+    ...shown(dev, options)];
+"""
+
+# The 2.1.x exposes before this change (test_converter_own_mcu: 15 Open Dimmer ones and
+# mcu_firmware) and a stock MCU's (the shared power_on_behavior and mcu_firmware).
+OWN_2_1 = ["dimming_curve_dimmer_left", "power_on_behavior_dimmer_left", "fade_on_time_dimmer_left",
+           "fade_off_time_dimmer_left", "soft_dim_end_dimmer_left", "hold_time_dimmer_left",
+           "hold_dim_end_dimmer_left", "dimming_curve_dimmer_right", "power_on_behavior_dimmer_right",
+           "fade_on_time_dimmer_right", "fade_off_time_dimmer_right", "soft_dim_end_dimmer_right",
+           "hold_time_dimmer_right", "hold_dim_end_dimmer_right", "action", "mcu_firmware"]
+STOCK = ["power_on_behavior", "mcu_firmware"]
+
+
+def test_the_new_exposes_follow_the_open_dimmer_version():
+    out = json.loads(run_node(ALL + """
+console.log(JSON.stringify({
+    own22: shown(ver("2.2.0 own")), own23: shown(ver("2.3.1 own")), own3: shown(ver("3.0.0 own")),
+    own2114: shown(ver("2.1.14 own")), bare22: shown(ver("2.2.0")), stock: shown(ver("1.0.7")),
+    hide: shown(ver("2.2.0 own"), {open_dimmer_settings: "hide"}),
+    show: shown(ver("1.0.7"), {open_dimmer_settings: "show"}),
+    fakeStock: all(ver("1.0.7")).filter((n) => n.includes(":")),
+    fakeOwn: all(ver("2.2.0 own")).filter((n) => n.includes(":")),
+}));
+"""))
+    assert sorted(out["own22"]) == sorted(OWN_2_1 + NEW)
+    assert out["own23"] == out["own3"] == out["own22"]
+    assert out["own2114"] == OWN_2_1                      # no 2.2.0 setting for 2.1.x
+    assert out["bare22"] == STOCK                         # not identified: as a stock MCU
+    assert out["stock"] == STOCK                          # the house units: unchanged
+    assert out["hide"] == STOCK
+    assert sorted(out["show"]) == sorted(OWN_2_1 + NEW)
+    assert out["fakeStock"] == out["fakeOwn"]             # the static extends are the same
+
+
+def test_the_new_exposes_are_described_and_ranged():
+    out = json.loads(run_node(ZDMS + """
+const dev = h.device(); dev.getEndpoint(1).clusters.genBasic.attributes[0xff12] = "2.2.0 own";
+const ex = def.extend.filter((x) => !x.fake).flatMap((x) => x.exposes ?? [])
+    .flatMap((x) => (typeof x === "function" ? x(dev, {}) : [x]));
+const pick = (name, ep) => ex.find((x) => x.name === name && x.endpoint === ep);
+const brief = (x) => x && ({type: x.type, access: x.access, min: x.value_min, max: x.value_max,
+    step: x.value_step, unit: x.unit, values: x.values, presets: x.presets?.map((p) => [p.name, p.value]),
+    category: x.category ?? null});
+console.log(JSON.stringify({
+    countdown: brief(pick("countdown", "dimmer_right")), mode: brief(pick("switch_mode", "dimmer_left")),
+    startup: brief(pick("current_level_startup", "dimmer_left")), boost: brief(pick("start_boost", "dimmer_right")),
+    identify: brief(pick("identify", undefined)), uptime: brief(pick("mcu_uptime", undefined)),
+    temperature: brief(pick("mcu_temperature", undefined)), moved: brief(pick("mcu_settings_ring_moved", undefined)),
+    descriptions: ex.filter((x) => x.description?.includes("Open Dimmer")).length,
+}));
+"""))
+    assert out["countdown"] == {"type": "numeric", "access": 7, "min": 0, "max": 86400, "unit": "s",
+                                "category": None}
+    assert out["mode"] == {"type": "enum", "access": 7, "values": ["normal", "detached", "off"],
+                           "category": "config"}
+    assert out["startup"] == {"type": "numeric", "access": 7, "min": 1, "max": 254,
+                              "presets": [["minimum", "minimum"], ["previous", "previous"]],
+                              "category": "config"}
+    assert out["boost"] == {"type": "numeric", "access": 7, "min": 0, "max": 750, "step": 50,
+                            "unit": "ms", "category": "config"}
+    assert out["identify"] == {"type": "enum", "access": 2, "values": ["identify"], "category": "config"}
+    assert out["uptime"] == {"type": "numeric", "access": 5, "unit": "min", "category": "diagnostic"}
+    assert out["temperature"] == {"type": "numeric", "access": 5, "unit": "°C", "category": "diagnostic"}
+    assert out["moved"] == {"type": "binary", "access": 5, "category": "diagnostic"}
+    assert out["descriptions"] >= 30
+
+
+def test_reports_of_the_new_attributes():
+    out = json.loads(run_node(ALL + """
+const own = ver("2.2.0 own"), stock = ver("1.0.7");
+console.log(JSON.stringify({
+    countdown: fz(own, 1, {[0xff10]: 30}),
+    off: fz(own, 2, {onOff: 0}),
+    on: fz(own, 2, {onOff: 1}),
+    mode: fz(own, 2, {[0xff10]: 1}),
+    startup: [fz(own, 1, {startUpCurrentLevel: 0}), fz(own, 1, {startUpCurrentLevel: 255}),
+              fz(own, 2, {startUpCurrentLevel: 128})],
+    stock: [fz(stock, 1, {[0xff10]: 30}), fz(stock, 2, {onOff: 0}), fz(stock, 1, {startUpCurrentLevel: 0})],
+}));
+"""))
+    # fz runs every converter of the definition on the message, whatever its cluster: genOnOff
+    # 0xff10 also matches the other clusters' 0xff10 converters on that endpoint.
+    assert {"countdown_dimmer_left": 30} in out["countdown"]
+    assert out["off"] == [{"countdown_dimmer_right": 0}]
+    assert out["on"] == []
+    assert {"switch_mode_dimmer_right": "detached"} in out["mode"]
+    assert out["startup"] == [[{"current_level_startup_dimmer_left": "minimum"}],
+                              [{"current_level_startup_dimmer_left": "previous"}],
+                              [{"current_level_startup_dimmer_right": 128}]]
+    assert out["stock"] == [[], [], []]
+
+
+def test_each_report_comes_from_its_own_cluster():
+    """Per cluster, as Zigbee2MQTT runs them (fromZigbee filtered by the message's cluster)."""
+    out = json.loads(run_node(ZDMS + """
+const dev = h.device(); dev.getEndpoint(1).clusters.genBasic.attributes[0xff12] = "2.2.0 own";
+const fzc = (cluster, ep, data) => def.extend.filter((x) => !x.fake).flatMap((x) => x.fromZigbee ?? [])
+    .filter((f) => f.cluster === cluster)
+    .map((f) => f.convert(model, {device: dev, endpoint: {ID: ep}, data}, () => {}, {}, {device: dev}))
+    .filter((r) => r !== undefined);
+console.log(JSON.stringify([fzc("genOnOff", 1, {[0xff10]: 30}), fzc("genOnOffSwitchCfg", 1, {[0xff10]: 2}),
+                            fzc("lightingBallastCfg", 2, {[0xff10]: 300})]));
+"""))
+    assert out == [[{"countdown_dimmer_left": 30}], [{"switch_mode_dimmer_left": "off"}],
+                   [{"start_boost_dimmer_right": 300}]]
+
+
+SET = ZDMS + """
+const dev = h.device();
+const tz = (key) => def.extend.filter((x) => !x.fake).flatMap((x) => x.toZigbee ?? [])
+    .find((t) => t.key.includes(key));
+const set = async (key, value, ep = 1) => {
+    h.log.length = 0;
+    try {
+        const r = await tz(key).convertSet(dev.getEndpoint(ep), key, value, {device: dev, mapped: model, options: {}});
+        return [h.log.filter((l) => l[0] === "write" || l[0] === "command"), r?.state ?? null];
+    } catch (error) {
+        return error.message;
+    }
+};
+"""
+
+
+def test_writes_of_the_new_settings():
+    out = json.loads(run_node(SET + """
+(async () => console.log(JSON.stringify({
+    countdown: await set("countdown", 90, 2),
+    countdownBad: await set("countdown", 86401),
+    mode: await set("switch_mode", "off"),
+    modeBad: await set("switch_mode", "sometimes"),
+    startup: [await set("current_level_startup", "previous"), await set("current_level_startup", "minimum"),
+              await set("current_level_startup", 77, 2)],
+    startupBad: await set("current_level_startup", 0),
+    boost: await set("start_boost", 300),
+    boostBad: await set("start_boost", 800),
+    identify: await set("identify", "identify"),
+})))();
+"""))
+    assert out["countdown"] == [[["write", 2, "genOnOff", {str(0xff10): {"value": 90, "type": 0x23}}]],
+                                {"countdown": 90}]
+    assert "0..86400" in out["countdownBad"]
+    assert out["mode"] == [[["write", 1, "genOnOffSwitchCfg", {str(0xff10): {"value": 2, "type": 0x30}}]],
+                           {"switch_mode": "off"}]
+    assert "normal, detached, off" in out["modeBad"]
+    assert out["startup"] == [
+        [[["write", 1, "genLevelCtrl", {str(0x4000): {"value": 255, "type": 0x20}}]], {"current_level_startup": "previous"}],
+        [[["write", 1, "genLevelCtrl", {str(0x4000): {"value": 0, "type": 0x20}}]], {"current_level_startup": "minimum"}],
+        [[["write", 2, "genLevelCtrl", {str(0x4000): {"value": 77, "type": 0x20}}]], {"current_level_startup": 77}],
+    ]
+    assert "1..254" in out["startupBad"]
+    assert out["boost"] == [[["write", 1, "lightingBallastCfg", {str(0xff10): {"value": 300, "type": 0x21}}]],
+                            {"start_boost": 300}]
+    assert "0..750" in out["boostBad"]
+    assert out["identify"] == [[["command", 1, "genIdentify", "identify", {"identifytime": 3}],
+                                ["command", 2, "genIdentify", "identify", {"identifytime": 3}]], None]
+
+
+def health_report(fields: dict) -> str:
+    """The octet string of Basic 0xff48 (format 1) as a JS array."""
+    b = bytes([1]) + fields["uptime"].to_bytes(4, "little") + fields["zc"].to_bytes(4, "little") \
+        + fields["uart"].to_bytes(4, "little") + bytes([fields["reset"], fields["flags"]]) \
+        + fields["temperature"].to_bytes(2, "little", signed=True)
+    return json.dumps(list(b))
+
+
+def test_the_health_report_is_decoded():
+    report = health_report({"uptime": 4242, "zc": 3, "uart": 17, "reset": 0x18, "flags": 0x03,
+                            "temperature": -5})
+    none = health_report({"uptime": 1, "zc": 0, "uart": 0, "reset": 0x20, "flags": 0x01,
+                          "temperature": -32768})
+    out = json.loads(run_node(ALL + f"""
+const own = ver("2.2.0 own"), stock = ver("1.0.7");
+console.log(JSON.stringify({{
+    own: fz(own, 1, {{[0xff48]: Buffer.from({report})}}),
+    none: fz(own, 1, {{[0xff48]: Buffer.from({none})}}),
+    empty: fz(own, 1, {{[0xff48]: Buffer.from([])}}),
+    otherEndpoint: fz(own, 2, {{[0xff48]: Buffer.from({report})}}),
+    stock: fz(stock, 1, {{[0xff48]: Buffer.from({report})}}),
+}}));
+"""))
+    assert out["own"] == [{"mcu_uptime": 4242, "mcu_zero_cross_losses": 3, "mcu_uart_rx_losses": 17,
+                           "mcu_reset_cause": "software,power", "mcu_settings_ring_moved": True,
+                           "mcu_temperature": -5}]
+    assert out["none"] == [{"mcu_uptime": 1, "mcu_zero_cross_losses": 0, "mcu_uart_rx_losses": 0,
+                            "mcu_reset_cause": "watchdog", "mcu_settings_ring_moved": False,
+                            "mcu_temperature": None}]
+    assert out["empty"] == out["otherEndpoint"] == out["stock"] == []
+
+
+def test_configure_binds_basic_and_reads_the_new_settings_of_2_2_only():
+    out = json.loads(run_node(CONFIGURE + """
+(async () => {
+    const runs = {};
+    for (const v of ["2.2.0 own", "2.1.14 own", "1.0.7", "2.2.0"]) {
+        const r = await configure([v]);
+        r.binds = h.log.filter((l) => l[0] === "bind").map((l) => `${l[1]}:${l[2].join("+")}`);
+        runs[v] = r;
+    }
+    console.log(JSON.stringify(runs));
+})();
+"""))
+    own = out["2.2.0 own"]
+    assert own["ownReads"] == [f"ff{a:02x}" for a in range(0x30, 0x3C)] + ["ff48"]
+    assert "1:genBasic" in own["binds"]
+    new_reads = [f"{ep}:{cluster}" for ep in (1, 2) for cluster in
+                 ("genOnOff:65296", "genOnOffSwitchCfg:65296", "genLevelCtrl:startUpCurrentLevel",
+                  "lightingBallastCfg:65296")]
+    assert [r for r in own["dimmerReads"] if r in new_reads] == new_reads
+    assert len(own["dimmerReads"]) == 8 + 8
+    for v in ("2.1.14 own", "1.0.7", "2.2.0"):
+        run = out[v]
+        assert "1:genBasic" not in run["binds"], v
+        assert "ff48" not in run["ownReads"], v
+        assert len(run["dimmerReads"]) == 8, v
+        assert run["reporting"] == own["reporting"]      # no reporting added for any of it
+    assert len(own["reporting"]) == 6

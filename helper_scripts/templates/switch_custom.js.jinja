@@ -44,7 +44,7 @@ const mcuVersionOf = (latest, kept) => {
  * number). Kept in the endpoint's attribute cache, else in device.meta
  * (romasku.mcuVersionMeta). undefined if the MCU does not run Open Dimmer or
  * is not known yet. */
-const ownMcuMajorOf = (device) => {
+const ownMcuVersionNumbers = (device) => {
     if (!device) return undefined;
     let cached;
     try {
@@ -52,21 +52,37 @@ const ownMcuMajorOf = (device) => {
     } catch (error) {
         cached = undefined;
     }
-    const v = mcuVersionOf(cached, device.meta?.mcuVersion);
-    const m = typeof v === "string" ? /^(\d+)\.\d+\.\d+ own$/.exec(v) : null;
-    return m ? Number(m[1]) : undefined;
+    return ownVersionNumbers(mcuVersionOf(cached, device.meta?.mcuVersion));
+};
+const ownMcuMajorOf = (device) => ownMcuVersionNumbers(device)?.[0];
+
+// [major, minor, patch] of an "x.y.z own" version, else undefined.
+const ownVersionNumbers = (v) => {
+    const m = typeof v === "string" ? /^(\d+)\.(\d+)\.(\d+) own$/.exec(v) : null;
+    return m ? m.slice(1).map(Number) : undefined;
 };
 
-// Whether the settings of Open Dimmer (major >= minMcu) are shown: device
+// Whether an Open Dimmer version ([major, minor, patch]) is at least minMcu: a major (2) or
+// "major.minor" ("2.2", the settings of Open Dimmer 2.2.0).
+const ownVersionAtLeast = (numbers, minMcu) => {
+    if (!numbers) return false;
+    const [major, minor = 0] = String(minMcu).split(".").map(Number);
+    return numbers[0] > major || (numbers[0] === major && numbers[1] >= minor);
+};
+
+// Whether the settings of Open Dimmer (from version minMcu) are shown: device
 // option open_dimmer_settings auto (identified as Open Dimmer) / show / hide.
 // own_mcu_settings is its old name, still read when the new one is not set.
 const ownMcuShown = (device, options, minMcu) => {
     const mode = options?.open_dimmer_settings ?? options?.own_mcu_settings ?? "auto";
     if (!device || device.isDummyDevice || mode === "show") return true;
     if (mode === "hide") return false;
-    const major = ownMcuMajorOf(device);
-    return major !== undefined && major >= minMcu;
+    return ownVersionAtLeast(ownMcuVersionNumbers(device), minMcu);
 };
+
+// Open Dimmer 2.2.0 (build 500): countdown, wall switch mode, level after a power cut, start
+// boost, identify, health report. The module sends none of them to an older MCU.
+const OPEN_DIMMER_2_2 = "2.2";
 
 // Name of the endpoint a message came from (the deviceEndpoints mapping).
 const endpointNameOf = (model, msg) => {
@@ -853,7 +869,7 @@ const romasku = {
     dimmerGestures: (dimmerNames) => {
         const kinds = ["single", "double", "triple", "hold", "release"];
         const expose = e.action(dimmerNames.flatMap((n) => kinds.map((k) => `${k}_${n}`)))
-            .withDescription("Wall switch gesture (Open Dimmer firmware, momentary switch type); the light acts on every press anyway");
+            .withDescription("Wall switch gesture (Open Dimmer firmware, momentary switch type, or any type in the detached switch_mode); in the normal switch_mode the light acts on every press too");
         return {
             isModernExtend: true,
             exposes: [(device, options) => (ownMcuShown(device, options, 2) ? [expose] : [])],
@@ -887,6 +903,185 @@ const romasku = {
                 // not answered now; read at the next announce, configure or refresh
             }
         }
+    },
+    // A per-channel attribute of Open Dimmer 2.2.0 on the channel's own endpoint: shown, stored
+    // and written like the other Open Dimmer settings (ownMcuShown). attr: its id (or name, for
+    // one zigbee-herdsman knows), type, and what a report means: fromValue(raw) -> published.
+    dimmerOwnAttr: ({expose, endpointName, cluster, attr, type, fromValue, toValue, extraFz}) => {
+        const property = `${expose.name}_${endpointName}`;
+        const shown = (device, options) => ownMcuShown(device, options, OPEN_DIMMER_2_2);
+        return {
+            isModernExtend: true,
+            exposes: [(device, options) => (shown(device, options) ? [expose] : [])],
+            fromZigbee: [{
+                cluster,
+                type: ["attributeReport", "readResponse"],
+                convert: (model, msg, publish, options) => {
+                    if (endpointNameOf(model, msg) !== endpointName || !shown(msg.device, options)) return;
+                    const out = {};
+                    const raw = msg.data?.[attr.name ?? attr.ID] ?? msg.data?.[attr.ID];
+                    if (raw !== undefined) out[property] = fromValue(raw);
+                    Object.assign(out, extraFz?.(msg.data, property) ?? {});
+                    return Object.keys(out).length ? out : undefined;
+                },
+            }],
+            toZigbee: [{
+                key: [expose.name],
+                endpoints: [endpointName],
+                convertSet: async (entity, key, value, meta) => {
+                    const raw = toValue(value);
+                    await entity.write(cluster, {[attr.ID]: {value: raw, type}});
+                    return {state: {[key]: fromValue(raw)}};
+                },
+                convertGet: async (entity) => {
+                    await entity.read(cluster, [attr.name ?? attr.ID]);
+                },
+            }],
+        };
+    },
+    // Auto-off (Open Dimmer 2.2.0, DP 6 / 12 by genOnOff 0xff10): the channel goes off that
+    // many seconds after it was set; any off ends it (so an off report publishes 0).
+    dimmerCountdown: (endpointName) => {
+        const expose = e.numeric("countdown", ea.ALL).withEndpoint(endpointName)
+            .withValueMin(0).withValueMax(86400).withUnit("s")
+            .withDescription("Auto-off: the channel turns off this many seconds after it was set, while on (0 = none; any off ends it; Open Dimmer firmware)");
+        return romasku.dimmerOwnAttr({
+            expose, endpointName, cluster: "genOnOff", attr: {ID: 0xff10}, type: Zcl.DataType.UINT32,
+            fromValue: (v) => v,
+            toValue: (value) => {
+                const v = Number(value);
+                if (!Number.isInteger(v) || v < 0 || v > 86400) throw new Error("countdown: an integer 0..86400");
+                return v;
+            },
+            extraFz: (data, property) => (data?.onOff === 0 ? {[property]: 0} : undefined),
+        });
+    },
+    // Wall switch mode (Open Dimmer 2.2.0, DP 162 / 163): normal, detached (the switch only
+    // reports its gestures), off (ignored).
+    dimmerSwitchMode: (endpointName) => {
+        const lookup = {normal: 0, detached: 1, off: 2};
+        const names = Object.keys(lookup);
+        const expose = e.enum("switch_mode", ea.ALL, names).withEndpoint(endpointName)
+            .withDescription("Wall switch: normal (it switches and dims the light), detached (the light only follows the network; the switch's gestures are still reported as action, a toggle or state switch's change as a single) or off (ignored). Open Dimmer firmware")
+            .withCategory("config");
+        return romasku.dimmerOwnAttr({
+            expose, endpointName, cluster: "genOnOffSwitchCfg", attr: {ID: 0xff10}, type: Zcl.DataType.ENUM8,
+            fromValue: (v) => names.find((k) => lookup[k] === v) ?? v,
+            toValue: (value) => {
+                if (!Object.prototype.hasOwnProperty.call(lookup, value)) throw new Error(`switch_mode: one of ${names.join(", ")}`);
+                return lookup[value];
+            },
+        });
+    },
+    // Level after a power cut (Open Dimmer 2.2.0, DP 164 / 165): ZCL StartUpCurrentLevel,
+    // 1..254, minimum (0) or previous (255).
+    dimmerStartupLevel: (endpointName) => {
+        const presets = {minimum: 0, previous: 255};
+        const expose = e.numeric("current_level_startup", ea.ALL).withEndpoint(endpointName)
+            .withValueMin(1).withValueMax(254)
+            .withPreset("minimum", "minimum", "The channel's minimum brightness")
+            .withPreset("previous", "previous", "The brightness it had before")
+            .withDescription("Brightness after a power cut (whether it comes on is power_on_behavior; Open Dimmer firmware)")
+            .withCategory("config");
+        return romasku.dimmerOwnAttr({
+            expose, endpointName, cluster: "genLevelCtrl", attr: {ID: 0x4000, name: "startUpCurrentLevel"},
+            type: Zcl.DataType.UINT8,
+            fromValue: (v) => Object.keys(presets).find((k) => presets[k] === v) ?? v,
+            toValue: (value) => {
+                if (Object.prototype.hasOwnProperty.call(presets, value)) return presets[value];
+                const v = Number(value);
+                if (!Number.isInteger(v) || v < 1 || v > 254) throw new Error("current_level_startup: 1..254, minimum or previous");
+                return v;
+            },
+        });
+    },
+    // Start boost (Open Dimmer 2.2.0, DP 168 / 169): coming on from dark at full that long.
+    dimmerStartBoost: (endpointName) => {
+        const expose = e.numeric("start_boost", ea.ALL).withEndpoint(endpointName)
+            .withValueMin(0).withValueMax(750).withValueStep(50).withUnit("ms")
+            .withDescription("Coming on from dark the output is at full this long, then goes to the brightness: for LED drivers that need a kick to start (0 = none; Open Dimmer firmware)")
+            .withCategory("config");
+        return romasku.dimmerOwnAttr({
+            expose, endpointName, cluster: "lightingBallastCfg", attr: {ID: 0xff10}, type: Zcl.DataType.UINT16,
+            fromValue: (v) => v,
+            toValue: (value) => {
+                const v = Number(value);
+                if (!Number.isInteger(v) || v < 0 || v > 750) throw new Error("start_boost: an integer 0..750");
+                return v;
+            },
+        });
+    },
+    // Identify (Open Dimmer 2.2.0, DP 166 / 167): every channel blinks for a few seconds (the
+    // one with a lamp shows which module this is).
+    dimmerIdentify: (dimmerNames) => {
+        const expose = e.enum("identify", ea.SET, ["identify"])
+            .withDescription("Blink the lamps of this module for 3 seconds (Open Dimmer firmware)")
+            .withCategory("config");
+        return {
+            isModernExtend: true,
+            exposes: [(device, options) => (ownMcuShown(device, options, OPEN_DIMMER_2_2) ? [expose] : [])],
+            toZigbee: [{
+                key: ["identify"],
+                convertSet: async (entity, key, value, meta) => {
+                    const map = typeof meta.mapped?.endpoint === "function" ? meta.mapped.endpoint(meta.device) : {};
+                    const ids = dimmerNames.map((name) => map[name]).filter((id) => id !== undefined);
+                    for (const id of ids.length ? ids : [entity.ID]) {
+                        await meta.device.getEndpoint(id).command("genIdentify", "identify", {identifytime: 3});
+                    }
+                },
+            }],
+        };
+    },
+    // Health report of Open Dimmer (Basic 0xff48 on endpoint 1, octet string format 1; the
+    // module sends it about every 10 min to the coordinator once configure has bound genBasic).
+    mcuHealth: () => {
+        const causes = [[7, "low_power"], [6, "window_watchdog"], [5, "watchdog"], [4, "software"],
+                        [3, "power"], [2, "pin"], [1, "option_bytes"]];
+        const exposes = [
+            e.numeric("mcu_uptime", ea.STATE_GET).withUnit("min").withLabel("MCU uptime")
+                .withDescription("Time since the dimming MCU's last start (Open Dimmer firmware)"),
+            e.text("mcu_reset_cause", ea.STATE_GET).withLabel("MCU reset cause")
+                .withDescription("Why the dimming MCU last started: power (power-up or brown-out), software (an update or a fault), watchdog, pin... (Open Dimmer firmware)"),
+            e.numeric("mcu_zero_cross_losses", ea.STATE_GET).withLabel("MCU zero-cross losses")
+                .withDescription("Times the dimming MCU lost its lock on the mains zero cross since its start (Open Dimmer firmware)"),
+            e.numeric("mcu_uart_rx_losses", ea.STATE_GET).withLabel("MCU UART losses")
+                .withDescription("Bytes from the Zigbee module the dimming MCU lost since its start (Open Dimmer firmware)"),
+            e.numeric("mcu_temperature", ea.STATE_GET).withUnit("°C").withLabel("MCU temperature")
+                .withDescription("Die temperature of the dimming MCU (Open Dimmer firmware)"),
+            e.binary("mcu_settings_ring_moved", ea.STATE_GET, true, false).withLabel("MCU settings moved")
+                .withDescription("The dimming MCU keeps its settings in the flash area of 2.1.14 and later, so firmware over 12 KB can be installed (Open Dimmer firmware)"),
+        ].map((x) => x.withCategory("diagnostic"));
+        return {
+            isModernExtend: true,
+            exposes: [(device, options) => (ownMcuShown(device, options, OPEN_DIMMER_2_2) ? exposes : [])],
+            fromZigbee: [{
+                cluster: "genBasic",
+                type: ["attributeReport", "readResponse"],
+                convert: (model, msg, publish, options) => {
+                    const raw = msg.data?.[0xff48];
+                    if (msg.endpoint?.ID !== 1 || raw === undefined || !ownMcuShown(msg.device, options, OPEN_DIMMER_2_2)) return;
+                    const b = Buffer.from(raw);
+                    if (b.length < 17 || b[0] !== 1) return;          // empty before the first report
+                    const flags = b[14];
+                    const reset = b[13];
+                    const t = b.readInt16LE(15);
+                    return {
+                        mcu_uptime: b.readUInt32LE(1),
+                        mcu_zero_cross_losses: b.readUInt32LE(5),
+                        mcu_uart_rx_losses: b.readUInt32LE(9),
+                        mcu_reset_cause: causes.filter(([bit]) => reset & (1 << bit)).map(([, n]) => n).join(",") || "none",
+                        mcu_settings_ring_moved: (flags & 0x02) !== 0,
+                        mcu_temperature: t === -32768 ? null : t,
+                    };
+                },
+            }],
+            toZigbee: [{
+                key: exposes.map((x) => x.name),
+                convertGet: async (entity, key, meta) => {
+                    await meta.device.getEndpoint(1).read("genBasic", [0xff48]);
+                },
+            }],
+        };
     },
     dimmerPowerOnBehavior: (name, endpointName) =>
         enumLookup({
@@ -1069,10 +1264,17 @@ const definitions = [
             romasku.dimmerSwitchType("switch_type", "{{dimmerName}}"),
 {% for dp in device.dp_attributes if dp.dimmer == dimmer_index and dp.type != "E" %}
 {{ dp_extend(dp, device, first_endpoint) }}{% endfor %}
+            {% if device.secondary_mcu_image %}
+            romasku.dimmerCountdown("{{dimmerName}}"),
+            romasku.dimmerSwitchMode("{{dimmerName}}"),
+            romasku.dimmerStartupLevel("{{dimmerName}}"),
+            romasku.dimmerStartBoost("{{dimmerName}}"),
+            {% endif %}
             {% endfor %}
             {% if device.dimmerNames and device.secondary_mcu_image %}
             romasku.dimmerGestures({{device.dimmerNames | tojson}}),
             romasku.dimmerPowerOnPerChannel({{device.dimmerNames | tojson}}),
+            romasku.dimmerIdentify({{device.dimmerNames | tojson}}),
             {% elif device.dimmerNames %}
             // Universal power-on behavior (shared DP, e.g. U0E) - one expose only.
             romasku.dimmerPowerOnBehavior("power_on_behavior"),
@@ -1083,6 +1285,7 @@ const definitions = [
             romasku.mcuVersion("mcu_version", "{{first_endpoint}}"),
             {% if device.secondary_mcu_image %}
             romasku.mcuFirmware(),
+            romasku.mcuHealth(),
             {% endif %}
             {% endif %}
             romasku.multiPressResetCount("multi_press_reset_count", "{{first_endpoint}}"),
@@ -1135,6 +1338,19 @@ const definitions = [
                     // not answered now; read on the next configure or with a refresh
                 }
                 {% endfor %}
+            }
+            {% endif %}
+            {% if device.secondary_mcu_image %}
+            // Open Dimmer 2.2.0: its health report goes to the Basic cluster's bindings (no
+            // reporting entry), and its settings per channel are read once.
+            const openDimmer22 = ownVersionAtLeast(ownVersionNumbers(mcuVersion), OPEN_DIMMER_2_2);
+            if (openDimmer22) {
+                try {
+                    await reporting.bind(mcuEndpoint, coordinatorEndpoint, ["genBasic"]);
+                    await mcuEndpoint.read("genBasic", [0xff48]); // health report
+                } catch (error) {
+                    // not answered now; sent by the module within 10 min
+                }
             }
             {% endif %}
             {% endif %}
@@ -1253,6 +1469,17 @@ const definitions = [
                 ]);
             } catch (error) {
                 // not there: no gestures
+            }
+            if (openDimmer22) {
+                for (const [cluster, attrs] of [["genOnOff", [0xff10]], ["genOnOffSwitchCfg", [0xff10]],
+                                                ["genLevelCtrl", ["startUpCurrentLevel"]],
+                                                ["lightingBallastCfg", [0xff10]]]) {
+                    try {
+                        await dimmer{{loop.index}}.read(cluster, attrs);
+                    } catch (error) {
+                        // not answered now; read on the next configure or with a refresh
+                    }
+                }
             }
             {% endif %}
             {% endfor %}
