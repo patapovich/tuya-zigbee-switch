@@ -228,9 +228,15 @@ static uint8_t dimmer_od_from(const zigbee_dimmer_cluster *cluster, uint16_t bui
  * A ZCL transition time (1/10 s, little endian at tt) for the change written next: Open Dimmer
  * from OPEN_DIMMER_TRANSITION_BUILD takes it as the ms its network changes of the next second
  * take (DP 160 / 161, before the on / off / level writes). Any other MCU fades by its own
- * settings, as before, and gets nothing more. 0 and 0xFFFF (none given; Zigbee2MQTT sends 0
- * without a transition), and the On / Off / Toggle commands: the fade settings, so a 0 goes out
- * only while an earlier time could still apply to this change.
+ * settings, as before, and gets nothing more.
+ *  - 0xFFFF (none given: ZCL's "use the default"; the converter sends it when Zigbee2MQTT has
+ *    no transition), the On / Off / Toggle commands and a command without a time: the fade
+ *    settings. DP 0 goes out only while an earlier time could still apply to this change.
+ *  - 0: at once. DP 1 ms (0 there means the fade settings): the MCU's timed move lands in one
+ *    half cycle, from dark (its floor) to the level as well; an off goes to the floor at once
+ *    and is dark after its usual moment there (off_hold_ms, 80 ms: zdms16-py32 dim_core.c
+ *    dim_fader_set_timed() takes it from a time only when the time is longer).
+ *  - 1..0xFFFE: that many tenths (at most 65.535 s, the DP's range).
  * The write queue keeps one frame in flight and sends a lost one again before the next, so the
  * time always reaches the MCU before its change; a time lost for good leaves that change at the
  * fade settings. */
@@ -243,15 +249,13 @@ static void dimmer_send_transition(zigbee_dimmer_cluster *cluster, const uint8_t
     uint16_t t   = (uint16_t)(tt[0] | (tt[1] << 8));
     uint32_t now = hal_millis();
 
-    if (t == 0xFFFF)
-        t = 0;
-    if (t == 0 && (cluster->transition_at == 0 ||
-                   now - cluster->transition_at >= DIMMER_TRANSITION_VALID_MS))
+    if (t == 0xFFFF && (cluster->transition_at == 0 ||
+                        now - cluster->transition_at >= DIMMER_TRANSITION_VALID_MS))
         return;
 
-    uint32_t ms = (uint32_t)t * 100u;
+    uint32_t ms = t == 0xFFFF ? 0 : t == 0 ? 1u : (uint32_t)t * 100u;
     dimmer_write_tuya_value(cluster->own_transition_dpid, ms > 0xFFFFu ? 0xFFFFu : ms);
-    cluster->transition_at = t ? (now | 1u) : 0;
+    cluster->transition_at = ms ? (now | 1u) : 0;
 }
 
 /* ---- Open Dimmer settings (from OPEN_DIMMER_FEATURES_BUILD) -----------------
@@ -591,7 +595,7 @@ static hal_zigbee_cmd_result_t dimmer_cluster_callback(zigbee_dimmer_cluster *cl
     if (cluster == NULL)
         return HAL_ZIGBEE_CMD_SKIPPED;
 
-    static const uint8_t no_time[2] = { 0, 0 };
+    static const uint8_t no_time[2] = { 0xFF, 0xFF }; /* the fade settings */
     const uint8_t *      payload    = (const uint8_t *)cmd_payload;
 
     switch (command_id) {

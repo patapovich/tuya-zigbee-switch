@@ -1,6 +1,8 @@
 """Transition time (ZCL, 1/10 s) to Open Dimmer: from build 400 the module writes its DP 160 / 161
 (the ms of the change that follows) right before the on / off / level writes; an older Open
-Dimmer, a 2.1.x app without a build and a factory MCU get nothing more than before."""
+Dimmer, a 2.1.x app without a build and a factory MCU get nothing more than before.
+0xFFFF (none given; the converter sends it when Zigbee2MQTT has no transition) is the fade
+settings, 0 is at once (DP 1 ms), X tenths X * 100 ms."""
 import pytest
 
 from own_mcu import own_mcu_contact
@@ -87,27 +89,47 @@ def test_a_factory_mcu_gets_no_time():
         proc.stop()
 
 
+NONE = 0xFFFF   # no time given: the fade settings
+
+
 def test_no_transition_sends_nothing_unless_an_earlier_time_could_still_apply():
     proc, device = contact(400)
     try:
-        to_level(device, 200, 0)                         # Zigbee2MQTT without a transition
-        assert DP_TRANSITION_L1 not in dps(ack_writes(proc, device))
-        to_level(device, 220, 0xFFFF)                    # "use the default" = the fade settings
+        to_level(device, 200, NONE)                      # Zigbee2MQTT without a transition
         assert DP_TRANSITION_L1 not in dps(ack_writes(proc, device))
         to_level(device, 150, 30)
         ack_writes(proc, device)
         device.step_time(500)
-        to_level(device, 180, 0)                         # within 1.5 s: the 3 s must not apply
+        to_level(device, 180, NONE)                      # within 1.5 s: the 3 s must not apply
         w = ack_writes(proc, device)
         assert w[0] == (DP_TRANSITION_L1, 0)
         device.step_time(200)
-        to_level(device, 190, 0)                         # cancelled already: nothing
+        to_level(device, 190, NONE)                      # cancelled already: nothing
         assert DP_TRANSITION_L1 not in dps(ack_writes(proc, device))
         to_level(device, 150, 30)
         ack_writes(proc, device)
         device.step_time(1600)
-        to_level(device, 200, 0)                         # long after: nothing
+        to_level(device, 200, NONE)                      # long after: nothing
         assert DP_TRANSITION_L1 not in dps(ack_writes(proc, device))
+    finally:
+        proc.stop()
+
+
+@pytest.mark.parametrize("with_onoff", [True, False])
+def test_a_transition_of_0_is_at_once(with_onoff):
+    """An explicit 0: DP 1 ms (the MCU's 0 is the fade settings), every time."""
+    proc, device = contact(400)
+    try:
+        to_level(device, 200, NONE)
+        ack_writes(proc, device)
+        device.step_time(2000)
+        for lvl in (90, 140):
+            to_level(device, lvl, 0, with_onoff=with_onoff)
+            w = ack_writes(proc, device)
+            assert w[0] == (DP_TRANSITION_L1, 1) and DP_LEVEL_L1 in dps(w)
+            device.step_time(2000)
+        to_level(device, 0, 0)                           # off at once
+        assert ack_writes(proc, device)[:2] == [(DP_TRANSITION_L1, 1), (DP_ON_L1, 0)]
     finally:
         proc.stop()
 
@@ -169,8 +191,43 @@ def test_the_take_back_window_is_1500_ms(after_ms, sends_zero):
         to_level(device, 200, 30)
         ack_writes(proc, device)                         # the acks take no stub time
         device.step_time(after_ms)
-        to_level(device, 220, 0)
+        to_level(device, 220, NONE)
         w = ack_writes(proc, device)
         assert ((DP_TRANSITION_L1, 0) in w) == sends_zero
     finally:
         proc.stop()
+
+
+# The three kinds of time to every class of MCU: Open Dimmer 2.2 (build 500) and 2.1.14 (400) get
+# DP 160; an older Open Dimmer (300, a 2.1.x app without a build) and a factory MCU nothing more.
+@pytest.mark.parametrize("build", [500, 400, 300, None, "stock"])
+@pytest.mark.parametrize("tenths, dp160", [(NONE, None), (0, 1), (12, 1200)])
+def test_none_zero_and_a_time_to_every_mcu(build, tenths, dp160):
+    if build == "stock":
+        proc, device = start()                           # never identified
+    else:
+        proc, device = contact(build)
+    try:
+        to_level(device, 200, tenths)
+        w = ack_writes(proc, device)
+        timed = build not in (300, None, "stock")
+        if timed and dp160 is not None:
+            assert w[0] == (DP_TRANSITION_L1, dp160)
+            assert dps(w)[1:3] == [DP_ON_L1, DP_LEVEL_L1]
+        else:
+            assert dps(w)[:2] == [DP_ON_L1, DP_LEVEL_L1]   # what it always got
+    finally:
+        proc.stop()
+
+
+def test_a_factory_mcu_gets_the_same_frames_for_none_zero_and_a_time():
+    """The stock MCU's UART traffic does not depend on the time at all."""
+    frames = []
+    for tenths in (NONE, 0, 12):
+        proc, device = start()
+        try:
+            to_level(device, 200, tenths)
+            frames.append(take_tx(proc))
+        finally:
+            proc.stop()
+    assert frames[0] == frames[1] == frames[2] and frames[0]
