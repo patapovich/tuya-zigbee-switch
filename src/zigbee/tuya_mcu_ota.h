@@ -216,6 +216,9 @@ uint8_t tuya_mcu_ota_register_attrs(hal_zigbee_attribute *table, uint8_t start_i
  *  (twice at most, until its next version answer). */
 void tuya_mcu_ota_mcu_queried(void);
 
+/* CRC-32 (zlib), as the carried image's: SECONDARY_MCU_IMAGE builds only. */
+uint32_t tuya_mcu_crc32_update(uint32_t crc, const uint8_t *p, uint32_t n);
+
 /** An MCU command; returns 1 if it was an update command (handled here). */
 uint8_t tuya_mcu_ota_on_command(uint8_t cmd, uint16_t seq, const uint8_t *data,
                                 uint16_t len);

@@ -15,6 +15,9 @@
 #include "hal/nvm.h"
 #include "hal/tasks.h"
 #include <stddef.h>
+#ifdef SECONDARY_MCU_IMAGE
+#include "zigbee/mcu_flasher.h"
+#endif
 
 #ifdef HAL_SILABS
 #include "silabs_config.h"
@@ -61,6 +64,9 @@ void basic_cluster_callback_attr_write_trampoline(uint16_t attribute_id) {
         schedule_reboot(0);
     }
     dp_attr_on_write(attribute_id);
+#ifdef SECONDARY_MCU_IMAGE
+    mcu_flasher_on_write(attribute_id);
+#endif
     if (tuya_mcu_diag_on_write(attribute_id) == TUYA_MCU_DIAG_CONTROL_QUERY_ALL) {
         tuya_mcu_app_query_all();
     }
@@ -124,6 +130,9 @@ void basic_cluster_add_to_endpoint(zigbee_basic_cluster *cluster,
         attr_idx += tuya_mcu_diag_register(cluster->attr_infos, attr_idx);
         attr_idx += tuya_mcu_ota_register_attrs(cluster->attr_infos, attr_idx);
     }
+#ifdef SECONDARY_MCU_IMAGE
+    attr_idx += mcu_flasher_register_attrs(cluster->attr_infos, attr_idx);
+#endif
 
     endpoint->clusters[endpoint->cluster_count].cluster_id      = ZCL_CLUSTER_BASIC;
     endpoint->clusters[endpoint->cluster_count].attribute_count = attr_idx;

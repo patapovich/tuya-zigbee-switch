@@ -181,7 +181,8 @@ console.log(JSON.stringify({
     assert out["newWins"] == [16, 2]
     assert out["oldShowStored"] == [{"dimming_curve_l1": "linear"}]
     assert out["options"] == [["open_dimmer_settings", ["auto", "show", "hide"], "Open Dimmer settings"],
-                              ["transition", None, None]]    # its own description (dimmerTransition)
+                              ["transition", None, None],    # its own description (dimmerTransition)
+                              ["mcu_flasher", ["hide", "show"], "MCU flasher"]]  # the SWD master
 
 
 # Every genBasic fromZigbee of the definition in Zigbee2MQTT's order, mcu_version's

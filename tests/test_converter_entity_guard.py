@@ -56,6 +56,8 @@ ZDMS16_2_EXTENDS = [
     "romasku.mcuVersion(mcu_version)",
     "romasku.mcuFirmware()",
     "romasku.mcuHealth()",
+    # the SWD master: no expose unless the device option mcu_flasher is show
+    "romasku.mcuFlasher()",
     "romasku.multiPressResetCount(multi_press_reset_count)",
     "romasku.deviceConfig(device_config)",
     "romasku.deviceConfigExt(device_config_ext)",
