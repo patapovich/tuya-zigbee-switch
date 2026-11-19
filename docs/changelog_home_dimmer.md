@@ -50,6 +50,12 @@ zdms16-py32 release notes.
   a newer image at the power-on check, without the ~60 s wait. Offers to the app still wait
   for the report.
 
+- Green Power is left out of the ZDMS16-2 build (`src/telink/patch_sdk/gp_stub.c`): this
+  firmware never starts it, so a GP frame never got past the stack; now the frame is dropped at
+  once. The OTA image is 6.2 KB smaller (room for the SWD master and Scenes). The OTA files are
+  now linked with the board's own flags (they were linked again without `DIMMER_ONLY`), and the
+  OTA step runs the symbol checks on that link.
+
 ## 1.1.3-6598b921 (2026-11-19), carries Open Dimmer 2.2.2
 
 - A plain on (no brightness) is always the module's own on (`fade_on_time`, the level it

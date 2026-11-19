@@ -186,3 +186,22 @@ def test_the_elf_check_wants_the_dimmer_endpoints_in_every_build(tmp_path, dimme
     listing = (DIMMER_ONLY_NM if dimmer_only else FULL_NM).replace(
         "00006c70 T dimmer_cluster_add_to_endpoint\n", "")
     assert check(tmp_path, listing, dimmer_only).returncode == 1
+
+
+# Green Power left out of a dimmer_only build (src/telink/patch_sdk/gp_stub.c).
+GP_NM = """\
+0002c410 T dGp_dataInd
+0002b520 T cgp_mcpsDataIndFilter
+0002c6d0 T gpDataIndDuplicateFind
+0002c7c8 T gpCcmStar
+"""
+
+
+@pytest.mark.parametrize("line", GP_NM.splitlines())
+def test_the_elf_check_refuses_green_power_in_a_dimmer_only_build(tmp_path, line):
+    assert check(tmp_path, DIMMER_ONLY_NM + line + "\n", True).returncode == 1
+
+
+def test_the_elf_check_takes_green_power_or_none_in_other_builds(tmp_path):
+    assert check(tmp_path, FULL_NM + GP_NM, False).returncode == 0
+    assert check(tmp_path, FULL_NM, False).returncode == 0  # an end device: no GP in its stack

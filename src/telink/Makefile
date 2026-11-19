@@ -149,6 +149,10 @@ TELINK_SOURCES := \
 	custom_zcl/zcl_ballast_config.c \
 	patch_sdk/drv_nv.c
 
+ifneq ($(DIMMER_ONLY),)
+TELINK_SOURCES += patch_sdk/gp_stub.c
+endif
+
 # Common source files (shared with Silicon Labs build)
 COMMON_SOURCES := \
 	$(SRC_DIR)/app.c \
@@ -282,8 +286,10 @@ endif
 OTA_MAX_SIZE_EXPR = printf '\#include "tl_common.h"\nFLASH_OTA_IMAGE_MAX_SIZE\n' | \
 	$(CC) $(DEVICE_DEFS) $(INCLUDE_PATHS) -E -P -x c - | tail -n 1
 
-# Make an ota file
-ota: $(BIN_FILE)
+# Make an ota file. It links the ELF again (sdk-build is phony), so the
+# symbol checks run on that link too: an OTA file made without the board's
+# DIMMER_ONLY / SECONDARY_MCU_IMAGE fails here (board.mk OTA_LINK_VARS).
+ota: $(BIN_FILE) check-open-dimmer check-dimmer-only
 	@if [ -z "$(OTA_MANUFACTURER_ID)" ] || [ "$(OTA_MANUFACTURER_ID)" = "null" ] || \
       [ -z "$(OTA_IMAGE_TYPE)" ]      || [ "$(OTA_IMAGE_TYPE)" = "null" ]; then \
         echo "Skipping OTA file generation: missing arguments"; \
