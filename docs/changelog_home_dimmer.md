@@ -14,6 +14,13 @@ zdms16-py32 release notes.
 
 ## Next
 
+- Conversion from the stock firmware: the outgoing NWK frame counter starts at 0x10000000 once
+  (it lived in flash at a much lower value). Routers still on stock Tuya firmware remembered
+  the counter the stock firmware had reached, including the thousands of frames of the
+  conversion OTA itself, and dropped the module's frames as replays until it caught up
+  (romasku/tuya-zigbee-switch#255, upstream PR #557). A module converted before keeps its
+  counter if it is already higher.
+
 ## 1.1.3-781f0ced (2026-11-19), carries Open Dimmer 2.2.3
 
 - Rebuilt, nothing new; carries Open Dimmer 2.2.3.
