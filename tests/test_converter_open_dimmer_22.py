@@ -1,6 +1,7 @@
 """The generated Z2M converter's Open Dimmer 2.2.0 exposes for the ZDMS16-2: per channel the
 countdown (genOnOff 0xff10), switch_mode (genOnOffSwitchCfg 0xff10), current_level_startup
-(genLevelCtrl startUpCurrentLevel) and start_boost (lightingBallastCfg 0xff10); identify (both
+(genLevelCtrl startUpCurrentLevel), start_boost (lightingBallastCfg 0xff10), execute_if_off
+(genLevelCtrl options) and on_level_local (genLevelCtrl 0xff11); identify (both
 channels); the health report sensors (genBasic 0xff48). Shown only for an MCU identified as Open
 Dimmer 2.2 or later (or with open_dimmer_settings: show): a stock MCU's and an older Open
 Dimmer's exposes, reads and reporting stay as they were."""
@@ -10,7 +11,8 @@ import json
 from generated_converter import run_node
 from test_converter_own_mcu import CONFIGURE, ZDMS
 
-NEW_PER_CHANNEL = ["countdown", "switch_mode", "current_level_startup", "start_boost"]
+NEW_PER_CHANNEL = ["countdown", "switch_mode", "current_level_startup", "start_boost",
+                   "execute_if_off", "on_level_local"]
 NEW_DEVICE = ["identify", "mcu_uptime", "mcu_reset_cause", "mcu_zero_cross_losses",
               "mcu_uart_rx_losses", "mcu_temperature", "mcu_settings_ring_moved"]
 NEW = [f"{n}_{ch}" for ch in ("dimmer_left", "dimmer_right") for n in NEW_PER_CHANNEL] + NEW_DEVICE
@@ -66,6 +68,7 @@ const brief = (x) => x && ({type: x.type, access: x.access, min: x.value_min, ma
 console.log(JSON.stringify({
     countdown: brief(pick("countdown", "dimmer_right")), mode: brief(pick("switch_mode", "dimmer_left")),
     startup: brief(pick("current_level_startup", "dimmer_left")), boost: brief(pick("start_boost", "dimmer_right")),
+    eio: brief(pick("execute_if_off", "dimmer_left")), local: brief(pick("on_level_local", "dimmer_right")),
     identify: brief(pick("identify", undefined)), uptime: brief(pick("mcu_uptime", undefined)),
     temperature: brief(pick("mcu_temperature", undefined)), moved: brief(pick("mcu_settings_ring_moved", undefined)),
     descriptions: ex.filter((x) => x.description?.includes("Open Dimmer")).length,
@@ -75,9 +78,10 @@ console.log(JSON.stringify({
                                 "category": None}
     assert out["mode"] == {"type": "enum", "access": 7, "values": ["normal", "detached", "off"],
                            "category": "config"}
-    assert out["startup"] == {"type": "numeric", "access": 7, "min": 1, "max": 254,
-                              "presets": [["minimum", "minimum"], ["previous", "previous"]],
-                              "category": "config"}
+    assert out["startup"] == {"type": "numeric", "access": 7, "min": 0, "max": 255,
+                              "presets": [["minimum", 0], ["previous", 255]], "category": "config"}
+    assert out["eio"] == {"type": "binary", "access": 7, "category": "config"}
+    assert out["local"] == {"type": "numeric", "access": 7, "min": 1, "max": 255, "category": "config"}
     assert out["boost"] == {"type": "numeric", "access": 7, "min": 0, "max": 750, "step": 50,
                             "unit": "ms", "category": "config"}
     assert out["identify"] == {"type": "enum", "access": 2, "values": ["identify"], "category": "config"}
@@ -97,6 +101,8 @@ console.log(JSON.stringify({
     mode: fz(own, 2, {[0xff10]: 1}),
     startup: [fz(own, 1, {startUpCurrentLevel: 0}), fz(own, 1, {startUpCurrentLevel: 255}),
               fz(own, 2, {startUpCurrentLevel: 128})],
+    eio: [fz(own, 1, {options: 1}), fz(own, 2, {options: 2})],
+    local: fz(own, 2, {[0xff11]: 200}),
     stock: [fz(stock, 1, {[0xff10]: 30}), fz(stock, 2, {onOff: 0}), fz(stock, 1, {startUpCurrentLevel: 0})],
 }));
 """))
@@ -106,9 +112,11 @@ console.log(JSON.stringify({
     assert out["off"] == [{"countdown_dimmer_right": 0}]
     assert out["on"] == []
     assert {"switch_mode_dimmer_right": "detached"} in out["mode"]
-    assert out["startup"] == [[{"current_level_startup_dimmer_left": "minimum"}],
-                              [{"current_level_startup_dimmer_left": "previous"}],
+    assert out["startup"] == [[{"current_level_startup_dimmer_left": 0}],
+                              [{"current_level_startup_dimmer_left": 255}],
                               [{"current_level_startup_dimmer_right": 128}]]
+    assert out["eio"] == [[{"execute_if_off_dimmer_left": True}], [{"execute_if_off_dimmer_right": False}]]
+    assert out["local"] == [{"on_level_local_dimmer_right": 200}]
     assert out["stock"] == [[], [], []]
 
 
@@ -152,7 +160,11 @@ def test_writes_of_the_new_settings():
     modeBad: await set("switch_mode", "sometimes"),
     startup: [await set("current_level_startup", "previous"), await set("current_level_startup", "minimum"),
               await set("current_level_startup", 77, 2)],
-    startupBad: await set("current_level_startup", 0),
+    startupBad: await set("current_level_startup", 256),
+    eio: [await set("execute_if_off", true), await set("execute_if_off", false, 2)],
+    eioBad: await set("execute_if_off", "maybe"),
+    local: await set("on_level_local", 255),
+    localBad: await set("on_level_local", 0),
     boost: await set("start_boost", 300),
     boostBad: await set("start_boost", 800),
     identify: await set("identify", "identify"),
@@ -165,11 +177,19 @@ def test_writes_of_the_new_settings():
                            {"switch_mode": "off"}]
     assert "normal, detached, off" in out["modeBad"]
     assert out["startup"] == [
-        [[["write", 1, "genLevelCtrl", {str(0x4000): {"value": 255, "type": 0x20}}]], {"current_level_startup": "previous"}],
-        [[["write", 1, "genLevelCtrl", {str(0x4000): {"value": 0, "type": 0x20}}]], {"current_level_startup": "minimum"}],
+        [[["write", 1, "genLevelCtrl", {str(0x4000): {"value": 255, "type": 0x20}}]], {"current_level_startup": 255}],
+        [[["write", 1, "genLevelCtrl", {str(0x4000): {"value": 0, "type": 0x20}}]], {"current_level_startup": 0}],
         [[["write", 2, "genLevelCtrl", {str(0x4000): {"value": 77, "type": 0x20}}]], {"current_level_startup": 77}],
     ]
-    assert "1..254" in out["startupBad"]
+    assert "0..255" in out["startupBad"]
+    assert out["eio"] == [
+        [[["write", 1, "genLevelCtrl", {str(0x000f): {"value": 1, "type": 0x18}}]], {"execute_if_off": True}],
+        [[["write", 2, "genLevelCtrl", {str(0x000f): {"value": 0, "type": 0x18}}]], {"execute_if_off": False}],
+    ]
+    assert "true or false" in out["eioBad"]
+    assert out["local"] == [[["write", 1, "genLevelCtrl", {str(0xff11): {"value": 255, "type": 0x20}}]],
+                            {"on_level_local": 255}]
+    assert "1..255" in out["localBad"]
     assert out["boost"] == [[["write", 1, "lightingBallastCfg", {str(0xff10): {"value": 300, "type": 0x21}}]],
                             {"start_boost": 300}]
     assert "0..750" in out["boostBad"]
@@ -225,8 +245,8 @@ def test_configure_binds_basic_and_reads_the_new_settings_of_2_2_only():
     assert own["ownReads"] == [f"ff{a:02x}" for a in range(0x30, 0x3C)] + ["ff48"]
     assert "1:genBasic" in own["binds"]
     new_reads = [f"{ep}:{cluster}" for ep in (1, 2) for cluster in
-                 ("genOnOff:65296", "genOnOffSwitchCfg:65296", "genLevelCtrl:startUpCurrentLevel",
-                  "lightingBallastCfg:65296")]
+                 ("genOnOff:65296", "genOnOffSwitchCfg:65296",
+                  "genLevelCtrl:startUpCurrentLevel+options+65297", "lightingBallastCfg:65296")]
     assert [r for r in own["dimmerReads"] if r in new_reads] == new_reads
     assert len(own["dimmerReads"]) == 8 + 8
     for v in ("2.1.14 own", "1.0.7", "2.2.0"):

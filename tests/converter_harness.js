@@ -71,7 +71,7 @@ const fakes = {
         access: {STATE: 1, SET: 2, STATE_SET: 3, STATE_GET: 5, ALL: 7},
     },
     "zigbee-herdsman-converters/lib/ota": {zigbeeOTA: {}},
-    "zigbee-herdsman": {Zcl: {DataType: {BOOLEAN: 0x10, UINT8: 0x20, UINT16: 0x21, UINT32: 0x23, ENUM8: 0x30}}},
+    "zigbee-herdsman": {Zcl: {DataType: {BOOLEAN: 0x10, BITMAP8: 0x18, UINT8: 0x20, UINT16: 0x21, UINT32: 0x23, ENUM8: 0x30}}},
 };
 
 const load = Module._load;

@@ -974,23 +974,58 @@ const romasku = {
         });
     },
     // Level after a power cut (Open Dimmer 2.2.0, DP 164 / 165): ZCL StartUpCurrentLevel,
-    // 1..254, minimum (0) or previous (255).
+    // 1..254, 0 the minimum, 255 the previous one. A number throughout (a Home Assistant
+    // number entity), the presets name the two ends; their names are taken when written.
     dimmerStartupLevel: (endpointName) => {
         const presets = {minimum: 0, previous: 255};
         const expose = e.numeric("current_level_startup", ea.ALL).withEndpoint(endpointName)
-            .withValueMin(1).withValueMax(254)
-            .withPreset("minimum", "minimum", "The channel's minimum brightness")
-            .withPreset("previous", "previous", "The brightness it had before")
-            .withDescription("Brightness after a power cut (whether it comes on is power_on_behavior; Open Dimmer firmware)")
+            .withValueMin(0).withValueMax(255)
+            .withPreset("minimum", 0, "The channel's minimum brightness")
+            .withPreset("previous", 255, "The brightness it had before")
+            .withDescription("Brightness after a power cut, 1..254; 0 = the minimum, 255 = the one it had before (whether it comes on is power_on_behavior; Open Dimmer firmware)")
             .withCategory("config");
         return romasku.dimmerOwnAttr({
             expose, endpointName, cluster: "genLevelCtrl", attr: {ID: 0x4000, name: "startUpCurrentLevel"},
             type: Zcl.DataType.UINT8,
-            fromValue: (v) => Object.keys(presets).find((k) => presets[k] === v) ?? v,
+            fromValue: (v) => v,
             toValue: (value) => {
                 if (Object.prototype.hasOwnProperty.call(presets, value)) return presets[value];
                 const v = Number(value);
-                if (!Number.isInteger(v) || v < 1 || v > 254) throw new Error("current_level_startup: 1..254, minimum or previous");
+                if (!Number.isInteger(v) || v < 0 || v > 255) throw new Error("current_level_startup: 0..255, minimum or previous");
+                return v;
+            },
+        });
+    },
+    // ZCL ExecuteIfOff (Level Control Options bit 0, kept by the module): a brightness change
+    // without on/off while off sets the brightness the light comes on at, the light stays off.
+    dimmerExecuteIfOff: (endpointName) => {
+        const expose = e.binary("execute_if_off", ea.ALL, true, false).withEndpoint(endpointName)
+            .withDescription("A brightness change without on/off while the light is off sets the brightness it comes on at (it stays off); off: such a change is ignored while off")
+            .withCategory("config");
+        return romasku.dimmerOwnAttr({
+            expose, endpointName, cluster: "genLevelCtrl", attr: {ID: 0x000f, name: "options"},
+            type: Zcl.DataType.BITMAP8,
+            fromValue: (v) => (v & 1) === 1,
+            toValue: (value) => {
+                if (value === true || value === "ON" || value === "true") return 1;
+                if (value === false || value === "OFF" || value === "false") return 0;
+                throw new Error("execute_if_off: true or false");
+            },
+        });
+    },
+    // OnLevel of the wall switch (Level Control 0xff11, kept by the module): a wall switch on
+    // goes there, a network On to on_level. 255: as on_level.
+    dimmerOnLevelLocal: (endpointName) => {
+        const expose = e.numeric("on_level_local", ea.ALL).withEndpoint(endpointName)
+            .withValueMin(1).withValueMax(255)
+            .withDescription("Brightness the light comes on at from the wall switch, set without a round trip through the network. 255 (default) = as on_level")
+            .withCategory("config");
+        return romasku.dimmerOwnAttr({
+            expose, endpointName, cluster: "genLevelCtrl", attr: {ID: 0xff11}, type: Zcl.DataType.UINT8,
+            fromValue: (v) => v,
+            toValue: (value) => {
+                const v = Number(value);
+                if (!Number.isInteger(v) || v < 1 || v > 255) throw new Error("on_level_local: an integer 1..255");
                 return v;
             },
         });
@@ -1269,6 +1304,8 @@ const definitions = [
             romasku.dimmerSwitchMode("{{dimmerName}}"),
             romasku.dimmerStartupLevel("{{dimmerName}}"),
             romasku.dimmerStartBoost("{{dimmerName}}"),
+            romasku.dimmerExecuteIfOff("{{dimmerName}}"),
+            romasku.dimmerOnLevelLocal("{{dimmerName}}"),
             {% endif %}
             {% endfor %}
             {% if device.dimmerNames and device.secondary_mcu_image %}
@@ -1472,7 +1509,7 @@ const definitions = [
             }
             if (openDimmer22) {
                 for (const [cluster, attrs] of [["genOnOff", [0xff10]], ["genOnOffSwitchCfg", [0xff10]],
-                                                ["genLevelCtrl", ["startUpCurrentLevel"]],
+                                                ["genLevelCtrl", ["startUpCurrentLevel", "options", 0xff11]],
                                                 ["lightingBallastCfg", [0xff10]]]) {
                     try {
                         await dimmer{{loop.index}}.read(cluster, attrs);
