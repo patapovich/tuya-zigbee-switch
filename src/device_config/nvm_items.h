@@ -51,4 +51,7 @@
 // Their brightness fade time (Level Control 0xff12, 2 bytes): 54..57.
 #define NV_ITEM_DIMMER_BRIGHTNESS_FADE_TIME(dimmer_idx)    (54 + (dimmer_idx))
 
+// SWD master (src/zigbee/mcu_flasher.c): an install armed for the next power-up.
+#define NV_ITEM_MCU_FLASHER_JOB    58
+
 #endif /* DEVICE_CONFIG_NVM_ITEMS_H_ */

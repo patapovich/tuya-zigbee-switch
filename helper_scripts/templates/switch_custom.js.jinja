@@ -1218,20 +1218,24 @@ const romasku = {
     // 47 bytes, mcu_flasher_status_t; reported at every change and about once a second while
     // it runs).
     mcuFlasher: () => {
-        const jobs = {survey_dp: 1, survey_full: 2, update_bootloader: 3, update_bootloader_force: 4, abort: 0xff};
-        const states = ["idle", "running", "done", "failed", "aborted"];
+        const jobs = {survey_dp: 1, survey_full: 2, update_bootloader: 3, update_bootloader_force: 4, install: 5, abort: 0xff};
+        const states = ["idle", "running", "done", "failed", "aborted", "armed"];
         const errors = ["", "SWCLK held low (power-cycle the module, then try again)", "no answer (wires? power?)",
                         "not the expected PY32F002A", "SWD transfer failed", "busy", "unknown job",
                         "not confirmed: write the job's name to mcu_flasher_confirm first (valid 60 s)",
                         "read-protected, unexpected option bytes or the bootloader write-protected",
                         "the MCU did not stop", "flash error (unlock, write protection or timeout)",
-                        "the bootloader's checksum was wrong after writing it twice: the MCU stays stopped, its outputs off"];
+                        "the bootloader's checksum was wrong after writing it twice: the MCU stays stopped, its outputs off",
+                        "not a factory MCU (install takes one that told a 1.x version and is read-protected)",
+                        "the option bytes did not read back as written (not loaded; try again)",
+                        "no attach in the armed power-ups",
+                        "after the option reload not unprotected and erased"];
         const exposes = [
             e.enum("mcu_flasher", ea.SET, Object.keys(jobs)).withLabel("MCU flasher")
-                .withDescription("Start a job of the module's SWD link to the dimming MCU: survey_dp reads the debug port's id, survey_full the MCU's identity, option bytes and firmware checksums (both only read); update_bootloader writes the module's bootloader into the MCU if it differs (_force: always; both need mcu_flasher_confirm first). Needs the SW token in device_config")
+                .withDescription("Start a job of the module's SWD link to the dimming MCU: survey_dp reads the debug port's id, survey_full the MCU's identity, option bytes and firmware checksums (both only read); update_bootloader writes the module's bootloader into the MCU if it differs (_force: always); install takes a factory MCU to Open Dimmer (ERASES its firmware and settings; then power-cycle the module when the status says so). Writing jobs need mcu_flasher_confirm first. Needs the SW token in device_config")
                 .withCategory("config"),
             e.text("mcu_flasher_confirm", ea.SET).withLabel("MCU flasher confirm")
-                .withDescription("A writing job runs only if its name was written here within the last 60 s (e.g. update_bootloader); used once")
+                .withDescription("A writing job runs only if its name was written here within the last 60 s (update_bootloader, update_bootloader_force or install); used once")
                 .withCategory("config"),
             e.text("mcu_flasher_status", ea.STATE_GET).withLabel("MCU flasher status")
                 .withDescription("State and result of the last MCU flasher job")
@@ -1244,6 +1248,7 @@ const romasku = {
             const job = Object.keys(jobs).find((k) => jobs[k] === b[2]) ?? `job ${b[2]}`;
             const parts = [`${state} ${job}`];
             if (b[1] === 1) parts.push(b[3] === 11 ? `writing page ${b[46] || 32}/32` : `step ${b[3]}`);
+            if (b[1] === 5) parts.push(`power-cycle the module now (${b[46]} power-ups left)`);
             if (b[4]) parts.push(`error: ${errors[b[4]] ?? b[4]}` + (b[5] ? ` (SWD ${b[5]})` : ""));
             const w = (i) => b.readUInt32LE(i);
             if (w(8)) parts.push(`DPIDR ${hex(w(8))}`);

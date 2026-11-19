@@ -52,6 +52,9 @@ void app_init(void) {
     handle_version_changes();
     parse_config();      // Does most of the setup, including all callbacks
                          // registration
+#ifdef SECONDARY_MCU_IMAGE
+    mcu_flasher_early(); // an install armed for this power-up attaches now
+#endif
     tuya_mcu_app_init(); // secondary MCU devices only
     hal_zigbee_init_ota();
     init_global_attr_write_callback();

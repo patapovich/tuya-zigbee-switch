@@ -9,7 +9,9 @@
 
 #include "base_components/swd.h"
 #include "device_config/config_parser.h"
+#include "device_config/nvm_items.h"
 #include "hal/gpio.h"
+#include "hal/nvm.h"
 #include "hal/uart.h"
 #include "hal/timer.h"
 #include "zigbee/consts.h"
@@ -19,78 +21,100 @@
 
 /* The ZDMS16-2's PY32F002A as read with an external probe (the identity gate:
  * the plan's section 0 item 6). */
-#define PY32_DPIDR             0x0BC11477u
-#define PY32_AP_IDR            0x04770031u
-#define PY32_CPUID             0x410CC601u
-#define PY32_IDCODE            0x60001000u
-#define PY32_ROM_CRC           0xA52232EAu
+#define PY32_DPIDR               0x0BC11477u
+#define PY32_AP_IDR              0x04770031u
+#define PY32_CPUID               0x410CC601u
+#define PY32_IDCODE              0x60001000u
+#define PY32_ROM_CRC             0xA52232EAu
 
-#define ADDR_CPUID             0xE000ED00u
-#define ADDR_DBGMCU_IDCODE     0x40015800u
-#define ADDR_FLASH_OPTR        0x40022020u
-#define ADDR_FLASH_WRPR        0x4002202Cu
-#define ADDR_OPTION_AREA       0x1FFF0E80u
-#define ADDR_ROM               0x1FFF0000u
-#define ROM_WORDS              (0xE00u / 4u)
-#define ADDR_FLASH             0x08000000u
-#define SECTOR0_WORDS          (0x1000u / 4u)
-#define ADDR_BOOT_ID           0x08000010u
-#define ADDR_APP_HEADER        0x080010C0u
+#define ADDR_CPUID               0xE000ED00u
+#define ADDR_DBGMCU_IDCODE       0x40015800u
+#define ADDR_FLASH_OPTR          0x40022020u
+#define ADDR_FLASH_WRPR          0x4002202Cu
+#define ADDR_OPTION_AREA         0x1FFF0E80u
+#define ADDR_ROM                 0x1FFF0000u
+#define ROM_WORDS                (0xE00u / 4u)
+#define ADDR_FLASH               0x08000000u
+#define SECTOR0_WORDS            (0x1000u / 4u)
+#define ADDR_BOOT_ID             0x08000010u
+#define ADDR_APP_HEADER          0x080010C0u
 
 /* Core debug (ARMv6-M) */
-#define ADDR_DHCSR             0xE000EDF0u
-#define ADDR_DCRSR             0xE000EDF4u
-#define ADDR_DCRDR             0xE000EDF8u
-#define ADDR_DEMCR             0xE000EDFCu
-#define ADDR_AIRCR             0xE000ED0Cu
-#define DHCSR_KEY              0xA05F0000u
-#define DHCSR_C_DEBUGEN        0x00000001u
-#define DHCSR_S_REGRDY         0x00010000u
-#define DHCSR_S_HALT           0x00020000u
-#define AIRCR_SYSRESETREQ      0x05FA0004u
-#define DEMCR_VC_CORERESET     0x00000001u
-#define DCRSR_WRITE            0x00010000u
-#define REG_PC                 15u
-#define REG_XPSR               16u
-#define REG_MSP                17u
-#define XPSR_T                 0x01000000u
+#define ADDR_DHCSR               0xE000EDF0u
+#define ADDR_DCRSR               0xE000EDF4u
+#define ADDR_DCRDR               0xE000EDF8u
+#define ADDR_DEMCR               0xE000EDFCu
+#define ADDR_AIRCR               0xE000ED0Cu
+#define DHCSR_KEY                0xA05F0000u
+#define DHCSR_C_DEBUGEN          0x00000001u
+#define DHCSR_C_HALT             0x00000002u
+#define DHCSR_S_REGRDY           0x00010000u
+#define DHCSR_S_HALT             0x00020000u
+#define AIRCR_SYSRESETREQ        0x05FA0004u
+#define DEMCR_VC_CORERESET       0x00000001u
+#define DCRSR_WRITE              0x00010000u
+#define REG_PC                   15u
+#define REG_XPSR                 16u
+#define REG_MSP                  17u
+#define XPSR_T                   0x01000000u
 
 /* PY32F002A peripherals (py32f002ax5.h) */
-#define ADDR_RCC_ICSCR         0x40021004u
-#define ADDR_RCC_IOPENR        0x40021034u
-#define ADDR_RCC_APBENR1       0x4002103Cu
-#define RCC_APBENR1_DBGEN      0x08000000u
-#define ADDR_DBGMCU_APB_FZ1    0x40015808u
-#define DBGMCU_IWDG_STOP       0x00001000u
-#define ADDR_GPIOA_MODER       0x50000000u
-#define ADDR_GPIOA_BRR         0x50000028u
-#define ADDR_FLASH_KEYR        0x40022008u
-#define ADDR_FLASH_SR          0x40022010u
-#define ADDR_FLASH_CR          0x40022014u
-#define ADDR_FLASH_TS0         0x40022100u
-#define FLASH_KEY1             0x45670123u
-#define FLASH_KEY2             0xCDEF89ABu
-#define FLASH_CR_PG            0x00000001u
-#define FLASH_CR_PER           0x00000002u
-#define FLASH_CR_PGSTRT        0x00080000u
-#define FLASH_CR_LOCK          0x80000000u
-#define FLASH_SR_EOP           0x00000001u
-#define FLASH_SR_WRPERR        0x00000010u
-#define FLASH_SR_OPTVERR       0x00008000u
-#define FLASH_SR_BSY           0x00010000u
-#define FLASH_PAGE_WORDS       32u
-#define FLASH_PAGES_SECTOR0    32u
-#define FLASH_BUSY_POLLS       200u       /* SR reads: ~25 ms at 400 kHz, ~7 page erases */
-#define HALT_POLLS             50u
+#define ADDR_RCC_ICSCR           0x40021004u
+#define ADDR_RCC_IOPENR          0x40021034u
+#define ADDR_RCC_APBENR1         0x4002103Cu
+#define RCC_APBENR1_DBGEN        0x08000000u
+#define ADDR_DBGMCU_APB_FZ1      0x40015808u
+#define DBGMCU_IWDG_STOP         0x00001000u
+#define ADDR_GPIOA_MODER         0x50000000u
+#define ADDR_GPIOA_BRR           0x50000028u
+#define ADDR_FLASH_KEYR          0x40022008u
+#define ADDR_FLASH_OPTKEYR       0x4002200Cu
+#define ADDR_FLASH_SDKR          0x40022024u
+#define ADDR_FLASH_OB_TRIGGER    0x40022080u
+#define FLASH_OPTKEY1            0x08192A3Bu
+#define FLASH_OPTKEY2            0x4C5D6E7Fu
+#define FLASH_CR_OPTSTRT         0x00020000u
+#define FLASH_CR_EOPIE           0x01000000u
+#define FLASH_CR_OBL_LAUNCH      0x08000000u
+#define FLASH_CR_OPTLOCK         0x40000000u
+
+/* Open Dimmer's option bytes, the only ones this ever writes: RDP level 0,
+ * user byte 0xF9 (brown-out reset at 2.5 V, NRST a GPIO, software watchdogs),
+ * no SDK area, no write protection. Never 0xCC (level 2: permanent) and never
+ * user byte 0 (hardware watchdogs): both checked at compile time. */
+#define OB_OPTR                  0x0000F9AAu
+#define OB_SDKR                  0x000000FFu
+#define OB_WRPR                  0x0000FFFFu
+typedef char   ob_optr_is_level_0[((OB_OPTR & 0xFFu) == 0xAAu) ? 1 : -1];
+typedef char   ob_user_byte_is_open_dimmers[(((OB_OPTR >> 8) & 0xFFu) == 0xF9u) ? 1 : -1];
+#define OB_PROGRAM_MS            2000u
+#define REATTACH_MS              2000u
+#define ADDR_FLASH_SR            0x40022010u
+#define ADDR_FLASH_CR            0x40022014u
+#define ADDR_FLASH_TS0           0x40022100u
+#define FLASH_KEY1               0x45670123u
+#define FLASH_KEY2               0xCDEF89ABu
+#define FLASH_CR_PG              0x00000001u
+#define FLASH_CR_PER             0x00000002u
+#define FLASH_CR_PGSTRT          0x00080000u
+#define FLASH_CR_LOCK            0x80000000u
+#define FLASH_SR_EOP             0x00000001u
+#define FLASH_SR_WRPERR          0x00000010u
+#define FLASH_SR_OPTVERR         0x00008000u
+#define FLASH_SR_BSY             0x00010000u
+#define FLASH_PAGE_WORDS         32u
+#define FLASH_PAGES_SECTOR0      32u
+#define FLASH_BUSY_POLLS         200u     /* SR reads: ~25 ms at 400 kHz, ~7 page erases */
+#define HALT_POLLS               50u
 
 /* The mailbox's boot word and its complement (zdms16-py32 docs/BOOTLOADER.md
  * section 3): written 0 before every reset this issues, as tools/swd/install.sh
  * does, so the bootloader starts with fresh tries. */
-#define ADDR_BOOT_WORD         0x20000BF8u
-#define ADDR_BOOT_WORD_INV     0x20000BFCu
+#define ADDR_BOOT_WORD           0x20000BF8u
+#define ADDR_BOOT_WORD_INV       0x20000BFCu
 
-#define BOOT_ID_MAGIC          0x4C42444Fu /* "ODBL" */
-#define APP_MAGIC              0x5A445041u /* "APDZ" */
+#define BOOT_ID_MAGIC            0x4C42444Fu /* "ODBL" */
+#define APP_MAGIC                0x5A445041u /* "APDZ" */
 
 /* One frame per read response or report: the Telink gcc has no _Static_assert. */
 typedef char mcu_flasher_status_fits_one_frame[
@@ -118,7 +142,28 @@ enum {
     STEP_PROGRAM,
     STEP_VERIFY,
     STEP_RUN,
+    /* install: halt at once, then (after the identity and ROM) */
+    STEP_STOP,
+    STEP_OB,
+    STEP_OB_WAIT,
+    STEP_OB_CHECK,
+    STEP_RELOAD,
+    STEP_REATTACH,
 };
+
+/* An install armed in NV (NV_ITEM_MCU_FLASHER_JOB): attach at the next
+ * power-ups, before (PHASE_ARMED) or after (PHASE_OB_WRITTEN) the option
+ * bytes were written. */
+#define ARMED_MAGIC         0xA7u
+#define PHASE_ARMED         1u
+#define PHASE_OB_WRITTEN    2u
+#define ARMED_BOOTS         3u
+typedef struct {
+    uint8_t magic;
+    uint8_t phase;
+    uint8_t boots_left;
+    uint8_t reserved;
+} armed_t;
 
 extern hal_uart_config_t mcu_uart_config; /* config_parser.c: the W token */
 
@@ -135,6 +180,7 @@ static uint32_t       g_last_report;
 static uint8_t        g_page;      /* STEP_PROGRAM: next page, 1..31 then 0 */
 static uint8_t        g_rewrites;  /* STEP_VERIFY: sector 0 written again */
 static uint32_t       g_confirm_at;
+static uint32_t       g_step_at;   /* when the current wait step began */
 
 /* Confirm attribute (Basic 0xff52, char string): a writing job's own name. */
 static struct __attribute__((packed)) {
@@ -218,6 +264,9 @@ static void finish(uint8_t state, uint8_t error, swd_err_t swd_err) {
     g_status.swd_err     = (uint8_t)swd_err;
     g_status.duration_ms = sat16(hal_millis() - g_started);
     report();
+    if (g_status.job == MCU_FLASHER_JOB_INSTALL) {
+        hal_nvm_delete(NV_ITEM_MCU_FLASHER_JOB);   /* ended either way */
+    }
     if (g_status.step == STEP_RUN && state == MCU_FLASHER_STATE_DONE) {
         tuya_mcu_app_mcu_restarted(); /* its next query is a first contact */
     }
@@ -228,11 +277,27 @@ static uint8_t is_update(void) {
            g_status.job == MCU_FLASHER_JOB_UPDATE_FORCE;
 }
 
+static uint8_t is_install(void) {
+    return g_status.job == MCU_FLASHER_JOB_INSTALL;
+}
+
+/* Wait for the next power-up: the pins are released, the job is kept in NV. */
+static void arm(uint8_t phase, uint8_t boots_left) {
+    armed_t a = { ARMED_MAGIC, phase, boots_left, 0 };
+
+    hal_nvm_write(NV_ITEM_MCU_FLASHER_JOB, sizeof(a), (uint8_t *)&a);
+    swd_end();
+    g_status.state       = MCU_FLASHER_STATE_ARMED;
+    g_status.page        = boots_left;     /* shown as the power-ups left */
+    g_status.duration_ms = sat16(hal_millis() - g_started);
+    report();
+}
+
 /* The confirm text names this job and was written in the last minute; used
  * up either way. */
 static uint8_t confirmed(uint8_t job) {
     const char *name = job == MCU_FLASHER_JOB_UPDATE_FORCE ? "update_bootloader_force" :
-                       "update_bootloader";
+                       job == MCU_FLASHER_JOB_INSTALL ? "install" : "update_bootloader";
     uint8_t n  = (uint8_t)strlen(name);
     uint8_t ok = g_confirm.len == n && memcmp(g_confirm.text, name, n) == 0 &&
                  hal_millis() - g_confirm_at <= CONFIRM_MS;
@@ -257,18 +322,31 @@ void mcu_flasher_on_write(uint16_t attribute_id) {
     g_control = 0;
     if (job == MCU_FLASHER_JOB_ABORT) {
         g_abort = g_status.state == MCU_FLASHER_STATE_RUNNING;
+        if (g_status.state == MCU_FLASHER_STATE_ARMED) {
+            hal_nvm_delete(NV_ITEM_MCU_FLASHER_JOB);
+            g_status.state = MCU_FLASHER_STATE_ABORTED;
+            report();
+        }
         return;
     }
     if (g_status.state == MCU_FLASHER_STATE_RUNNING) {
         return; /* one job at a time; the running one is not disturbed */
     }
-    if (job < MCU_FLASHER_JOB_SURVEY_DP || job > MCU_FLASHER_JOB_UPDATE_FORCE) {
+    if (job < MCU_FLASHER_JOB_SURVEY_DP || job > MCU_FLASHER_JOB_INSTALL) {
         g_status.error = MCU_FLASHER_ERR_BAD_JOB;
         report();
         return;
     }
     if (job >= MCU_FLASHER_JOB_UPDATE_BOOT && !confirmed(job)) {
         g_status.error = MCU_FLASHER_ERR_NOT_CONFIRMED;
+        report();
+        return;
+    }
+
+    /* install: only an MCU that told a factory version (1.x) on the UART in
+     * this run; a silent one is refused too */
+    if (job == MCU_FLASHER_JOB_INSTALL && !tuya_mcu_app_mcu_is_stock()) {
+        g_status.error = MCU_FLASHER_ERR_WRONG_CLASS;
         report();
         return;
     }
@@ -522,6 +600,99 @@ static swd_err_t run_new(uint8_t *halted) {
     return err;
 }
 
+/* ---- install (a factory MCU, read-protected) ------------------------------ */
+
+/* Stop the core where it is (the factory firmware may be in its start-up
+ * delay), then the gates low and the watchdog frozen. Under read protection
+ * the core must not run on with a debugger attached. */
+static swd_err_t halt_now(uint8_t *halted) {
+    uint32_t  dhcsr = 0;
+    swd_err_t err   = swd_mem_write32(ADDR_DHCSR, DHCSR_KEY | DHCSR_C_DEBUGEN | DHCSR_C_HALT);
+
+    for (uint8_t i = 0; err == SWD_OK && !(dhcsr & DHCSR_S_HALT) && i < HALT_POLLS; i++) {
+        err = swd_mem_read32(ADDR_DHCSR, &dhcsr);
+    }
+    *halted = (dhcsr & DHCSR_S_HALT) != 0;
+    if (err == SWD_OK && *halted) {
+        err = gates_low();
+    }
+    return err;
+}
+
+/* HAL_FLASH_OBProgram: both locks open, the three registers staged, OPTSTRT,
+ * the trigger write. Only the constants OB_*: nothing read from the target goes
+ * into them. */
+static swd_err_t ob_program(uint8_t *started) {
+    static const uint32_t staged[3][2] = {
+        { ADDR_FLASH_WRPR, OB_WRPR }, { ADDR_FLASH_SDKR, OB_SDKR }, { ADDR_FLASH_OPTR, OB_OPTR },
+    };
+    uint32_t  cr = FLASH_CR_OPTLOCK;
+    uint8_t   unlocked;
+    swd_err_t err = flash_unlock(&unlocked);
+
+    *started = 0;
+    if (err != SWD_OK || !unlocked) {
+        return err;
+    }
+    err = swd_mem_write32(ADDR_FLASH_OPTKEYR, FLASH_OPTKEY1);
+    if (err == SWD_OK) err = swd_mem_write32(ADDR_FLASH_OPTKEYR, FLASH_OPTKEY2);
+    if (err == SWD_OK) err = swd_mem_read32(ADDR_FLASH_CR, &cr);
+    if (err != SWD_OK || (cr & FLASH_CR_OPTLOCK)) {
+        return err;
+    }
+    for (uint8_t i = 0; err == SWD_OK && i < 3; i++) {
+        err = swd_mem_write32(staged[i][0], staged[i][1]);
+    }
+    if (err == SWD_OK) err = swd_mem_write32(ADDR_FLASH_CR, FLASH_CR_OPTSTRT | FLASH_CR_EOPIE);
+    if (err == SWD_OK) err = swd_mem_write32(ADDR_FLASH_OB_TRIGGER, 0xFFu);
+    *started = err == SWD_OK;
+    return err;
+}
+
+/* The stored option bytes as ob_program writes them (zdms16-py32
+ * tools/swd/ob_bor25.bin: aa f9 55 06 ff 00 00 ff ff ff ff ff ff ff 00 00). */
+static const uint32_t k_option_area[4] = { 0x0655F9AAu, 0xFF0000FFu, 0xFFFFFFFFu, 0x0000FFFFu };
+
+/* The armed install of this power-up: attach before the factory firmware
+ * takes the SWD pins, halt; the rest runs from the main loop. */
+void mcu_flasher_early(void) {
+    armed_t a;
+
+    if (!g_enabled || hal_nvm_read(NV_ITEM_MCU_FLASHER_JOB, sizeof(a),
+                                   (uint8_t *)&a) != HAL_NVM_SUCCESS ||
+        a.magic != ARMED_MAGIC) {
+        return;
+    }
+    g_status.state = MCU_FLASHER_STATE_RUNNING;
+    g_status.job   = MCU_FLASHER_JOB_INSTALL;
+    g_status.step  = STEP_BEGIN;
+    g_started      = hal_millis();
+    if (a.boots_left == 0) {
+        finish(MCU_FLASHER_STATE_FAILED, MCU_FLASHER_ERR_NO_ATTACH, SWD_OK);
+        return;
+    }
+    a.boots_left--;
+    hal_nvm_write(NV_ITEM_MCU_FLASHER_JOB, sizeof(a), (uint8_t *)&a);
+    if (a.phase == PHASE_OB_WRITTEN) {
+        /* the flash is blank by now: nothing takes the pins, no hurry */
+        g_step_at     = hal_millis();
+        g_status.step = STEP_REATTACH;
+        return;
+    }
+    uint32_t dpidr  = 0;
+    uint8_t  halted = 0;
+
+    if (swd_begin(g_clk, g_dio) == SWD_OK && swd_connect(&dpidr) == SWD_OK && dpidr == PY32_DPIDR &&
+        swd_power_up() == SWD_OK && halt_now(&halted) == SWD_OK && halted) {
+        g_status.dpidr = dpidr;
+        next_step(STEP_IDENTITY);
+        return;
+    }
+    swd_end();
+    g_status.state = MCU_FLASHER_STATE_ARMED;
+    g_status.page  = a.boots_left;
+}
+
 void mcu_flasher_task(void) {
     if (!g_enabled || g_status.state != MCU_FLASHER_STATE_RUNNING) {
         return;
@@ -538,7 +709,11 @@ void mcu_flasher_task(void) {
     switch (g_status.step) {
     case STEP_BEGIN:
         if (swd_begin(g_clk, g_dio) != SWD_OK) {
-            finish(MCU_FLASHER_STATE_FAILED, MCU_FLASHER_ERR_PINS_DRIVEN, SWD_ERR_PINS);
+            if (is_install()) {
+                arm(PHASE_ARMED, ARMED_BOOTS);   /* the factory firmware holds the pins */
+            } else {
+                finish(MCU_FLASHER_STATE_FAILED, MCU_FLASHER_ERR_PINS_DRIVEN, SWD_ERR_PINS);
+            }
             return;
         }
         next_step(STEP_CONNECT);
@@ -565,9 +740,23 @@ void mcu_flasher_task(void) {
     case STEP_POWER:
         err = swd_power_up();
         if (err == SWD_OK) {
+            next_step(is_install() ? STEP_STOP : STEP_IDENTITY);
+        }
+        break;
+
+    case STEP_STOP: {
+        uint8_t halted;
+
+        err = halt_now(&halted);
+        if (err == SWD_OK && !halted) {
+            fail = MCU_FLASHER_ERR_HALT;
+            break;
+        }
+        if (err == SWD_OK) {
             next_step(STEP_IDENTITY);
         }
         break;
+    }
 
     case STEP_IDENTITY:
         err = identity();
@@ -581,6 +770,17 @@ void mcu_flasher_task(void) {
             /* A writing job: RDP level 0, user byte 0xF0 (factory) or 0xF9 (Open
              * Dimmer), sector 0 not write-protected. */
             uint8_t user = (uint8_t)(g_status.optr >> 8);
+            /* install: a factory MCU, read-protected (level 1) */
+            if (is_install() &&
+                ((uint8_t)g_status.optr == 0xAA || (uint8_t)g_status.optr == 0xCC)) {
+                fail = (uint8_t)g_status.optr ==
+                       0xAA ? MCU_FLASHER_ERR_WRONG_CLASS : MCU_FLASHER_ERR_PROTECTED;
+                break;
+            }
+            if (is_install() && user != 0xF0 && user != 0xF9) {
+                fail = MCU_FLASHER_ERR_PROTECTED;
+                break;
+            }
             if (is_update() && ((uint8_t)g_status.optr != 0xAA || (user != 0xF0 && user != 0xF9) ||
                                 !(g_status.wrpr & 1u))) {
                 fail = MCU_FLASHER_ERR_PROTECTED;
@@ -598,8 +798,14 @@ void mcu_flasher_task(void) {
 
         err = crc_slice(rom ? ADDR_ROM : ADDR_FLASH, rom ? ROM_WORDS : SECTOR0_WORDS,
                         rom ? STATUS_AT(rom_crc) : STATUS_AT(sector0_crc), &complete);
-        if (err == SWD_OK && complete && rom && is_update() && g_status.rom_crc != PY32_ROM_CRC) {
+        if (err == SWD_OK && complete && rom && (is_update() || is_install()) &&
+            g_status.rom_crc != PY32_ROM_CRC) {
             fail = MCU_FLASHER_ERR_WRONG_TARGET;
+            break;
+        }
+        if (err == SWD_OK && complete && rom && is_install()) {
+            g_rewrites = 0;
+            next_step(STEP_OB);
             break;
         }
         if (err == SWD_OK && complete && !rom && is_update()) {
@@ -745,6 +951,97 @@ void mcu_flasher_task(void) {
         }
         break;
 
+    case STEP_OB: {
+        uint8_t started;
+
+        err = ob_program(&started);
+        if (err == SWD_OK && !started) {
+            fail = MCU_FLASHER_ERR_FLASH;
+            break;
+        }
+        if (err == SWD_OK) {
+            g_step_at = hal_millis();
+            next_step(STEP_OB_WAIT);
+        }
+        break;
+    }
+
+    case STEP_OB_WAIT: {
+        uint32_t sr = 0;
+
+        /* one SR read a pass: the reprogramming (and the mass erase that
+         * the protection change brings) may take a while */
+        err = swd_mem_read32(ADDR_FLASH_SR, &sr);
+        if (err != SWD_OK) {
+            break;
+        }
+        if (sr & FLASH_SR_BSY) {
+            if (hal_millis() - g_step_at > OB_PROGRAM_MS) {
+                fail = MCU_FLASHER_ERR_FLASH;
+            }
+            break;
+        }
+        err = swd_mem_write32(ADDR_FLASH_SR, FLASH_SR_EOP | FLASH_SR_WRPERR | FLASH_SR_OPTVERR);
+        if (err == SWD_OK) {
+            err = swd_mem_write32(ADDR_FLASH_CR, 0);
+        }
+        if (err == SWD_OK && (sr & FLASH_SR_WRPERR)) {
+            fail = MCU_FLASHER_ERR_FLASH;
+            break;
+        }
+        if (err == SWD_OK) {
+            next_step(STEP_OB_CHECK);
+        }
+        break;
+    }
+
+    case STEP_OB_CHECK:
+        /* the stored option bytes read back before the reload: a wrong one is
+         * never loaded (written again, twice at most) */
+        err = swd_mem_read_block(ADDR_OPTION_AREA, word, 4);
+        if (err == SWD_OK) {
+            if (memcmp(word, k_option_area, sizeof(k_option_area)) == 0) {
+                next_step(STEP_RELOAD);
+            } else if (g_rewrites++ < 2) {
+                next_step(STEP_OB);
+            } else {
+                fail = MCU_FLASHER_ERR_OB_VERIFY;
+            }
+        }
+        break;
+
+    case STEP_RELOAD: {
+        armed_t a = { ARMED_MAGIC, PHASE_OB_WRITTEN, ARMED_BOOTS, 0 };
+
+        /* if the link does not come back, the next power-up loads them */
+        hal_nvm_write(NV_ITEM_MCU_FLASHER_JOB, sizeof(a), (uint8_t *)&a);
+        swd_mem_write32(ADDR_FLASH_CR, FLASH_CR_OBL_LAUNCH);   /* resets: the link drops */
+        g_step_at = hal_millis();
+        next_step(STEP_REATTACH);
+        break;
+    }
+
+    case STEP_REATTACH:
+        /* reconnect every pass for a while; then RDP 0 with Open Dimmer's
+         * option bytes and an erased flash, or the job stops */
+        if (swd_connect(&word[0]) == SWD_OK && swd_power_up() == SWD_OK &&
+            swd_mem_read32(ADDR_FLASH_OPTR, &word[1]) == SWD_OK &&
+            swd_mem_read32(ADDR_FLASH_WRPR, &word[2]) == SWD_OK &&
+            swd_mem_read32(ADDR_FLASH, &word[3]) == SWD_OK) {
+            g_status.optr = word[1];
+            g_status.wrpr = (uint16_t)word[2];
+            if ((word[1] & 0xFFFFu) != (OB_OPTR & 0xFFFFu) || (word[2] & 0xFFFFu) != OB_WRPR ||
+                word[3] != 0xFFFFFFFFu) {
+                fail = MCU_FLASHER_ERR_RELOAD;
+                break;
+            }
+            next_step(STEP_HALT);               /* the bootloader as update_bootloader writes it */
+        } else if (hal_millis() - g_step_at > REATTACH_MS) {
+            arm(PHASE_OB_WRITTEN, ARMED_BOOTS); /* power-cycle the module */
+            return;
+        }
+        break;
+
     default:
         finish(MCU_FLASHER_STATE_DONE, MCU_FLASHER_ERR_NONE, SWD_OK);
         return;
@@ -757,6 +1054,10 @@ void mcu_flasher_task(void) {
     if (err != SWD_OK) {
         /* A failed transfer: line reset and the step again, a few times. */
         if (++g_tries >= TRIES_PER_STEP) {
+            if (is_install() && g_status.step <= STEP_POWER) {
+                arm(PHASE_ARMED, ARMED_BOOTS);   /* no attach now: at the next power-up */
+                return;
+            }
             finish(MCU_FLASHER_STATE_FAILED,
                    err == SWD_ERR_NO_TARGET ? MCU_FLASHER_ERR_NO_TARGET : MCU_FLASHER_ERR_SWD,
                    err);

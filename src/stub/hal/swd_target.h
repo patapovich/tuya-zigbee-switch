@@ -95,13 +95,23 @@
  *   0x40022008 FLASH KEYR (write only): 0x45670123 then 0xCDEF89AB clears
  *              CR.LOCK; any other write while locked locks it out until a
  *              reset; ignored while unlocked
+ *   0x4002200C FLASH OPTKEYR (write only): with CR.LOCK clear, 0x08192A3B
+ *              then 0x4C5D6E7F clears CR.OPTLOCK; a wrong key keeps it until
+ *              a reset; ignored while LOCK or with OPTLOCK clear
  *   0x40022010 FLASH SR: EOP b0, WRPERR b4, OPTVERR b15 (write 1 to clear),
  *              BSY b16
  *   0x40022014 FLASH CR (reset 0xC0000000; writes ignored while LOCK): PG b0,
  *              PER b1, SER b11, OPTSTRT b17, PGSTRT b19, EOPIE b24,
- *              OBL_LAUNCH b27, OPTLOCK b30 (stays 1: no OPTKEYR), LOCK b31
+ *              OBL_LAUNCH b27, OPTLOCK b30 (set by writing 1, cleared only by
+ *              OPTKEYR; while set OPTSTRT and OBL_LAUNCH are not taken), LOCK
+ *              b31. OBL_LAUNCH written 1: an option byte load (below)
  *   0x40022020 OPTR 0x0000F9AA (RDP 1: 0x0000F955), +24 SDKR 0x1F, +2C WRPR
- *              0xFFFF (bit k 0 = 4 KB sector k protected): AP writes ignored
+ *              0xFFFF (bit k 0 = 4 KB sector k protected): reads give the
+ *              loaded values; with LOCK and OPTLOCK clear a write stages a
+ *              value for OPTSTRT (staged = loaded after every load or system
+ *              reset). Every write of an RDP byte 0xCC counts rdp2_written
+ *   0x40022080 option program trigger (write only): a word write with
+ *              CR.OPTSTRT set programs the option area (below)
  *   0x40022100-0x40022120 flash timing TS0..PRETPE (r/w, reset 0; timing_set
  *              once all nine were written since the last reset)
  *   0x50000000 GPIOA, bus error without RCC_IOPENR.GPIOAEN: MODER +0
@@ -121,6 +131,26 @@
  * Clearing CR.PG drops a partial buffer. An operation keeps SR.BSY for
  * `busy_reads` (default 2) AP reads of SR, then takes effect and sets EOP.
  *
+ * Option bytes. Programming (CR.OPTSTRT, then a write to 0x40022080; OPTSTRT
+ * clears): the option area gets bytes 0-1 OPTR[15:0], 2-3 its complement,
+ * 4-5 SDKR[15:0], 6-7 complement, 8-11 0xFF, 12-13 WRPR[15:0], 14-15
+ * complement, after SR.BSY for `busy_reads_ob` (default 5) reads of SR; then
+ * EOP. A staged RDP byte 0xCC: WRPERR, nothing programmed. If the stored RDP
+ * byte goes from not 0xAA to 0xAA, the whole main flash is erased to 0xFF at
+ * that moment (the end of BSY; the real chip's timing is unknown). While BSY,
+ * DRW accesses to the flash and the option area answer WAIT. The loaded
+ * registers change only at a load: power-on, or OBL_LAUNCH = a system reset
+ * that loads them and drops the SWD link (DP locked out until a line reset,
+ * sticky flags cleared; power-up, SELECT, AP and debug registers kept). A load
+ * checks each pair against its complement; a mismatch sets SR.OPTVERR and
+ * loads OPTR 0x0000FFFF (RDP level 1, user byte 0xFF), SDKR 0x1F, WRPR 0xFFFF
+ * for that pair. RDP level = loaded OPTR[7:0] != 0xAA.
+ *
+ * RDP level 1: flash reads / writes through the AP are bus errors; and while
+ * the debug domain is powered (CDBGPWRUPACK) a running core loses its flash
+ * and locks up (as an STM32 with a debugger attached); a halted core stays
+ * halted (a resume then locks up).
+ *
  * Firmware: the core runs it after a reset that no debugger holds; the model
  * only decides running or lockup from the vectors: MSP (word 0) 4-aligned in
  * 0x20000000..0x20000C00, the reset vector (word 1) odd, inside the flash,
@@ -128,12 +158,34 @@
  * running (the Open Dimmer app, not in the model's flash: PC 0x08001000, MSP
  * 0x20000C00, xPSR 0x01000000).
  *
+ * Presets (the start, `reset`, `preset`): open_dimmer as above; stock = a
+ * factory unit: the flash holds a stock image (bytes (i * 131 + 7) & 0xFF in
+ * 0x08000000-0x08001FFF, MSP 0x20000C00, reset vector 0x080000C1), option
+ * area 00 f0 ff 0f ff 00 00 ff ff ff ff ff ff ff 00 00 (OPTR 0x0000F000, RDP
+ * level 1), core running it. With stock_pins_ms n (0 = never), a stock
+ * firmware that has run without a halt or lockup for n ms of stub time
+ * (hal_millis) since its power-up takes PA13 / PA14: SWCLK held low (the idle
+ * check reads 0, host SWCLK drives count contention) and the DP never answers,
+ * until a power cycle. The stock firmware is gone once the flash controller
+ * erases or programs any of the flash (the backdoor does not count).
+ *
+ * Environment (read at the start, src/stub/main.c, before the app runs):
+ * SWD_TARGET_PRESET=stock|open_dimmer (default open_dimmer),
+ * SWD_TARGET_STOCK_PINS_MS=<ms>, SWD_TARGET_FLASH=<file> (raw, at 0x08000000;
+ * the core then takes its vectors), SWD_TARGET_STATE=<file>: the whole target
+ * (memories, option area and loaded registers, DP, core, the time since its
+ * power-up, stats; not the logs) is loaded from it at the start, over the
+ * preset, if it is a state of this build, and saved at the exit, on `q` and on
+ * `swd_target save`. SWD_TARGET_STOCK_PINS_MS still applies over a loaded
+ * state. SWD_TARGET_POWER_CYCLE=1: a power cycle at the start (after the load).
+ * `reset` starts from the environment's preset again (not the state file).
+ *
  * Power cycle (`power_cycle`, or `cut_after n`: the power goes after the nth
  * further SWD transfer that got an ACK): a busy flash operation leaves its
- * page / sector as old AND 0xA5A5A5A5; SRAM gets a pattern (word at offset o
- * = 0xDEADBEEF ^ o); the DP is reset (CTRL/STAT 0, locked out until a line
- * reset), AP, debug registers, DBGMCU and peripherals reset, option bytes
- * loaded, then the firmware runs. */
+ * page / sector / option area as old AND 0xA5A5A5A5; SRAM gets a pattern
+ * (word at offset o = 0xDEADBEEF ^ o); the DP is reset (CTRL/STAT 0, locked
+ * out until a line reset), AP, debug registers, DBGMCU and peripherals reset,
+ * option bytes loaded, then the firmware runs. */
 
 /* The host side of the wire (src/stub/hal/swd_io.c). */
 void    swd_target_host_clk(uint8_t driven, uint8_t level);
@@ -154,6 +206,17 @@ void swd_target_set_clk_held_low(uint8_t on);
 void swd_target_set_rdp(uint8_t level);
 void swd_target_set_wait_ap(uint32_t count);
 void swd_target_set_busy_reads(uint32_t reads);
+void swd_target_set_busy_reads_ob(uint32_t reads);
+void swd_target_set_stock_pins_ms(uint32_t ms);
+
+/* reset with the given preset ("stock", "open_dimmer"); -1 = unknown */
+int  swd_target_preset(const char *name);
+
+/* Start from the environment now (src/stub/main.c, before the app starts). */
+void swd_target_start(void);
+
+/* Save to SWD_TARGET_STATE; -1 = not set or not written. */
+int  swd_target_save(void);
 
 /* 0 = no cut. */
 void swd_target_set_cut_after(uint32_t transfers);
@@ -177,11 +240,15 @@ typedef struct {
     uint32_t jtag_to_swd;
     uint32_t sys_resets;
     uint32_t untaken_ops;
-    uint32_t edges;         /* rising SWCLK edges the target saw */
-    uint32_t erases;        /* page and sector erases started */
-    uint32_t programs;      /* page programs started */
-    uint32_t wrperr;        /* operations refused with WRPERR */
+    uint32_t edges;           /* rising SWCLK edges the target saw */
+    uint32_t erases;          /* page and sector erases started */
+    uint32_t programs;        /* page programs started */
+    uint32_t wrperr;          /* operations refused with WRPERR */
     uint32_t power_cycles;
+    uint32_t rdp2_written;    /* writes of RDP 0xCC (OPTR, option area) */
+    uint32_t obl_launches;
+    uint32_t option_programs; /* option area programs started */
+    uint32_t mass_erases;     /* RDP 1 -> 0 */
 } swd_target_stats_t;
 
 typedef struct {
@@ -196,6 +263,14 @@ typedef struct {
     uint8_t     key_lockout;  /* a wrong KEYR write: locked until a reset */
     uint8_t     flash_busy;   /* SR.BSY */
     uint8_t     swd_lost;     /* PA13 / PA14 taken out of SWD */
+    const char *preset;       /* "stock", "open_dimmer" */
+    uint8_t     rdp;          /* loaded RDP level: 0, 1 */
+    uint8_t     optlock;      /* FLASH CR.OPTLOCK */
+    uint8_t     optkey_lockout;
+    uint8_t     stock_fw;     /* the flash still holds the stock firmware */
+    uint8_t     pins_taken;   /* the stock firmware took PA13 / PA14 */
+    uint32_t    stock_pins_ms;
+    uint32_t    uptime_ms;    /* since the target's last power-up */
 } swd_target_state_t;
 
 void     swd_target_get_stats(swd_target_stats_t *out);
@@ -211,7 +286,8 @@ void     swd_target_write_at(uint32_t index, uint32_t *addr, uint32_t *value);
 
 /* Flash operation log, oldest first: erase_page, erase_sector, program (page
  * address), wrperr (the address of the refused write or operation), garbage
- * (a power cut during an operation; its page / sector). */
+ * (a power cut during an operation; its page / sector / option area),
+ * program_options (0x1FFF0E80), mass_erase (0x08000000). */
 uint32_t swd_target_flash_log_count(void);
 uint32_t swd_target_flash_log_dropped(void);
 void     swd_target_flash_log_at(uint32_t index, const char **op, uint32_t *addr);

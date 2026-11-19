@@ -378,3 +378,131 @@ def test_a_power_cut_while_writing_is_repaired_by_running_it_again(flasher, tmp_
     target(proc, "power_cycle")          # the mains comes back: page 0 is blank
     assert target(proc, "stats")["core"] == "lockup"
     check_written(proc, run_update(proc, device))
+
+
+# ---- install: a factory MCU (read-protected) to Open Dimmer (phase 4) ------------------------
+
+from test_dimmer_mcu import tuya_frame  # noqa: E402
+
+JOB_INSTALL = 5
+STATE_ARMED = 5
+ERR_WRONG_CLASS, ERR_OB_VERIFY, ERR_NO_ATTACH, ERR_RELOAD = 12, 13, 14, 15
+OB_OPEN_DIMMER = bytes.fromhex("aaf95506ff0000ffffffffffffff0000")
+
+
+def mcu_tells(proc: StubProc, version: int = 0x47) -> None:
+    """The MCU answers the version query on the UART (0x47: the factory 1.0.7)."""
+    proc.exec(f"uart_rx {tuya_frame(0x0B, bytes([version]))}")
+    for _ in range(4):
+        proc.exec("s")
+
+
+def run_install(proc, device) -> dict:
+    confirm(device, "install")
+    start_job(device, JOB_INSTALL)
+    return run_until_settled(proc, device, passes=4000)
+
+
+def check_installed(proc, st):
+    boot = carried_boot()
+    assert (st["state"], st["error"]) == (STATE_DONE, ERR_NONE), st
+    assert st["sector0_crc"] == crc(sector(boot)) and st["boot_version"] == boot[0x14]
+    stats = target(proc, "stats")
+    assert stats["rdp2_written"] == "0"                     # never level 2
+    assert int(stats["mass_erases"]) == 1 and int(stats["obl_launches"]) >= 1
+    assert stats["core"] == "running" and int(stats["contention"]) == 0
+    assert flash_read(proc, 0x1FFF0E80, 4) == OB_OPEN_DIMMER  # Open Dimmer's option bytes
+    assert flash_read(proc, 0x08000000, 0x400) == sector(boot)
+    assert int(target(proc, "peek32", "0x40022020")["value"], 16) & 0xFFFF == 0xF9AA   # loaded
+    assert flash_read(proc, 0x08001000, 4) == b"\xFF" * 16   # no app: the bootloader fetches it
+
+
+@pytest.fixture
+def stock(monkeypatch, tmp_path):
+    monkeypatch.setenv("SWD_TARGET_PRESET", "stock")
+    monkeypatch.setenv("SWD_TARGET_STATE", str(tmp_path / "py32.state"))
+    return tmp_path
+
+
+def test_install_needs_a_factory_version_on_the_uart():
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        confirm(device, "install")
+        start_job(device, JOB_INSTALL)
+        st = status(device)
+        assert (st["state"], st["error"]) == (STATE_IDLE, ERR_WRONG_CLASS)
+        assert int(target(proc, "stats")["line_resets"]) == 0
+
+
+def test_install_refuses_an_unprotected_mcu():
+    """An MCU that tells 1.x but is not read-protected is not a factory one: nothing written."""
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        mcu_tells(proc)
+        st = run_install(proc, device)
+        assert (st["state"], st["error"]) == (STATE_FAILED, ERR_WRONG_CLASS)
+        stats = target(proc, "stats")
+        assert stats["option_programs"] == "0" and int(stats["erases"]) == 0
+
+
+def test_install_at_once_when_the_factory_firmware_leaves_the_pins(stock, monkeypatch):
+    monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "0")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        mcu_tells(proc)
+        check_installed(proc, run_install(proc, device))
+        assert int(target(proc, "stats")["power_cycles"]) == 0      # no power cycle needed
+    with StubProc(device_config=WITH_TOKEN) as proc:                # the job is gone from NV
+        assert status(Device(proc))["state"] == STATE_IDLE
+
+
+def test_install_armed_attaches_at_the_next_power_up(stock, monkeypatch):
+    monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "1500")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        proc.exec("step_time 2000")                  # the factory firmware has the pins now
+        mcu_tells(proc)
+        st = run_install(proc, device)
+        assert (st["state"], st["page"]) == (STATE_ARMED, 3)   # power-cycle the module now
+        assert target(proc, "stats")["pins_taken"] == "1"
+        assert int(target(proc, "stats")["contention"]) == 0
+    monkeypatch.setenv("SWD_TARGET_POWER_CYCLE", "1")
+    with StubProc(device_config=WITH_TOKEN) as proc:  # mains off and on: both start again
+        device = Device(proc)
+        assert target(proc, "stats")["pins_taken"] == "0"     # the early hook halted it in time
+        proc.exec("step_time 5000")
+        check_installed(proc, run_until_settled(proc, device, passes=4000))
+
+
+def test_an_install_that_never_attaches_gives_up(stock, monkeypatch):
+    monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "1500")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        proc.exec("step_time 2000")
+        mcu_tells(proc)
+        assert run_install(proc, device)["state"] == STATE_ARMED
+        target(proc, "connect", 0)                   # the wires come off
+    monkeypatch.setenv("SWD_TARGET_POWER_CYCLE", "1")
+    for left in (2, 1, 0):
+        with StubProc(device_config=WITH_TOKEN) as proc:
+            st = status(Device(proc))
+            assert (st["state"], st["page"]) == (STATE_ARMED, left)
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        st = status(Device(proc))
+        assert (st["state"], st["error"]) == (STATE_FAILED, ERR_NO_ATTACH)
+        assert target(proc, "stats")["option_programs"] == "0"
+
+
+def test_abort_disarms_an_armed_install(stock, monkeypatch):
+    monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "1500")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        proc.exec("step_time 2000")
+        mcu_tells(proc)
+        assert run_install(proc, device)["state"] == STATE_ARMED
+        start_job(device, JOB_ABORT)
+        assert status(device)["state"] == STATE_ABORTED
+    monkeypatch.setenv("SWD_TARGET_POWER_CYCLE", "1")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        assert status(Device(proc))["state"] == STATE_IDLE
+        assert target(proc, "stats")["pins_taken"] == "0"

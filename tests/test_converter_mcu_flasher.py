@@ -64,7 +64,7 @@ def test_a_job_is_one_write_of_the_control_attribute():
         dp: await set(dev, "survey_dp", {mcu_flasher: "show"}),
         full: await set(dev, "survey_full", {mcu_flasher: "show"}),
         abort: await set(dev, "abort", {mcu_flasher: "show"}),
-        bad: await set(dev, "install", {mcu_flasher: "show"}),
+        bad: await set(dev, "flash_everything", {mcu_flasher: "show"}),
     }));
 })();
 """))
@@ -145,3 +145,18 @@ def test_an_update_shows_its_page_and_its_errors():
     assert page0 == [{"mcu_flasher_status": "running update_bootloader_force; writing page 32/32"}]
     assert "write the job's name to mcu_flasher_confirm" in refused[0]["mcu_flasher_status"]
     assert "stays stopped" in verify[0]["mcu_flasher_status"]
+
+
+def test_install_and_its_armed_state():
+    out = json.loads(run_node(SET_ANY + """
+(async () => {
+    const dev = h.device(); const show = {mcu_flasher: "show"};
+    console.log(JSON.stringify({install: await setKey(dev, "mcu_flasher", "install", show)}));
+})();
+"""))
+    assert out["install"] == [["write", 1, "genBasic", {"65361": {"value": 5, "type": 0x20}}]]
+    armed = decode(status(state=5, job=5, step=0, page=3))
+    assert armed == [{"mcu_flasher_status":
+                      "armed install; power-cycle the module now (3 power-ups left); 1.2 s"}]
+    wrong = decode(status(state=0, job=5, step=0, error=12))
+    assert "not a factory MCU" in wrong[0]["mcu_flasher_status"]

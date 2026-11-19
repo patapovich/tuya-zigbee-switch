@@ -272,6 +272,10 @@ void tuya_mcu_app_show_mcu_version(void) {
     }
 }
 
+uint8_t tuya_mcu_app_mcu_is_stock(void) {
+    return g_mcu_known && (g_mcu_packed >> 6) == 1 && !g_mcu_own;
+}
+
 uint8_t tuya_mcu_app_mcu_is_own(void) {
     return g_mcu_own;
 }

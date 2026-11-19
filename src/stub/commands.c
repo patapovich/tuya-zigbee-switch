@@ -80,6 +80,7 @@ static int cmd_status(int argc, char **argv) {
 static int cmd_quit(int argc, char **argv) {
     (void)argc;
     (void)argv;
+    (void)swd_target_save(); /* before the answer: a test may restart at once */
     g_should_exit = 1;
     io_res_ok(NULL);
     return 0;
@@ -545,11 +546,16 @@ static void swd_target_print_stats(void) {
     io_res_ok("%s erases=%u programs=%u wrperr=%u power_cycles=%u core=%s "
               "pc=0x%08X msp=0x%08X xpsr=0x%08X gates_low=%u iwdg_frozen=%u "
               "timing_set=%u flash_locked=%u key_lockout=%u flash_busy=%u "
-              "swd_lost=%u",
+              "swd_lost=%u rdp2_written=%u obl_launches=%u option_programs=%u "
+              "mass_erases=%u preset=%s rdp=%u optlock=%u optkey_lockout=%u "
+              "stock_fw=%u pins_taken=%u stock_pins_ms=%u uptime_ms=%u",
               dp, st.erases, st.programs, st.wrperr, st.power_cycles, cs.core,
               cs.pc, cs.msp, cs.xpsr, cs.gates_low, cs.iwdg_frozen,
               cs.timing_set, cs.flash_locked, cs.key_lockout, cs.flash_busy,
-              cs.swd_lost);
+              cs.swd_lost, st.rdp2_written, st.obl_launches,
+              st.option_programs, st.mass_erases, cs.preset, cs.rdp,
+              cs.optlock, cs.optkey_lockout, cs.stock_fw, cs.pins_taken,
+              cs.stock_pins_ms, cs.uptime_ms);
 }
 
 /* count=<n> dropped=<n> list=<op>:<addr>,... (oldest first) */
@@ -624,6 +630,26 @@ static int cmd_swd_target(int argc, char **argv) {
                parse_u32(argv[2], 10, &v) == 0) {
         swd_target_set_busy_reads(v);
         io_res_ok("busy_reads=%u", v);
+    } else if (strcmp(sub, "busy_reads_ob") == 0 && argc == 3 &&
+               parse_u32(argv[2], 10, &v) == 0) {
+        swd_target_set_busy_reads_ob(v);
+        io_res_ok("busy_reads_ob=%u", v);
+    } else if (strcmp(sub, "stock_pins_ms") == 0 && argc == 3 &&
+               parse_u32(argv[2], 10, &v) == 0) {
+        swd_target_set_stock_pins_ms(v);
+        io_res_ok("stock_pins_ms=%u", v);
+    } else if (strcmp(sub, "preset") == 0 && argc == 3) {
+        if (swd_target_preset(argv[2])) {
+            io_res_err("unknown_preset=%s", argv[2]);
+            return -1;
+        }
+        io_res_ok("preset=%s", argv[2]);
+    } else if (strcmp(sub, "save") == 0 && argc == 2) {
+        if (swd_target_save()) {
+            io_res_err("not_saved (SWD_TARGET_STATE unset or not writable)");
+            return -1;
+        }
+        io_res_ok(NULL);
     } else if (strcmp(sub, "connect") == 0 && argc == 3 &&
                parse_bit(argv[2], &bit) == 0) {
         swd_target_set_connect(bit);
@@ -663,9 +689,10 @@ static int cmd_swd_target(int argc, char **argv) {
         io_res_ok("addr=0x%08X len=%u", a, v);
     } else {
         fprintf(stderr, "Usage: swd_target reset|clear|stats|writes|flash_log|"
-                "power_cycle | connect <0|1> | clk_held_low <0|1> | rdp <0|1> | "
-                "wait_ap <n> | busy_reads <n> | cut_after <n> | poke32 <addr> "
-                "<val> | peek32 <addr> | load <addr> <path>\n");
+                "power_cycle|save | preset stock|open_dimmer | connect <0|1> | "
+                "clk_held_low <0|1> | rdp <0|1> | wait_ap <n> | busy_reads <n> | "
+                "busy_reads_ob <n> | stock_pins_ms <ms> | cut_after <n> | "
+                "poke32 <addr> <val> | peek32 <addr> | load <addr> <path>\n");
         io_res_err("usage");
         return -1;
     }

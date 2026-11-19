@@ -1,6 +1,10 @@
 #include "stub/hal/swd_target.h"
 
+#include "hal/timer.h"
+
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* See swd_target.h for what is modelled. Bit numbers below are ADIv5 (DP,
@@ -90,6 +94,8 @@
 #define REG_RCC_IOPENR         0x40021034u
 #define REG_RCC_APBENR1        0x4002103Cu
 #define REG_FLASH_KEYR         0x40022008u
+#define REG_FLASH_OPTKEYR      0x4002200Cu
+#define REG_OB_TRIGGER         0x40022080u
 #define REG_FLASH_SR           0x40022010u
 #define REG_FLASH_CR           0x40022014u
 #define REG_FLASH_OPTR         0x40022020u
@@ -112,10 +118,17 @@
 #define APBENR1_DBGEN          (1u << 27)
 #define RDP_LEVEL0             0xAAu
 #define RDP_LEVEL1             0x55u
+#define RDP_LEVEL2             0xCCu
+/* Loaded on a complement mismatch (OPTVERR): RDP 0xFF = level 1, user 0xFF */
+#define OPTVERR_OPTR           0x0000FFFFu
+#define OPTVERR_SDKR           0x0000001Fu
+#define OPTVERR_WRPR           0x0000FFFFu
 #define SDKR_MASK              0x1F1Fu
 
 #define FLASH_KEY1             0x45670123u
 #define FLASH_KEY2             0xCDEF89ABu
+#define FLASH_OPTKEY1          0x08192A3Bu
+#define FLASH_OPTKEY2          0x4C5D6E7Fu
 #define FSR_EOP                (1u << 0)
 #define FSR_WRPERR             (1u << 4)
 #define FSR_OPTVERR            (1u << 15)
@@ -135,6 +148,15 @@
                                 FCR_OBL_LAUNCH | FCR_OPTLOCK | FCR_LOCK)
 #define FCR_RESET              (FCR_LOCK | FCR_OPTLOCK)
 #define BUSY_READS_DEFAULT     2u
+#define BUSY_READS_OB          5u
+
+/* The stock preset: a factory unit (RDP level 1, its own firmware) */
+#define STOCK_IMAGE_SIZE       0x2000u
+#define STOCK_ENTRY            0x080000C0u
+
+/* State file: magic "SWDT", then the format version and the model's size */
+#define STATE_MAGIC            0x54445753u
+#define STATE_VERSION          1u
 #define CUT_GARBAGE            0xA5A5A5A5u
 
 #define GPIOA_MODER_RESET      0xEBFFFFFFu
@@ -214,7 +236,14 @@ typedef enum {
     FOP_PROGRAM,
     FOP_WRPERR,
     FOP_GARBAGE,
+    FOP_OPTIONS,    /* the option area from the staged registers */
+    FOP_MASS_ERASE, /* log only: the RDP 1 -> 0 erase */
 } flash_op_t;
+
+typedef enum {
+    PRESET_OPEN_DIMMER,
+    PRESET_STOCK,
+} preset_t;
 
 typedef enum {
     KEY_WAIT1,   /* locked, waiting for KEY1 */
@@ -241,12 +270,16 @@ typedef struct {
     /* FLASH controller */
     uint32_t     flash_sr;
     uint32_t     flash_cr;
-    uint32_t     optr;
+    uint32_t     optr; /* loaded from the option area */
     uint32_t     sdkr;
     uint32_t     wrpr;
+    uint32_t     stage_optr; /* written, programmed by OPTSTRT */
+    uint32_t     stage_sdkr;
+    uint32_t     stage_wrpr;
     uint32_t     timing[FLASH_TIMING_COUNT];
     uint16_t     timing_written;
     key_state_t  key_state;
+    key_state_t  optkey_state;
     uint8_t      busy;      /* an operation runs (SR.BSY) */
     flash_op_t   busy_op;
     uint32_t     busy_addr;
@@ -270,7 +303,16 @@ typedef struct {
     uint8_t            rdp;
     uint32_t           wait_ap;
     uint32_t           busy_reads;
+    uint32_t           busy_reads_ob;
     uint32_t           cut_left; /* transfers until the power goes, 0 = never */
+    uint8_t            preset;
+
+    /* The stock firmware's pin grab */
+    uint8_t            stock_fw;      /* the flash still holds it */
+    uint32_t           stock_pins_ms; /* after power-up; 0 = never */
+    int64_t            power_up_ms;   /* stub time of the last power-up */
+    uint8_t            stopped;       /* halted / locked up since then */
+    uint8_t            pins_taken;
 
     /* The wire: the host side as swd_io.c last set it, the target side */
     uint8_t            host_clk_driven;
@@ -346,6 +388,12 @@ static const uint8_t k_optb_default[OPTB_SIZE] = {
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00,
 };
 
+/* A factory unit's option bytes: RDP 0x00 (level 1), user byte 0xF0 */
+static const uint8_t k_optb_stock[OPTB_SIZE] = {
+    0x00, 0xf0, 0xff, 0x0f, 0xff, 0x00, 0x00, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00,
+};
+
 /* The last ROM word: with it the ROM's CRC-32 is the real chip's 0xA52232EA */
 static const uint8_t k_sysrom_tail[4] = { 0xe7, 0x75, 0xa5, 0xe6 };
 
@@ -355,7 +403,8 @@ static const uint32_t k_hsi_fs4[] = {
 };
 
 static const char *const k_flash_op_names[] = {
-    "erase_page", "erase_sector", "program", "wrperr", "garbage",
+    "erase_page",      "erase_sector", "program", "wrperr", "garbage",
+    "program_options", "mass_erase",
 };
 
 static model_t     m;
@@ -438,24 +487,74 @@ static uint32_t optb16(uint32_t offset) {
 static void apply_rdp(void) {
     uint8_t rdp = m.rdp ? RDP_LEVEL1 : RDP_LEVEL0;
 
-    m.regs.optr = (m.regs.optr & ~0xFFu) | rdp;
-    s_optb[0]   = rdp;
-    s_optb[2]   = (uint8_t) ~rdp;
+    m.regs.optr       = (m.regs.optr & ~0xFFu) | rdp;
+    m.regs.stage_optr = m.regs.optr;
+    s_optb[0]         = rdp;
+    s_optb[2]         = (uint8_t) ~rdp;
 }
 
-/* The option byte load of a power-on reset. */
+static uint8_t optb_pair_ok(uint32_t offset) {
+    return (optb16(offset) ^ optb16(offset + 2)) == 0xFFFFu;
+}
+
+static void stage_from_loaded(void) {
+    m.regs.stage_optr = m.regs.optr;
+    m.regs.stage_sdkr = m.regs.sdkr;
+    m.regs.stage_wrpr = m.regs.wrpr;
+}
+
+/* The option byte load (power-on, OBL_LAUNCH): a pair whose complement does
+ * not match loads its fallback and sets OPTVERR. After the peripheral reset. */
 static void options_load(void) {
-    m.regs.optr = optb16(0);
-    m.regs.sdkr = optb16(4) & SDKR_MASK;
-    m.regs.wrpr = optb16(12);
-    m.rdp       = s_optb[0] != RDP_LEVEL0;
+    uint8_t bad = 0;
+
+    if (optb_pair_ok(0)) {
+        m.regs.optr = optb16(0);
+    } else {
+        m.regs.optr = OPTVERR_OPTR;
+        bad         = 1;
+    }
+    if (optb_pair_ok(4)) {
+        m.regs.sdkr = optb16(4) & SDKR_MASK;
+    } else {
+        m.regs.sdkr = OPTVERR_SDKR;
+        bad         = 1;
+    }
+    if (optb_pair_ok(12)) {
+        m.regs.wrpr = optb16(12);
+    } else {
+        m.regs.wrpr = OPTVERR_WRPR;
+        bad         = 1;
+    }
+    if (bad) {
+        m.regs.flash_sr |= FSR_OPTVERR;
+    }
+    m.rdp = (m.regs.optr & 0xFFu) != RDP_LEVEL0;
+    stage_from_loaded();
+}
+
+/* The option area as OPTSTRT programs it from the staged registers. */
+static void options_program(void) {
+    uint32_t v[3]  = { m.regs.stage_optr, m.regs.stage_sdkr, m.regs.stage_wrpr };
+    uint32_t at[3] = { 0, 4, 12 };
+
+    for (uint32_t i = 0; i < 3; i++) {
+        uint16_t w = (uint16_t)v[i];
+        s_optb[at[i]]     = (uint8_t)w;
+        s_optb[at[i] + 1] = (uint8_t)(w >> 8);
+        s_optb[at[i] + 2] = (uint8_t) ~w;
+        s_optb[at[i] + 3] = (uint8_t)(~w >> 8);
+    }
+    memset(&s_optb[8], 0xFF, 4);
 }
 
 /* What a system reset puts back (a busy flash operation is handled before). */
 static void periph_reset(void) {
-    m.regs.flash_sr  = 0;
-    m.regs.flash_cr  = FCR_RESET;
-    m.regs.key_state = KEY_WAIT1;
+    m.regs.flash_sr     = 0;
+    m.regs.flash_cr     = FCR_RESET;
+    m.regs.key_state    = KEY_WAIT1;
+    m.regs.optkey_state = KEY_WAIT1;
+    stage_from_loaded();
     m.regs.busy      = 0;
     m.regs.busy_left = 0;
     m.regs.pg_n      = 0;
@@ -480,6 +579,24 @@ static void debug_regs_clear(void) {
     m.regs.dbgmcu_apb_fz2 = 0;
 }
 
+/* Every core state change: a halt or a lockup since the power-up keeps the
+ * stock firmware from ever reaching its pin grab. */
+static void core_set(core_state_t state) {
+    m.regs.core_state = state;
+    if (state != CORE_RUNNING) {
+        m.stopped = 1;
+    }
+}
+
+/* RDP level 1 with the debug domain powered: a running core loses its flash
+ * (like an STM32 with a debugger attached) and locks up. */
+static void rdp_debug_check(void) {
+    if (m.rdp && (m.ctrl_stat & CS_CDBGPWRUPACK) &&
+        m.regs.core_state == CORE_RUNNING) {
+        core_set(CORE_LOCKUP);
+    }
+}
+
 /* The core takes its vectors: halted there for a debugger, else it runs the
  * firmware, or locks up on vectors it cannot run. */
 static void core_take_vectors(uint8_t halt) {
@@ -492,14 +609,14 @@ static void core_take_vectors(uint8_t halt) {
     m.regs.core[CORE_PC]   = pc;
     m.regs.core[CORE_XPSR] = (rv & 1u) ? XPSR_T : 0;
     if (halt) {
-        m.regs.dhcsr_c   |= DHCSR_C_HALT;
-        m.regs.core_state = CORE_HALTED;
+        m.regs.dhcsr_c |= DHCSR_C_HALT;
+        core_set(CORE_HALTED);
         return;
     }
     ok = (sp & 3u) == 0 && in_stack(sp) && (rv & 1u) && in_flash(pc) &&
          (s_flash[pc - FLASH_BASE] != 0xFF || s_flash[pc - FLASH_BASE + 1] != 0xFF);
-    m.regs.dhcsr_c   &= ~DHCSR_C_HALT;
-    m.regs.core_state = ok ? CORE_RUNNING : CORE_LOCKUP;
+    m.regs.dhcsr_c &= ~DHCSR_C_HALT;
+    core_set(ok ? CORE_RUNNING : CORE_LOCKUP);
 }
 
 static void core_resume(void) {
@@ -507,7 +624,7 @@ static void core_resume(void) {
                  in_flash(m.regs.core[CORE_PC] & ~1u) &&
                  in_stack(m.regs.core[CORE_MSP]);
 
-    m.regs.core_state = ok ? CORE_RUNNING : CORE_LOCKUP;
+    core_set(ok ? CORE_RUNNING : CORE_LOCKUP);
 }
 
 static void flash_apply(flash_op_t op, uint32_t addr, uint8_t cut);
@@ -528,6 +645,27 @@ static void system_reset(void) {
     m.regs.reset_st = 1;
     core_take_vectors((m.regs.demcr & DEMCR_VC_CORERESET) &&
                       (m.regs.dhcsr_c & DHCSR_C_DEBUGEN));
+}
+
+/* OBL_LAUNCH: a system reset that reloads the option bytes; the SWD link
+ * drops (lockout until a line reset, sticky flags cleared), the rest of the
+ * DP and the debug registers stay. */
+static void obl_launch(void) {
+    m.stats.obl_launches++;
+    m.stats.sys_resets++;
+    flash_finish();
+    periph_reset();
+    options_load();
+    m.regs.reset_st = 1;
+    core_take_vectors((m.regs.demcr & DEMCR_VC_CORERESET) &&
+                      (m.regs.dhcsr_c & DHCSR_C_DEBUGEN));
+    m.st              = ST_LOCKOUT;
+    m.need_dpidr      = 1;
+    m.tgt_drive       = 0;
+    m.ones_run        = 0;
+    m.run_ones_errors = 0;
+    m.win_active      = 0;
+    m.ctrl_stat      &= ~CS_STICKY_MASK;
 }
 
 static void dp_power_on(void) {
@@ -562,6 +700,9 @@ static void power_cycle(void) {
     periph_reset();
     options_load();
     m.regs.reset_st = 1;
+    m.power_up_ms   = hal_millis();
+    m.stopped       = 0;
+    m.pins_taken    = 0;
     core_take_vectors(0);
 }
 
@@ -606,21 +747,212 @@ static void power_on(void) {
     m.host_dio_driven = host_dio_driven;
     m.host_dio_level  = host_dio_level;
 
-    m.connect    = 1;
-    m.busy_reads = BUSY_READS_DEFAULT;
+    m.connect       = 1;
+    m.busy_reads    = BUSY_READS_DEFAULT;
+    m.busy_reads_ob = BUSY_READS_OB;
     dp_power_on();
     memory_defaults();
+    m.power_up_ms  = hal_millis();
     s_log_count    = 0;
     s_log_dropped  = 0;
     s_flog_count   = 0;
     s_flog_dropped = 0;
 }
 
+/* A factory unit: its firmware in the flash, RDP level 1, running. */
+static void preset_stock(void) {
+    for (uint32_t i = 0; i < STOCK_IMAGE_SIZE; i++) {
+        s_flash[i] = (uint8_t)(i * 131u + 7u);
+    }
+    put32(s_flash, SRAM_BASE + SRAM_SIZE);
+    put32(s_flash + 4, STOCK_ENTRY | 1u);
+    memcpy(s_optb, k_optb_stock, sizeof(s_optb));
+    options_load();
+    core_take_vectors(0);
+    m.stock_fw = 1;
+}
+
+/* ---- the start: presets, environment, state file ---- */
+
+static const char *env_str(const char *name) {
+    const char *v = getenv(name);
+
+    return (v && *v) ? v : NULL;
+}
+
+static uint8_t env_preset(void) {
+    const char *v = env_str("SWD_TARGET_PRESET");
+
+    if (v && strcmp(v, "stock") == 0) {
+        return PRESET_STOCK;
+    }
+    if (v && strcmp(v, "open_dimmer") != 0) {
+        fprintf(stderr, "[SWD_TARGET] unknown SWD_TARGET_PRESET '%s': open_dimmer\n",
+                v);
+    }
+    return PRESET_OPEN_DIMMER;
+}
+
+static void env_flash(void) {
+    const char *path = env_str("SWD_TARGET_FLASH");
+    FILE *      f;
+    size_t      n;
+
+    if (!path) {
+        return;
+    }
+    f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "[SWD_TARGET] cannot read SWD_TARGET_FLASH '%s'\n", path);
+        return;
+    }
+    n = fread(s_flash, 1, sizeof(s_flash), f);
+    fclose(f);
+    fprintf(stderr, "[SWD_TARGET] %u flash bytes from %s\n", (unsigned)n, path);
+}
+
+static void env_stock_pins(void) {
+    const char *v = env_str("SWD_TARGET_STOCK_PINS_MS");
+
+    if (v) {
+        m.stock_pins_ms = (uint32_t)strtoul(v, NULL, 10);
+    }
+}
+
+/* Power-on with a preset; the environment's flash file and pin time on top. */
+static void start_preset(uint8_t preset) {
+    power_on();
+    m.preset = preset;
+    if (preset == PRESET_STOCK) {
+        preset_stock();
+    }
+    if (env_str("SWD_TARGET_FLASH")) {
+        env_flash();
+        core_take_vectors(0); /* the core runs what the file holds */
+    }
+    env_stock_pins();
+}
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t model_size;
+    uint32_t pad;
+    int64_t  uptime_ms; /* the target's time since its power-up */
+} state_hdr_t;
+
+static uint8_t *const k_state_areas[] = {
+    s_flash, s_sram, s_sysrom, s_uid, s_optb, s_fact,
+};
+static const uint32_t k_state_sizes[] = {
+    FLASH_SIZE, SRAM_SIZE, SYSROM_SIZE, UID_SIZE, OPTB_SIZE, FACT_SIZE,
+};
+
+static int state_save(const char *path) {
+    state_hdr_t hdr = { STATE_MAGIC, STATE_VERSION, sizeof(model_t), 0,
+                        (int64_t)hal_millis() - m.power_up_ms };
+    size_t      len = strlen(path) + 5;
+    char *      tmp = malloc(len);
+    FILE *      f;
+    int         ok;
+
+    if (!tmp) {
+        return -1;
+    }
+    snprintf(tmp, len, "%s.tmp", path);
+    f  = fopen(tmp, "wb");
+    ok = f != NULL && fwrite(&hdr, sizeof(hdr), 1, f) == 1;
+    for (uint32_t i = 0; ok && i < sizeof(k_state_sizes) / sizeof(k_state_sizes[0]); i++) {
+        ok = fwrite(k_state_areas[i], k_state_sizes[i], 1, f) == 1;
+    }
+    ok = ok && fwrite(&m, sizeof(m), 1, f) == 1;
+    if (f) {
+        ok = (fclose(f) == 0) && ok;
+    }
+    ok = ok && rename(tmp, path) == 0;
+    if (!ok) {
+        fprintf(stderr, "[SWD_TARGET] cannot save the state to %s\n", path);
+        remove(tmp);
+    }
+    free(tmp);
+    return ok ? 0 : -1;
+}
+
+/* 0 = loaded; -1 = no (usable) file, nothing changed. */
+static int state_load(const char *path) {
+    static uint8_t buf[FLASH_SIZE + SRAM_SIZE + SYSROM_SIZE + UID_SIZE +
+                       OPTB_SIZE + FACT_SIZE];
+    state_hdr_t hdr;
+    model_t     saved;
+    FILE *      f = fopen(path, "rb");
+    int         ok;
+    uint32_t    pos = 0;
+
+    if (!f) {
+        return -1;
+    }
+    ok = fread(&hdr, sizeof(hdr), 1, f) == 1 && hdr.magic == STATE_MAGIC &&
+         hdr.version == STATE_VERSION && hdr.model_size == sizeof(model_t) &&
+         fread(buf, sizeof(buf), 1, f) == 1 && fread(&saved, sizeof(saved), 1, f) == 1;
+    fclose(f);
+    if (!ok) {
+        fprintf(stderr, "[SWD_TARGET] %s is not a state of this build: ignored\n",
+                path);
+        return -1;
+    }
+    for (uint32_t i = 0; i < sizeof(k_state_sizes) / sizeof(k_state_sizes[0]); i++) {
+        memcpy(k_state_areas[i], buf + pos, k_state_sizes[i]);
+        pos += k_state_sizes[i];
+    }
+    /* The host side of the wire is this process's. */
+    saved.host_clk_driven = m.host_clk_driven;
+    saved.host_clk_level  = m.host_clk_level;
+    saved.host_dio_driven = m.host_dio_driven;
+    saved.host_dio_level  = m.host_dio_level;
+    saved.clk_line        = 0;
+    m              = saved;
+    m.power_up_ms  = (int64_t)hal_millis() - hdr.uptime_ms;
+    s_log_count    = 0;
+    s_log_dropped  = 0;
+    s_flog_count   = 0;
+    s_flog_dropped = 0;
+    return 0;
+}
+
+static void state_save_at_exit(void) {
+    const char *path = env_str("SWD_TARGET_STATE");
+
+    if (path) {
+        (void)state_save(path);
+    }
+}
+
+static void stock_tick(void);
+
+static void start_from_env(void) {
+    const char *state = env_str("SWD_TARGET_STATE");
+    const char *pc    = env_str("SWD_TARGET_POWER_CYCLE");
+
+    start_preset(env_preset());
+    if (state) {
+        if (state_load(state) == 0) {
+            fprintf(stderr, "[SWD_TARGET] state from %s\n", state);
+            env_stock_pins();
+        }
+        atexit(state_save_at_exit);
+    }
+    if (pc && strcmp(pc, "1") == 0) {
+        power_cycle();
+    }
+}
+
 static void ensure_ready(void) {
     if (!s_ready) {
         s_ready = 1;
-        power_on();
+        start_from_env();
     }
+    stock_tick();
+    rdp_debug_check();
 }
 
 /* ---- the wire ---- */
@@ -629,8 +961,26 @@ static uint8_t wired(void) {
     return m.connect && !m.swd_lost;
 }
 
+/* SWCLK held low by the target side: the test setting, or the stock
+ * firmware that took PA13 / PA14. */
+static uint8_t clk_held(void) {
+    return m.clk_held_low || m.pins_taken;
+}
+
+/* The stock firmware takes its pins stock_pins_ms after its power-up, if it
+ * has run all the time since (no halt, no lockup). */
+static void stock_tick(void) {
+    if (m.stock_fw && m.stock_pins_ms && !m.pins_taken && !m.stopped &&
+        m.regs.core_state == CORE_RUNNING &&
+        (int64_t)hal_millis() - m.power_up_ms >= (int64_t)m.stock_pins_ms) {
+        m.pins_taken = 1;
+        m.tgt_drive  = 0;
+        m.clk_line   = 0;
+    }
+}
+
 static uint8_t clk_line_now(void) {
-    if (!wired() || m.clk_held_low || !m.host_clk_driven) {
+    if (!wired() || clk_held() || !m.host_clk_driven) {
         return 0;
     }
     return m.host_clk_level;
@@ -666,10 +1016,37 @@ static uint8_t sector_protected(uint32_t addr) {
     return !((m.regs.wrpr >> sector) & 1u);
 }
 
+/* The option area from the staged registers; RDP level 1 -> 0 erases the
+ * whole main flash right then. */
+static void flash_apply_options(uint8_t cut) {
+    uint8_t was_level1 = s_optb[0] != RDP_LEVEL0;
+
+    if (cut) {
+        log_flash(FOP_GARBAGE, OPTB_BASE);
+        for (uint32_t o = 0; o < OPTB_SIZE; o += 4) {
+            put32(&s_optb[o], get32(&s_optb[o]) & CUT_GARBAGE);
+        }
+        return;
+    }
+    options_program();
+    if (was_level1 && s_optb[0] == RDP_LEVEL0) {
+        memset(s_flash, 0xFF, sizeof(s_flash));
+        log_flash(FOP_MASS_ERASE, FLASH_BASE);
+        m.stats.mass_erases++;
+        m.stock_fw = 0;
+    }
+}
+
 static void flash_apply(flash_op_t op, uint32_t addr, uint8_t cut) {
     uint32_t size;
-    uint8_t *p = &s_flash[addr - FLASH_BASE];
+    uint8_t *p;
 
+    if (op == FOP_OPTIONS) {
+        flash_apply_options(cut);
+        return;
+    }
+    p          = &s_flash[addr - FLASH_BASE];
+    m.stock_fw = 0; /* the stock firmware is no longer whole */
     switch (op) {
     case FOP_ERASE_PAGE:
         size = FLASH_PAGE;
@@ -802,14 +1179,71 @@ static void flash_keyr_write(uint32_t value) {
     }
 }
 
+/* OPTKEYR: only with CR.LOCK clear; a wrong key keeps OPTLOCK until a reset. */
+static void flash_optkeyr_write(uint32_t value) {
+    if ((m.regs.flash_cr & FCR_LOCK) || !(m.regs.flash_cr & FCR_OPTLOCK) ||
+        m.regs.optkey_state == KEY_LOCKOUT) {
+        return;
+    }
+    if (m.regs.optkey_state == KEY_WAIT1 && value == FLASH_OPTKEY1) {
+        m.regs.optkey_state = KEY_WAIT2;
+    } else if (m.regs.optkey_state == KEY_WAIT2 && value == FLASH_OPTKEY2) {
+        m.regs.optkey_state = KEY_WAIT1;
+        m.regs.flash_cr    &= ~FCR_OPTLOCK;
+    } else {
+        m.regs.optkey_state = KEY_LOCKOUT;
+    }
+}
+
+static uint8_t options_unlocked(void) {
+    return !(m.regs.flash_cr & (FCR_LOCK | FCR_OPTLOCK));
+}
+
+/* A write to OPTR / SDKR / WRPR stages a value for OPTSTRT. */
+static void option_reg_write(uint32_t *stage, uint32_t value) {
+    if (options_unlocked()) {
+        *stage = value;
+    }
+}
+
+/* The word write to 0x40022080 with CR.OPTSTRT: program the option area. */
+static void flash_ob_trigger(void) {
+    if (!(m.regs.flash_cr & FCR_OPTSTRT) || !options_unlocked() || m.regs.busy) {
+        return;
+    }
+    m.regs.flash_cr &= ~FCR_OPTSTRT;
+    if ((m.regs.stage_optr & 0xFFu) == RDP_LEVEL2) {
+        flash_wrperr(OPTB_BASE); /* never program RDP level 2 */
+        return;
+    }
+    log_flash(FOP_OPTIONS, OPTB_BASE);
+    m.stats.option_programs++;
+    m.regs.busy      = 1;
+    m.regs.busy_op   = FOP_OPTIONS;
+    m.regs.busy_addr = OPTB_BASE;
+    m.regs.busy_left = m.busy_reads_ob;
+    if (!m.regs.busy_left) {
+        flash_finish();
+    }
+}
+
 static void flash_cr_write(uint32_t value) {
+    uint32_t v;
+
     if (m.regs.flash_cr & FCR_LOCK) {
         return;
     }
-    /* OPTLOCK only clears through OPTKEYR, which is not modelled. */
-    m.regs.flash_cr = (value & FCR_WRITE_MASK) | (m.regs.flash_cr & FCR_OPTLOCK);
+    v = value & FCR_WRITE_MASK;
+    if (m.regs.flash_cr & FCR_OPTLOCK) {
+        /* OPTLOCK locks OPTSTRT and OBL_LAUNCH; only OPTKEYR clears it. */
+        v = (v & ~(FCR_OPTSTRT | FCR_OBL_LAUNCH)) | FCR_OPTLOCK;
+    }
+    m.regs.flash_cr = v;
     if (!(m.regs.flash_cr & FCR_PG)) {
         m.regs.pg_n = 0;
+    }
+    if (m.regs.flash_cr & FCR_OBL_LAUNCH) {
+        obl_launch();
     }
 }
 
@@ -850,7 +1284,7 @@ static void dhcsr_write(uint32_t value) {
         m.regs.dhcsr_c = value & (DHCSR_C_DEBUGEN | DHCSR_C_HALT);
     }
     if (m.regs.dhcsr_c & DHCSR_C_HALT) {
-        m.regs.core_state = CORE_HALTED; /* from running or lockup */
+        core_set(CORE_HALTED); /* from running or lockup */
     } else if (m.regs.core_state == CORE_HALTED) {
         core_resume();
     }
@@ -966,6 +1400,8 @@ static int mem_read32(uint32_t addr, uint32_t *value, uint8_t backdoor) {
         *value = m.regs.apbenr1;
         break;
     case REG_FLASH_KEYR:
+    case REG_FLASH_OPTKEYR:
+    case REG_OB_TRIGGER:
         *value = 0; /* write only */
         break;
     case REG_FLASH_SR:
@@ -1005,6 +1441,8 @@ static int mem_write32(uint32_t addr, uint32_t value) {
             put32(a->mem + (addr - a->base), value);
         } else if (a->kind == AREA_FLASH) {
             return m.rdp ? -1 : flash_mem_write(addr, value);
+        } else if (addr == OPTB_BASE && (value & 0xFFu) == RDP_LEVEL2) {
+            m.stats.rdp2_written++;
         }
         return 0; /* ROM-like areas ignore writes */
     }
@@ -1069,18 +1507,32 @@ static int mem_write32(uint32_t addr, uint32_t value) {
     case REG_FLASH_KEYR:
         flash_keyr_write(value);
         break;
+    case REG_FLASH_OPTKEYR:
+        flash_optkeyr_write(value);
+        break;
+    case REG_OB_TRIGGER:
+        flash_ob_trigger();
+        break;
     case REG_FLASH_SR:
         m.regs.flash_sr &= ~(value & FSR_W1C);
         break;
     case REG_FLASH_CR:
         flash_cr_write(value);
         break;
+    case REG_FLASH_OPTR:
+        if ((value & 0xFFu) == RDP_LEVEL2) {
+            m.stats.rdp2_written++; /* counted even when not taken */
+        }
+        option_reg_write(&m.regs.stage_optr, value);
+        break;
+    case REG_FLASH_SDKR:
+        option_reg_write(&m.regs.stage_sdkr, value);
+        break;
+    case REG_FLASH_WRPR:
+        option_reg_write(&m.regs.stage_wrpr, value);
+        break;
     case REG_CPUID:
     case REG_DBGMCU_IDCODE:
-    /* Option registers: OPTLOCK stays set, so writes change nothing. */
-    case REG_FLASH_OPTR:
-    case REG_FLASH_SDKR:
-    case REG_FLASH_WRPR:
         break;
     default:
         return -1;
@@ -1254,7 +1706,8 @@ static uint8_t ap_request(void) {
         m.wait_ap--;
         return ACK_WAIT;
     }
-    if (m.regs.busy && ap_selected() && ap_reg() == AP_DRW && in_flash(m.tar)) {
+    if (m.regs.busy && ap_selected() && ap_reg() == AP_DRW &&
+        (in_flash(m.tar) || (m.tar >= OPTB_BASE && m.tar - OPTB_BASE < OPTB_SIZE))) {
         return ACK_WAIT; /* the flash stalls the AHB while busy */
     }
     if (!m.rnw) {
@@ -1321,6 +1774,7 @@ static void write_done(uint8_t parity_bit) {
     } else {
         dp_write(m.addr, m.data);
     }
+    rdp_debug_check(); /* a power-up or a resume may have just done it */
 }
 
 /* The end of a transfer that got an ACK: the place of a power cut. */
@@ -1438,8 +1892,8 @@ static void dp_step(uint8_t bit) {
             m.data |= (uint32_t)bit << m.nbits;
             m.nbits++;
         } else {
+            m.st = ST_IDLE; /* before: OBL_LAUNCH drops the link */
             write_done(bit);
-            m.st = ST_IDLE;
             transfer_end();
         }
         break;
@@ -1473,7 +1927,7 @@ void swd_target_host_clk(uint8_t driven, uint8_t level) {
     ensure_ready();
     m.host_clk_driven = driven ? 1 : 0;
     m.host_clk_level  = level ? 1 : 0;
-    if (m.connect && m.clk_held_low && m.host_clk_driven) {
+    if (m.connect && clk_held() && m.host_clk_driven) {
         m.stats.contention++;
     }
     line = clk_line_now();
@@ -1502,7 +1956,7 @@ uint8_t swd_target_dio_level(void) {
 
 uint8_t swd_target_clk_idle_level(void) {
     ensure_ready();
-    return (m.connect && m.clk_held_low) ? 0 : 1;
+    return (m.connect && clk_held()) ? 0 : 1;
 }
 
 void swd_target_note_untaken(void) {
@@ -1514,7 +1968,7 @@ void swd_target_note_untaken(void) {
 
 void swd_target_reset(void) {
     ensure_ready();
-    power_on();
+    start_preset(env_preset());
     m.clk_line = clk_line_now();
 }
 
@@ -1570,6 +2024,43 @@ void swd_target_set_cut_after(uint32_t transfers) {
     m.cut_left = transfers;
 }
 
+void swd_target_set_busy_reads_ob(uint32_t reads) {
+    ensure_ready();
+    m.busy_reads_ob = reads;
+}
+
+void swd_target_set_stock_pins_ms(uint32_t ms) {
+    ensure_ready();
+    m.stock_pins_ms = ms;
+}
+
+int swd_target_preset(const char *name) {
+    uint8_t preset;
+
+    ensure_ready();
+    if (strcmp(name, "stock") == 0) {
+        preset = PRESET_STOCK;
+    } else if (strcmp(name, "open_dimmer") == 0) {
+        preset = PRESET_OPEN_DIMMER;
+    } else {
+        return -1;
+    }
+    start_preset(preset);
+    m.clk_line = clk_line_now();
+    return 0;
+}
+
+void swd_target_start(void) {
+    ensure_ready();
+}
+
+int swd_target_save(void) {
+    const char *path = env_str("SWD_TARGET_STATE");
+
+    ensure_ready();
+    return path ? state_save(path) : -1;
+}
+
 int swd_target_peek32(uint32_t addr, uint32_t *value) {
     ensure_ready();
     return mem_read32(addr, value, 1);
@@ -1596,15 +2087,17 @@ int swd_target_poke32(uint32_t addr, uint32_t value) {
     case REG_AIRCR:
     case REG_DCRSR:
     case REG_FLASH_KEYR:
+    case REG_FLASH_OPTKEYR:
+    case REG_OB_TRIGGER:
     case REG_GPIOA_BSRR:
     case REG_GPIOA_BRR:
         break; /* no state to set */
     case REG_DHCSR:
         m.regs.dhcsr_c = value & (DHCSR_C_DEBUGEN | DHCSR_C_HALT);
         if (m.regs.dhcsr_c & DHCSR_C_HALT) {
-            m.regs.core_state = CORE_HALTED;
+            core_set(CORE_HALTED);
         } else if (m.regs.core_state == CORE_HALTED) {
-            m.regs.core_state = CORE_RUNNING;
+            core_set(CORE_RUNNING);
         }
         break;
     case REG_DCRDR:
@@ -1640,14 +2133,17 @@ int swd_target_poke32(uint32_t addr, uint32_t value) {
     case REG_FLASH_CR:
         m.regs.flash_cr = value;
         break;
-    case REG_FLASH_OPTR:
-        m.regs.optr = value;
+    case REG_FLASH_OPTR: /* the loaded value (and the staged one) */
+        m.regs.optr       = value;
+        m.regs.stage_optr = value;
         break;
     case REG_FLASH_SDKR:
-        m.regs.sdkr = value;
+        m.regs.sdkr       = value;
+        m.regs.stage_sdkr = value;
         break;
     case REG_FLASH_WRPR:
-        m.regs.wrpr = value;
+        m.regs.wrpr       = value;
+        m.regs.stage_wrpr = value;
         break;
     case REG_GPIOA_MODER:
         m.regs.gpioa_moder = value;
@@ -1688,12 +2184,20 @@ void swd_target_get_state(swd_target_state_t *out) {
     out->xpsr      = m.regs.core[CORE_XPSR];
     out->gates_low = (m.regs.gpioa_moder & MODER_GATES_MASK) == MODER_GATES_OUT &&
                      !(m.regs.gpioa_odr & 0x3u);
-    out->iwdg_frozen  = (m.regs.dbgmcu_apb_fz1 & DBGMCU_FZ1_IWDG) ? 1 : 0;
-    out->timing_set   = m.regs.timing_written == FLASH_TIMING_ALL;
-    out->flash_locked = (m.regs.flash_cr & FCR_LOCK) ? 1 : 0;
-    out->key_lockout  = m.regs.key_state == KEY_LOCKOUT;
-    out->flash_busy   = m.regs.busy;
-    out->swd_lost     = m.swd_lost;
+    out->iwdg_frozen    = (m.regs.dbgmcu_apb_fz1 & DBGMCU_FZ1_IWDG) ? 1 : 0;
+    out->timing_set     = m.regs.timing_written == FLASH_TIMING_ALL;
+    out->flash_locked   = (m.regs.flash_cr & FCR_LOCK) ? 1 : 0;
+    out->key_lockout    = m.regs.key_state == KEY_LOCKOUT;
+    out->flash_busy     = m.regs.busy;
+    out->swd_lost       = m.swd_lost;
+    out->preset         = m.preset == PRESET_STOCK ? "stock" : "open_dimmer";
+    out->rdp            = m.rdp;
+    out->optlock        = (m.regs.flash_cr & FCR_OPTLOCK) ? 1 : 0;
+    out->optkey_lockout = m.regs.optkey_state == KEY_LOCKOUT;
+    out->stock_fw       = m.stock_fw;
+    out->pins_taken     = m.pins_taken;
+    out->stock_pins_ms  = m.stock_pins_ms;
+    out->uptime_ms      = (uint32_t)((int64_t)hal_millis() - m.power_up_ms);
 }
 
 uint8_t swd_target_powered(void) {

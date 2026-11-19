@@ -10,6 +10,7 @@
 #include "commands.h"
 #include "simple_repl.h"
 #include "stub/hal/stub.h"
+#include "stub/hal/swd_target.h"
 #include "stub_app.h"
 
 volatile sig_atomic_t g_should_exit = 0;
@@ -75,6 +76,9 @@ int main(int argc, char **argv) {
             return 0;
         }
     }
+
+    /* The dimmer MCU model from its environment, before the app can use it. */
+    swd_target_start();
 
     stub_app_init(device_conf_buf[0] ? device_conf_buf : NULL,
                   dp_conf_buf[0] ? dp_conf_buf : NULL,

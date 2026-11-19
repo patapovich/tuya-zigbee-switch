@@ -13,9 +13,14 @@
  *
  * Jobs: the read-only surveys (survey_dp, survey_full) start with one write of
  * the control attribute; update_bootloader (and _force) writes the carried
- * bootloader (secondary_mcu_boot.c) into sector 0, and needs the confirm
- * attribute set to the job's name first (one use, 60 s). The result is the
- * status attribute. */
+ * bootloader (secondary_mcu_boot.c) into sector 0; install takes a factory MCU
+ * (read-protected) to Open Dimmer: protection off (which erases its flash),
+ * option bytes as Open Dimmer has them, the bootloader, which then fetches the
+ * app over the UART. The writing jobs need the confirm attribute set to the
+ * job's name first (one use, 60 s). An install that cannot attach at once
+ * (the factory firmware may hold the SWD pins) is armed in NV and attaches
+ * early at the next power-ups (mcu_flasher_early). The result is the status
+ * attribute. */
 
 #define MCU_FLASHER_ATTRS               3 /* status, control, confirm: with the token */
 
@@ -24,6 +29,7 @@
 #define MCU_FLASHER_JOB_SURVEY_FULL     2
 #define MCU_FLASHER_JOB_UPDATE_BOOT     3
 #define MCU_FLASHER_JOB_UPDATE_FORCE    4
+#define MCU_FLASHER_JOB_INSTALL         5
 #define MCU_FLASHER_JOB_ABORT           0xFF
 
 enum {
@@ -32,6 +38,7 @@ enum {
     MCU_FLASHER_STATE_DONE,
     MCU_FLASHER_STATE_FAILED,
     MCU_FLASHER_STATE_ABORTED,
+    MCU_FLASHER_STATE_ARMED,       /* install: waits for the next power-up (power-cycle the module) */
 };
 
 enum {
@@ -47,6 +54,10 @@ enum {
     MCU_FLASHER_ERR_HALT,          /* the core did not halt */
     MCU_FLASHER_ERR_FLASH,         /* unlock failed, write protection error or flash timeout */
     MCU_FLASHER_ERR_VERIFY,        /* sector 0 CRC wrong after writing it twice */
+    MCU_FLASHER_ERR_WRONG_CLASS,   /* install: not a factory MCU (UART version not 1.x, or RDP 0) */
+    MCU_FLASHER_ERR_OB_VERIFY,     /* install: the option bytes did not read back as written */
+    MCU_FLASHER_ERR_NO_ATTACH,     /* install: no attach in its armed power-ups */
+    MCU_FLASHER_ERR_RELOAD,        /* install: after the option reload not RDP 0 / not erased */
 };
 
 /* Status attribute (Basic 0xff50, octet string), little-endian. At most 48
@@ -79,6 +90,10 @@ typedef struct __attribute__((packed)) {
 } mcu_flasher_status_t;
 
 #define MCU_FLASHER_STATUS_MAX    48 /* bytes after the length byte */
+
+/* app.c, right after parse_config(): an armed install attaches here, some
+ * 40-80 ms after power-up, before a factory firmware takes the SWD pins. */
+void mcu_flasher_early(void);
 
 /* config_parser.c: an SW<clk><dio> token. */
 void mcu_flasher_parse_token(const char *entry);
