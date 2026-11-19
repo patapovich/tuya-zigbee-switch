@@ -9,8 +9,12 @@
 #include "zigbee/tuya_mcu_ota.h"
 #include "zigbee/tuya_secondary_mcu.h"
 
+/* Gestures of Open Dimmer (DP 105 / 106): 1 single, 2 double, 3 triple, 4 hold, 5 release,
+ * 6 press (from 2.2.0: the fast press, in the detached mode at once, no multi-taps). */
+#define DIMMER_GESTURE_MAX    6
+
 #ifdef SECONDARY_MCU_IMAGE
-static const uint16_t dimmer_gesture_states         = 6;   /* none + 5 gestures */
+static const uint16_t dimmer_gesture_states         = DIMMER_GESTURE_MAX + 1; /* and none */
 static const uint8_t  dimmer_gesture_out_of_service = 0;
 static const uint8_t  dimmer_gesture_flags          = 0;
 #endif
@@ -254,12 +258,13 @@ static void dimmer_send_transition(zigbee_dimmer_cluster *cluster, const uint8_t
  *
  * Its DPs per channel (zdms16-py32 src/dimmer.h): DP 6 / 12 the countdown, and from 162 on,
  * 162 + 2 * k + channel: k 0 wall switch mode, 1 level after a power cut, 2 identify, 3 start
- * boost; all values. Written only to such an MCU: to any other one a write of their
+ * boost, 4 fast press; all values. Written only to such an MCU: to any other one a write of their
  * attributes sends nothing and sets them back to "none". */
 #define DIMMER_OD_INPUT          0
 #define DIMMER_OD_POWER_LEVEL    1
 #define DIMMER_OD_IDENTIFY       2
 #define DIMMER_OD_BOOST          3
+#define DIMMER_OD_FAST_PRESS     4
 #define DIMMER_COUNTDOWN_MAX     86400u /* s */
 #define DIMMER_INPUT_MODE_MAX    2      /* 0 normal, 1 detached, 2 off */
 #define DIMMER_IDENTIFY_MAX      255    /* s */
@@ -784,7 +789,7 @@ static void dimmer_on_od_value(zigbee_dimmer_cluster *cluster, uint8_t dpid, uin
     }
 
     uint8_t k = (uint8_t)(dpid - dimmer_od_dp(cluster, 0));
-    if (dpid < dimmer_od_dp(cluster, 0) || (k & 1) || k > 2 * DIMMER_OD_BOOST)
+    if (dpid < dimmer_od_dp(cluster, 0) || (k & 1) || k > 2 * DIMMER_OD_FAST_PRESS)
         return; /* the other channel's, or none of these */
 
     switch (k >> 1) {
@@ -802,6 +807,15 @@ static void dimmer_on_od_value(zigbee_dimmer_cluster *cluster, uint8_t dpid, uin
             cluster->startup_expect = 0xFFFF; /* changed otherwise: the value tells */
         cluster->startup_value = v;
         dimmer_update_startup_level(cluster);
+        break;
+    case DIMMER_OD_FAST_PRESS:
+        if (number <= 1) {
+            cluster->fast_press     = (uint8_t)number;
+            cluster->fast_press_mcu = (uint8_t)number;
+            hal_zigbee_notify_attribute_changed(cluster->endpoint,
+                                                ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG,
+                                                ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_FAST_PRESS);
+        }
         break;
     case DIMMER_OD_BOOST:
         cluster->start_boost = v;
@@ -918,7 +932,7 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
                                                 ZCL_ATTR_START_UP_ONOFF);
         } else if (dp_type == TUYA_DP_TYPE_ENUM && cluster->action_dpid &&
                    tuya_mcu_app_mcu_is_own() && dpid == cluster->action_dpid &&
-                   value[0] >= 1 && value[0] <= 5) {
+                   value[0] >= 1 && value[0] <= DIMMER_GESTURE_MAX) {
             cluster->action_seq   = (uint8_t)((cluster->action_seq + 1) & 0x0F);
             cluster->action_state = (uint16_t)((cluster->action_seq << 4) | value[0]);
             hal_zigbee_notify_attribute_changed(cluster->endpoint,
@@ -1014,6 +1028,8 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
     cluster->start_boost     = 0;
     cluster->input_mode      = 0;
     cluster->input_mode_mcu  = 0;
+    cluster->fast_press      = 0;
+    cluster->fast_press_mcu  = 0;
 #ifdef SECONDARY_MCU_IMAGE
     cluster->identify_task.handler = dimmer_identify_tick;
     cluster->identify_task.arg     = cluster;
@@ -1060,6 +1076,9 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
     SETUP_ATTR_FOR_TABLE(cluster->switch_type_attr_infos, 1,
                          ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_INPUT_MODE,
                          ZCL_DATA_TYPE_ENUM8, ATTR_WRITABLE, cluster->input_mode);
+    SETUP_ATTR_FOR_TABLE(cluster->switch_type_attr_infos, 2,
+                         ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_FAST_PRESS,
+                         ZCL_DATA_TYPE_BOOLEAN, ATTR_WRITABLE, cluster->fast_press);
     SETUP_ATTR_FOR_TABLE(cluster->identify_attr_infos, 0, ZCL_ATTR_IDENTIFY_TIME,
                          ZCL_DATA_TYPE_UINT16, ATTR_WRITABLE, cluster->identify_time);
 #endif
@@ -1070,7 +1089,7 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
                        dimmer_cluster_level_callback_trampoline);
     dimmer_add_cluster(endpoint, ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG, 2 + DIMMER_OD_ATTRS,
                        cluster->ballast_attr_infos, NULL);
-    dimmer_add_cluster(endpoint, ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG, 1 + DIMMER_OD_ATTRS,
+    dimmer_add_cluster(endpoint, ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG, 1 + 2 * DIMMER_OD_ATTRS,
                        cluster->switch_type_attr_infos, NULL);
 
 #ifdef SECONDARY_MCU_IMAGE
@@ -1212,6 +1231,13 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
                 break;
             }
             dimmer_write_tuya_value(dimmer_od_dp(cluster, DIMMER_OD_INPUT), cluster->input_mode);
+        } else if (attribute_id == ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_FAST_PRESS) {
+            if (!dimmer_od_features(cluster)) {
+                cluster->fast_press = cluster->fast_press_mcu;
+                break;
+            }
+            dimmer_write_tuya_value(dimmer_od_dp(cluster, DIMMER_OD_FAST_PRESS),
+                                    cluster->fast_press ? 1 : 0);
         }
 #endif
         break;

@@ -37,7 +37,7 @@ typedef struct {
     hal_zigbee_attribute attr_infos[9];
     hal_zigbee_attribute multistate_attr_infos[4];  // wall switch gestures (own MCU)
     hal_zigbee_attribute ballast_attr_infos[3];     // min/max level, [start boost] (lightingBallastCfg)
-    hal_zigbee_attribute switch_type_attr_infos[2]; // switch type, [wall switch mode] (genOnOffSwitchCfg)
+    hal_zigbee_attribute switch_type_attr_infos[3]; // switch type, [wall switch mode, fast press] (genOnOffSwitchCfg)
     hal_zigbee_attribute identify_attr_infos[1];    // [IdentifyTime] (genIdentify)
 
     /* Open Dimmer from OPEN_DIMMER_FEATURES_BUILD (2.2.0), as its dump and the answers to our
@@ -45,8 +45,9 @@ typedef struct {
      * countdown in s (DP 6 / 12; 0 again when the channel goes off), the wall switch mode
      * (162 / 163; input_mode_mcu: as the MCU said), the level after a power cut
      * (StartUpCurrentLevel, 164 / 165; startup_value: the MCU's value, 0 = the last level),
-     * IdentifyTime (166 / 167, counted down here: the MCU does not report the end) and the
-     * start boost in ms (168 / 169). */
+     * IdentifyTime (166 / 167, counted down here: the MCU does not report the end), the
+     * start boost in ms (168 / 169) and the fast press (170 / 171, genOnOffSwitchCfg 0xff11:
+     * in the detached mode a momentary switch's press is reported at once as gesture 6). */
     uint32_t             countdown;
     uint32_t             countdown_end;  /* hal_millis() when it ends (countdown != 0) */
     uint16_t             startup_value;
@@ -60,6 +61,8 @@ typedef struct {
     uint16_t             start_boost;
     uint8_t              input_mode;
     uint8_t              input_mode_mcu;
+    uint8_t              fast_press;     /* DP 170 / 171: detached momentary press at once (6) */
+    uint8_t              fast_press_mcu;
     uint8_t              startup_level;
     hal_task_t           identify_task;
     uint8_t              current_level;

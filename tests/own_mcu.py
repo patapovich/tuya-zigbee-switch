@@ -17,7 +17,8 @@ power-on) first, then per channel DPs 1..6, the curve (101/102) and the
 power-on (103/104), then its five fade/hold settings (150..154/155..159).
 From build 500 (2.2.0) that last frame of a channel also carries its wall
 switch mode, level after a power cut and start boost (162, 164, 168 for
-channel 1; 163, 165, 169 for channel 2): 282 bytes.
+channel 1; 163, 165, 169 for channel 2), and its first frame the fast press
+(170 / 171): 298 bytes.
 
 Writes are taken as the firmware takes them (dimmer.c dimmer_write_dp) and
 answered with an active report of the DP; a DP the build does not know, or a
@@ -57,7 +58,7 @@ DP_POWER_ON_BASE = 103
 DP_PROFILE_BASE = 150
 DP_TRANSITION_BASE = 160   # transition time ms per channel, from build 400 (never in the dump)
 DP_EXTRA_BASE = 162        # + 2 * k + channel, from build 500: EXTRA_KEYS[k]
-EXTRA_KEYS = ("input", "power_level", "identify", "boost")
+EXTRA_KEYS = ("input", "power_level", "identify", "boost", "fast_press")
 DP_HEALTH_FIRST = 130      # 130..137 every 2 min, 138 (die temperature) and 139 (its sensor's
                            # calibration) in a frame of their own
 PROFILE_KEYS = ("fade_on", "fade_off", "soft_end", "hold", "hold_end")
@@ -84,7 +85,7 @@ def channel(power_on: int) -> dict:
     return {"on": 0, "level": 1000, "min": 200, "switch_type": 0, "max": 1000,
             "countdown": 0, "curve": 2, "power_on": power_on, "fade_on": 950,
             "fade_off": 950, "soft_end": 12, "hold": 3300, "hold_end": 20, "transition": 0,
-            "input": 0, "power_level": 0, "identify": 0, "boost": 0}
+            "input": 0, "power_level": 0, "identify": 0, "boost": 0, "fast_press": 0}
 
 
 class OwnMcu:
@@ -131,7 +132,7 @@ class OwnMcu:
         if DP_TRANSITION_BASE <= dpid < DP_TRANSITION_BASE + 2:
             v = self.ch[dpid - DP_TRANSITION_BASE]["transition"]
             return dp_payload(dpid, TUYA_TYPE_VALUE, v.to_bytes(4, "big"))
-        if DP_EXTRA_BASE <= dpid < DP_EXTRA_BASE + 8:
+        if DP_EXTRA_BASE <= dpid < DP_EXTRA_BASE + 2 * len(EXTRA_KEYS):
             k, ch = divmod(dpid - DP_EXTRA_BASE, 2)
             return dp_payload(dpid, TUYA_TYPE_VALUE, self.ch[ch][EXTRA_KEYS[k]].to_bytes(4, "big"))
         if DP_CURVE_BASE <= dpid < DP_CURVE_BASE + 2:
@@ -150,9 +151,10 @@ class OwnMcu:
         frames = [self._report([self._dp(DP_POWER_ON)])]
         for ch in range(2):
             base = ch * 6 + 1
+            fast = [self._dp(DP_EXTRA_BASE + 8 + ch)] if self.has(FEATURES_BUILD) else []
             frames.append(self._report([self._dp(base + i) for i in range(6)]
                                        + [self._dp(DP_CURVE_BASE + ch),
-                                          self._dp(DP_POWER_ON_BASE + ch)]))
+                                          self._dp(DP_POWER_ON_BASE + ch)] + fast))
             extras = [DP_EXTRA_BASE + 2 * k + ch for k in (0, 1, 3)] if self.has(FEATURES_BUILD) else []
             frames.append(self._report([self._dp(DP_PROFILE_BASE + 5 * ch + k)
                                         for k in range(5)] + [self._dp(dp) for dp in extras]))
@@ -188,12 +190,16 @@ class OwnMcu:
             if not self.has(TRANSITION_BUILD):
                 return False                     # an older app does not know it
             self.ch[dpid - DP_TRANSITION_BASE]["transition"] = min(value, 0xFFFF)
-        elif DP_EXTRA_BASE <= dpid < DP_EXTRA_BASE + 8:
+        elif DP_EXTRA_BASE <= dpid < DP_EXTRA_BASE + 2 * len(EXTRA_KEYS):
             if not self.has(FEATURES_BUILD):
                 return False
             k, ch = divmod(dpid - DP_EXTRA_BASE, 2)
             c = self.ch[ch]
-            if k == 0:
+            if k == 4:                           # fast press
+                if value > 1:
+                    return False
+                c["fast_press"] = value
+            elif k == 0:
                 if value > 2:
                     return False
                 c["input"] = value

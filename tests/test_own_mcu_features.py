@@ -22,6 +22,7 @@ IDENTIFY, ON_OFF, SWITCH_CFG, LEVEL, BALLAST = 0x0003, 0x0006, 0x0007, 0x0008, 0
 ATTR_ONOFF = 0x0000
 ATTR_COUNTDOWN = 0xFF10          # genOnOff
 ATTR_INPUT_MODE = 0xFF10         # genOnOffSwitchCfg
+ATTR_FAST_PRESS = 0xFF11         # genOnOffSwitchCfg
 ATTR_STARTUP_LEVEL = 0x4000      # Level Control StartUpCurrentLevel
 ATTR_IDENTIFY_TIME = 0x0000
 ATTR_BOOST = 0xFF10              # lightingBallastCfg
@@ -35,7 +36,8 @@ DP_INPUT = {1: 162, 2: 163}
 DP_POWER_LEVEL = {1: 164, 2: 165}
 DP_IDENTIFY = {1: 166, 2: 167}
 DP_BOOST = {1: 168, 2: 169}
-NEW_DPS = {6, 12, *range(162, 170)}
+DP_FAST_PRESS = {1: 170, 2: 171}
+NEW_DPS = {6, 12, *range(162, 172)}
 MCU_MIN = 200                    # the firmware's default min (OwnMcu)
 
 
@@ -301,6 +303,36 @@ def test_the_start_boost_is_written_in_ms():
         proc.stop()
 
 
+def test_the_fast_press_is_read_from_the_dump_and_written_per_channel():
+    proc, device, mcu = own(prepare=lambda m: m.ch[1].update(fast_press=1))
+    try:
+        assert [attr(device, ep, SWITCH_CFG, ATTR_FAST_PRESS) for ep in (1, 2)] == [0, 1]
+        assert write(device, mcu, 1, SWITCH_CFG, ATTR_FAST_PRESS, 1) == [(DP_FAST_PRESS[1], 1)]
+        assert write(device, mcu, 2, SWITCH_CFG, ATTR_FAST_PRESS, 0) == [(DP_FAST_PRESS[2], 0)]
+        assert [mcu.ch[0]["fast_press"], mcu.ch[1]["fast_press"]] == [1, 0]
+        assert [attr(device, ep, SWITCH_CFG, ATTR_FAST_PRESS) for ep in (1, 2)] == [1, 0]
+    finally:
+        proc.stop()
+
+
+def test_the_fast_press_gesture_is_a_multistate_value_of_its_own():
+    """Gesture 6 (press, at once) on DP 105 / 106: presentValue sequence << 4 | 6, each one a
+    change; 7 is none."""
+    from tuya_mcu import enum_dp
+    proc, device, mcu = own()
+    try:
+        assert int(device.read_zigbee_attr(1, 0x0012, 0x004A)) == 7            # NumberOfStates
+        mcu_report(proc, enum_dp(105, 6))
+        first = int(device.read_zigbee_attr(1, 0x0012, 0x0055))
+        mcu_report(proc, enum_dp(105, 6))
+        second = int(device.read_zigbee_attr(1, 0x0012, 0x0055))
+        assert first & 0x0F == 6 and second & 0x0F == 6 and first != second
+        mcu_report(proc, enum_dp(106, 7))
+        assert int(device.read_zigbee_attr(2, 0x0012, 0x0055)) == 0
+    finally:
+        proc.stop()
+
+
 # ---- identify ----------------------------------------------------------------------
 
 def test_identify_blinks_the_channel_and_counts_down():
@@ -347,6 +379,7 @@ def no_writes(proc, device) -> list:
 
 
 NONE_VALUES = [(ON_OFF, ATTR_COUNTDOWN, 0), (SWITCH_CFG, ATTR_INPUT_MODE, 0),
+               (SWITCH_CFG, ATTR_FAST_PRESS, 0),
                (LEVEL, ATTR_STARTUP_LEVEL, PREVIOUS), (BALLAST, ATTR_BOOST, 0),
                (IDENTIFY, ATTR_IDENTIFY_TIME, 0)]
 
@@ -402,17 +435,17 @@ def test_the_dump_of_an_older_open_dimmer_has_none_of_the_new_dps():
         proc.stop()
 
 
-def test_the_dump_of_2_2_0_is_one_burst_of_282_bytes():
+def test_the_dump_of_2_2_0_is_one_burst_of_298_bytes():
     proc, device, mcu = own()
     try:
         frames = mcu.dump()
-        assert sum(len(f) // 2 for f in frames) == 282
+        assert sum(len(f) // 2 for f in frames) == 298
         dps = set()
         for f in frames:
             data = bytes.fromhex(f)[8:-1]
             while data:
                 dps.add(data[0])
                 data = data[4 + int.from_bytes(data[2:4], "big"):]
-        assert dps & NEW_DPS == {6, 12, 162, 163, 164, 165, 168, 169}   # identify: never
+        assert dps & NEW_DPS == {6, 12, 162, 163, 164, 165, 168, 169, 170, 171}   # identify: never
     finally:
         proc.stop()
