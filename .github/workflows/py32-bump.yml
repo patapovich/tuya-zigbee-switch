@@ -68,6 +68,7 @@ jobs:
             --pattern secondary_mcu_image.c --pattern SHA256SUMS --dir /tmp/py32
           (cd /tmp/py32 && grep -E '[ *]secondary_mcu_image\.c$' SHA256SUMS | sha256sum -c -)
           ver() { sed -n 's/.*own MCU firmware: version \([0-9.]*\).*/\1/p' "$1" | head -1; }
+          bld() { sed -n 's/.*Image build: \([0-9]*\).*/\1/p' "$1" | head -1; }   # the update order
           bytes() { grep -E '^ +0x' "$1" || true; }   # the image itself (C array rows)
           new=$(ver /tmp/py32/secondary_mcu_image.c); cur=$(ver src/zigbee/secondary_mcu_image.c)
           if ! [[ "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -89,15 +90,26 @@ jobs:
             echo "::notice::home-dimmer already carries $tag"
             exit 0
           fi
-          newest=$(printf '%s\n%s\n' "$cur" "$new" | sort -V | tail -1)
-          if [ "$FORCE" = true ] || [ -z "$cur" ] || { [ "$new" != "$cur" ] && [ "$newest" = "$new" ]; }; then
-            :   # newer (or forced)
-          elif [ "$new" = "$cur" ] && [ "$(bytes /tmp/py32/secondary_mcu_image.c)" = "$(bytes src/zigbee/secondary_mcu_image.c)" ]; then
-            :   # the same image, only the generated file's text differs
-          elif [ "$new" = "$cur" ]; then
-            keep warning "home-dimmer carries another image with the same version $cur (carried by hand?): modules that have it are never offered $tag. Bump the version, or use force to replace it"
+          # Newer by the image build when both files name one (the module offers an update by the
+          # build, so the carry decides the same way), else by the version.
+          nb=$(bld /tmp/py32/secondary_mcu_image.c); cb=$(bld src/zigbee/secondary_mcu_image.c)
+          echo "builds: release ${nb:-none}, home-dimmer ${cb:-none}"
+          if [ -n "$nb" ] && [ -n "$cb" ]; then
+            if [ "$nb" -gt "$cb" ]; then newer=true; else newer=false; fi
+            same=$([ "$nb" -eq "$cb" ] && echo true || echo false)
           else
-            keep notice "$tag ($new) is older than what home-dimmer carries ($cur); use force to go back"
+            newest=$(printf '%s\n%s\n' "$cur" "$new" | sort -V | tail -1)
+            newer=$([ "$new" != "$cur" ] && [ "$newest" = "$new" ] && echo true || echo false)
+            same=$([ "$new" = "$cur" ] && echo true || echo false)
+          fi
+          if [ "$FORCE" = true ] || [ -z "$cur" ] || [ "$newer" = true ]; then
+            :   # newer (or forced)
+          elif [ "$same" = true ] && [ "$(bytes /tmp/py32/secondary_mcu_image.c)" = "$(bytes src/zigbee/secondary_mcu_image.c)" ]; then
+            :   # the same image, only the generated file's text differs
+          elif [ "$same" = true ]; then
+            keep warning "home-dimmer carries another image with the same build / version ($cur build ${cb:-?}, carried by hand?): modules that have it are never offered $tag. Use force to replace it"
+          else
+            keep notice "$tag ($new build ${nb:-?}) is older than what home-dimmer carries ($cur build ${cb:-?}); use force to go back"
           fi
           echo "change=true" >> "$GITHUB_OUTPUT"
           cp /tmp/py32/secondary_mcu_image.c src/zigbee/secondary_mcu_image.c
