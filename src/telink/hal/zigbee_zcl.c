@@ -13,7 +13,6 @@
 
 #include "hal/zigbee.h"
 #include "telink_zigbee_hal.h"
-#include "hal/printf_selector.h"
 #include "zigbee/battery_cluster.h"
 #include "zigbee/consts.h"
 
