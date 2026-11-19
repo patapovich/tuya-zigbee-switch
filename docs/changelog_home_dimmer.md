@@ -14,6 +14,11 @@ zdms16-py32 release notes.
 
 ## Next
 
+- Transition time: a Zigbee transition (Home Assistant's `transition`) is honoured by Open
+  Dimmer from 2.1.14 (build 400): the change takes exactly that long at one even rate, on, off
+  and level alike. Older Open Dimmer versions and factory MCUs fade by their own settings, as
+  before (nothing more is sent to them).
+
 ## 1.1.3-db24e888 (2026-11-19), carries Open Dimmer 2.1.13
 
 - Carries Open Dimmer 2.1.13.

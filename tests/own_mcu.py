@@ -48,6 +48,7 @@ DP_POWER_ON = 14
 DP_CURVE_BASE = 101
 DP_POWER_ON_BASE = 103
 DP_PROFILE_BASE = 150
+DP_TRANSITION_BASE = 160   # transition time ms per channel, from build 400 (never in the dump)
 PROFILE_KEYS = ("fade_on", "fade_off", "soft_end", "hold", "hold_end")
 UART_C = Path(__file__).resolve().parent.parent / "src/telink/hal/uart.c"
 
@@ -68,14 +69,16 @@ def channel(power_on: int) -> dict:
     """The firmware's defaults (fresh flash), with a given power-on."""
     return {"on": 0, "level": 1000, "min": 200, "switch_type": 0, "max": 1000,
             "countdown": 0, "curve": 2, "power_on": power_on, "fade_on": 950,
-            "fade_off": 950, "soft_end": 12, "hold": 3300, "hold_end": 20}
+            "fade_off": 950, "soft_end": 12, "hold": 3300, "hold_end": 20, "transition": 0}
 
 
 class OwnMcu:
     def __init__(self, proc, device, version: int = VERSION, power_on=(0, 1),
-                 protocol: int = 1, started: bool = True) -> None:
+                 protocol: int = 1, started: bool = True, build: int | None = None,
+                 boot: int | None = None) -> None:
         self.proc, self.device = proc, device
         self.version, self.protocol = version, protocol
+        self.build, self.boot = build, boot   # a v2 app says them in its identity answer
         self.ch = [channel(po) for po in power_on]
         self.query_seq = 0
         self.report_seq = 0
@@ -105,6 +108,9 @@ class OwnMcu:
         if DP_POWER_ON_BASE <= dpid < DP_POWER_ON_BASE + 2:
             c = self.ch[dpid - DP_POWER_ON_BASE]
             return dp_payload(dpid, TUYA_TYPE_ENUM, bytes([c["power_on"]]))
+        if DP_TRANSITION_BASE <= dpid < DP_TRANSITION_BASE + 2:
+            v = self.ch[dpid - DP_TRANSITION_BASE]["transition"]
+            return dp_payload(dpid, TUYA_TYPE_VALUE, v.to_bytes(4, "big"))
         if DP_CURVE_BASE <= dpid < DP_CURVE_BASE + 2:
             return dp_payload(dpid, TUYA_TYPE_ENUM, bytes([self.ch[dpid - DP_CURVE_BASE]["curve"]]))
         c = self.ch[(dpid - 1) // 6]
@@ -181,6 +187,10 @@ class OwnMcu:
             return self.dump()
         if cmd == OTA_IDENT and self.answers_ident:
             ident = b"ZDMS" + bytes([1, self.version, self.protocol])
+            if self.build is not None:
+                ident += self.build.to_bytes(2, "big")
+                if self.boot is not None:
+                    ident += bytes([self.boot])
             return [tuya_frame(OTA_IDENT, ident, seq=0)]
         if cmd == OTA_NOTIFY:
             return [tuya_frame(OTA_NOTIFY, bytes([1]), seq=0)]   # declined
@@ -189,6 +199,10 @@ class OwnMcu:
             value = int.from_bytes(data[4:4 + vlen], "big")
             if DP_POWER_ON_BASE <= dpid < DP_POWER_ON_BASE + 2:
                 self.ch[dpid - DP_POWER_ON_BASE]["power_on"] = value
+            elif DP_TRANSITION_BASE <= dpid < DP_TRANSITION_BASE + 2:
+                if self.build is None or self.build < 400:
+                    return []                    # an older app does not know it: no ack
+                self.ch[dpid - DP_TRANSITION_BASE]["transition"] = min(value, 0xFFFF)
             elif dpid == DP_POWER_ON:
                 for c in self.ch:
                     c["power_on"] = value

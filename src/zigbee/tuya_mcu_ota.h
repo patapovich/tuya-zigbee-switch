@@ -123,6 +123,14 @@ uint8_t tuya_mcu_ota_may_be_own(uint8_t packed);
  *  contact asks again). */
 void tuya_mcu_ota_mcu_restarted(void);
 
+/** The build an Open Dimmer said in its last identity answer (0: none yet, or a 2.1.x app
+ *  without one). Valid only while tuya_mcu_app_mcu_is_own(). */
+uint16_t tuya_mcu_ota_own_build(void);
+
+/* Open Dimmer from this build (2.1.14) takes a transition time: DP 160 / 161, the ms its
+ * network changes of the next second take (zdms16-py32 src/dimmer.h). */
+#define OPEN_DIMMER_TRANSITION_BUILD    400
+
 /** The MCU's network query that is no first contact, with no version
  *  question out: an MCU whose identity questions all ran out is asked again
  *  (twice at most, until its next version answer). */

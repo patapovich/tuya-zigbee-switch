@@ -202,6 +202,7 @@ static uint8_t    g_ident_waiting;
 static uint8_t    g_ident_retries;
 static uint8_t    g_ident_gave_up;          /* its version answer's questions all ran out */
 static uint8_t    g_ident_late;             /* asked at its queries since */
+static uint16_t   g_own_build;              /* the build in its last identity answer */
 
 static void ident_timeout(void *arg);
 
@@ -242,6 +243,10 @@ static void ident_timeout(void *arg) {
 
 uint8_t tuya_mcu_ota_may_be_own(uint8_t packed) {
     return (packed >> 6) >= TUYA_MCU_IDENT_ASK_FROM_MAJOR && secondary_mcu_image_size != 0;
+}
+
+uint16_t tuya_mcu_ota_own_build(void) {
+    return g_own_build;
 }
 
 void tuya_mcu_ota_mcu_restarted(void) {
@@ -295,6 +300,7 @@ static void on_ident(const uint8_t *data, uint16_t len) {
     uint8_t  has_build = len >= IDENT_LEN_BUILD;
     uint16_t build     = has_build ? (uint16_t)((data[7] << 8) | data[8]) : 0;
     uint8_t  boot      = len >= IDENT_LEN_BOOT ? data[9] : 0;
+    g_own_build             = build;
     tuya_mcu_diag.mcu_build = build;
     tuya_mcu_diag.mcu_boot  = boot;
     tuya_mcu_diag_log(TUYA_MCU_DIAG_IDENT, running,
@@ -456,6 +462,10 @@ uint8_t tuya_mcu_ota_on_command(uint8_t cmd, uint16_t seq, const uint8_t *data,
 }
 
 #else /* boards that carry no MCU firmware: nothing of this */
+
+uint16_t tuya_mcu_ota_own_build(void) {
+    return 0;
+}
 
 uint8_t tuya_mcu_ota_on_version(uint8_t packed) {
     (void)packed;

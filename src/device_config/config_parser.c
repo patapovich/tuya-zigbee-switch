@@ -555,8 +555,9 @@ void parse_config() {
 
         /* DPs of the own PY32 firmware, used only once the MCU has said it
          * runs it (tuya_mcu_app_mcu_is_own), never with another MCU. */
-        d->own_power_on_dpid = (uint8_t)(0x67 + i);   /* 103, 104 */
-        d->action_dpid       = (uint8_t)(0x69 + i);   /* 105, 106 */
+        d->own_power_on_dpid   = (uint8_t)(0x67 + i); /* 103, 104 */
+        d->action_dpid         = (uint8_t)(0x69 + i); /* 105, 106 */
+        d->own_transition_dpid = (uint8_t)(0xA0 + i); /* 160, 161 */
     }
 
     peripherals_init();

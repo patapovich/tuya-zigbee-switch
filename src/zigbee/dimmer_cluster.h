@@ -22,6 +22,12 @@ typedef struct {
      * (sequence << 4 | gesture, so every gesture is a change). */
     uint8_t              own_power_on_dpid;
     uint8_t              action_dpid;
+
+    /* Its transition time DP (160 / 161, from OPEN_DIMMER_TRANSITION_BUILD): the ms of the
+     * change written right after it; transition_at: when a time other than 0 went out (0: none
+     * that could still apply). */
+    uint8_t              own_transition_dpid;
+    uint32_t             transition_at;
     uint8_t              action_seq;
     uint16_t             action_state;
     hal_zigbee_attribute attr_infos[4];             // onoff, startup, current_level, on_level

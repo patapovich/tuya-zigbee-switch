@@ -3,7 +3,9 @@
 #include "hal/nvm.h"
 #include "zigbee/cluster_common.h"
 #include "zigbee/consts.h"
+#include "hal/timer.h"
 #include "zigbee/tuya_mcu_app.h"
+#include "zigbee/tuya_mcu_ota.h"
 #include "zigbee/tuya_secondary_mcu.h"
 
 #ifdef SECONDARY_MCU_IMAGE
@@ -197,6 +199,36 @@ static void dimmer_stop_move(zigbee_dimmer_cluster *cluster) {
     hal_tasks_unschedule(&cluster->ramp_task);
 }
 
+static uint8_t dimmer_own_mcu(const zigbee_dimmer_cluster *cluster);
+
+/* ---- transition time -------------------------------------------------------
+ *
+ * A ZCL transition time (1/10 s, little endian at tt) for the change written next: Open Dimmer
+ * from OPEN_DIMMER_TRANSITION_BUILD takes it as the ms its network changes of the next second
+ * take (DP 160 / 161, before the on / off / level writes). Any other MCU fades by its own
+ * settings, as before, and gets nothing more. 0 and 0xFFFF (none given; Zigbee2MQTT sends 0
+ * without a transition): the fade settings, so a 0 goes out only while an earlier time could
+ * still apply to this change. */
+#define DIMMER_TRANSITION_VALID_MS    1500 /* the MCU's window is 1 s from its receipt */
+
+static void dimmer_send_transition(zigbee_dimmer_cluster *cluster, const uint8_t *tt) {
+    if (!dimmer_own_mcu(cluster) || tuya_mcu_ota_own_build() < OPEN_DIMMER_TRANSITION_BUILD)
+        return;
+
+    uint16_t t   = (uint16_t)(tt[0] | (tt[1] << 8));
+    uint32_t now = hal_millis();
+
+    if (t == 0xFFFF)
+        t = 0;
+    if (t == 0 && (cluster->transition_at == 0 ||
+                   now - cluster->transition_at >= DIMMER_TRANSITION_VALID_MS))
+        return;
+
+    uint32_t ms = (uint32_t)t * 100u;
+    dimmer_write_tuya_value(cluster->own_transition_dpid, ms > 0xFFFFu ? 0xFFFFu : ms);
+    cluster->transition_at = t ? (now | 1u) : 0;
+}
+
 /* On before level: the MCU acknowledges a level written while the channel is
  * off but does not keep it, and "on" restores the level it remembers.
  * So "on at level X" is on first, then X. */
@@ -357,6 +389,8 @@ static hal_zigbee_cmd_result_t dimmer_cluster_level_callback(zigbee_dimmer_clust
 
         uint8_t with_onoff = command_id == ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF;
         dimmer_stop_move(cluster);
+        if (cmd_payload_len >= 3 && (with_onoff || cluster->on))
+            dimmer_send_transition(cluster, payload + 1);
 
         if (!with_onoff) {
             dimmer_change_level(cluster, dimmer_clamp_level(payload[0]));
@@ -414,6 +448,8 @@ static hal_zigbee_cmd_result_t dimmer_cluster_level_callback(zigbee_dimmer_clust
                 break;
             base = 0; /* stepping up from off starts at the bottom */
         }
+        if (cmd_payload_len >= 4)
+            dimmer_send_transition(cluster, payload + 2);
 
         int next = up ? base + payload[1] : base - payload[1];
         if (!up && next < ZCL_LEVEL_MIN && with_onoff) {
