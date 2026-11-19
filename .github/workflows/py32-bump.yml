@@ -163,6 +163,7 @@ jobs:
         if: steps.rel.outputs.change == 'true' || inputs.force
         env:
           GH_TOKEN: ${{ github.token }}
+          PUSH_TOKEN: ${{ secrets.BUMP_PUSH_TOKEN }}
         run: |
           set -e
           # one module build at a time: each one pushes its firmware commit to the branch
@@ -176,7 +177,16 @@ jobs:
           git checkout -q -B home-dimmer_build
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             cherry-pick FETCH_HEAD
-          git push -f origin home-dimmer_build
+          # GITHUB_TOKEN may not push a branch whose workflow files change (refused for a GitHub
+          # App): with the secret BUMP_PUSH_TOKEN (contents + workflows) the build branch goes out
+          # with it; without, as before (then a change of .github/workflows on home-dimmer needs one
+          # push of the build branch by hand).
+          if [ -n "$PUSH_TOKEN" ]; then
+            git -c http.https://github.com/.extraheader= push -f \
+              "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:home-dimmer_build
+          else
+            git push -f origin home-dimmer_build
+          fi
           # the build's id as board.mk makes it (VERSION_STR), from the head just pushed
           build=$(echo "$(cat VERSION)-$(git rev-parse --short HEAD)" | cut -c1-16)
           echo "build=$build" >> "$GITHUB_OUTPUT"
