@@ -20,8 +20,8 @@ zdms16-py32 release notes.
   sent over the UART; Open Dimmer's default settings). The SWD master is on by default
   (`SWD3D7` in the board's config); without the wires it reads one pin per start-up and nothing
   else. It installs once, at the first start-up that sees the wires; an MCU that runs Open
-  Dimmer already is left alone. The wires need no resistors: the module drives both lines
-  open-drain. With the device option `mcu_flasher: show`, `mcu_flasher_status` tells what it
+  Dimmer already is left alone. The wires need no resistors: the module drives SWDIO
+  open-drain and SWCLK only after finding it free. With the device option `mcu_flasher: show`, `mcu_flasher_status` tells what it
   did, and `mcu_flasher` starts the manual jobs: `survey_dp`, `survey_full` (identity, option
   bytes, checksums, app header; read only), `update_bootloader` / `update_bootloader_force`
   and `install` (writing jobs: the job's name into `mcu_flasher_confirm` first), `abort`.
