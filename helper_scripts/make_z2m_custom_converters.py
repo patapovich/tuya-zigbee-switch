@@ -112,6 +112,14 @@ def dp_attribute_errors(device: dict) -> list[str]:
                 errors.append(f"{where}: min {lo} > max {hi}")
         if "unit" in dp and not isinstance(dp["unit"], str):
             errors.append(f"{where}: unit must be a string")
+        # divisor / step: only the Open Dimmer value converter (ownMcuNumeric) takes them.
+        for key in ("divisor", "step"):
+            if key not in dp:
+                continue
+            if type(dp[key]) not in (int, float) or not dp[key] > 0:
+                errors.append(f"{where}: {key} must be a number above 0")
+            elif kind != "V" or not (dp.get("dimmer") or dp.get("min_mcu")):
+                errors.append(f"{where}: {key} only for a value (type V) with dimmer or min_mcu")
         if dp.get("dimmer") or dp.get("min_mcu"):
             if kind not in ("E", "V"):
                 errors.append(f"{where}: dimmer / min_mcu settings must be enums or values (type E / V)")
@@ -231,14 +239,14 @@ if __name__ == "__main__":
         else:
             cover_names = [f"cover_{index}" for index in range(cover_cnt)]
 
+        # Channels l1, l2, ... as the boards mark their outputs (L1, L2) and as
+        # zigbee-herdsman-converters' own stock definitions name them (ZDMS16-2:
+        # state_l1, switch_type_l1): a module moved from the stock firmware keeps
+        # the light's and the switch type's entities in Home Assistant.
         if dimmer_cnt == 1:
             dimmer_names = ["dimmer"]
-        elif dimmer_cnt == 2:
-            dimmer_names = ["dimmer_left", "dimmer_right"]
-        elif dimmer_cnt == 3:
-            dimmer_names = ["dimmer_left", "dimmer_middle", "dimmer_right"]
         else:
-            dimmer_names = [f"dimmer_{index}" for index in range(dimmer_cnt)]
+            dimmer_names = [f"l{index + 1}" for index in range(dimmer_cnt)]
 
         devices.append(
             {

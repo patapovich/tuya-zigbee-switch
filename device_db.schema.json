@@ -204,7 +204,9 @@
                   "min": {"type": "number"},
                   "max": {"type": "number"},
                   "dimmer": {"type": "integer", "minimum": 1, "description": "Expose on this dimmer's endpoint (1-based) instead of the first one; the attribute stays on endpoint 1"},
-                  "min_mcu": {"type": "integer", "minimum": 1, "description": "Only Open Dimmer of this major version or later has the DP: the expose follows the device option open_dimmer_settings (auto/show/hide)"}
+                  "min_mcu": {"type": "integer", "minimum": 1, "description": "Only Open Dimmer of this major version or later has the DP: the expose follows the device option open_dimmer_settings (auto/show/hide)"},
+                  "divisor": {"type": "number", "exclusiveMinimum": 0, "description": "Shown value = attribute / divisor (1000: an attribute in ms shown in s); min and max stay the attribute's (V with dimmer or min_mcu)"},
+                  "step": {"type": "number", "exclusiveMinimum": 0, "description": "Step of the shown value (V with dimmer or min_mcu)"}
                 },
                 "required": ["dp", "type", "attr", "name", "label"],
                 "additionalProperties": false

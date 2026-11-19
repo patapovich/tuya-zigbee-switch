@@ -15,15 +15,17 @@ import re
 from generated_converter import custom_converter_js
 
 # The ZDMS16-2's extends in order: function(name, endpoint...) as in the
-# generated converter (deviceEndpoints: name=endpoint id).
+# generated converter (deviceEndpoints: name=endpoint id). Channels l1 / l2 as the stock
+# definition of zigbee-herdsman-converters names them; the module's own settings
+# (mcu_version, multi_press_reset_count, device_config*) on the device, not on l1.
 ZDMS16_2_EXTENDS = [
-    "deviceEndpoints(dimmer_left=1, dimmer_right=2)",
+    "deviceEndpoints(l1=1, l2=2)",
     "romasku.ownMcuOption()",
     "romasku.mcuVersionMeta()",
-    "romasku.dimmerTransition(dimmer_left, dimmer_right)",
+    "romasku.dimmerTransition(l1, l2)",
     *[
         entry
-        for dimmer in ("dimmer_left", "dimmer_right")
+        for dimmer in ("l1", "l2")
         for entry in (
             f"light({dimmer})",
             f"romasku.dimmerMinLevel(min_level, {dimmer})",
@@ -34,9 +36,9 @@ ZDMS16_2_EXTENDS = [
             f"romasku.dimmerSwitchType(switch_type, {dimmer})",
             f"romasku.ownMcuNumeric(fade_on_time, {dimmer})",
             f"romasku.ownMcuNumeric(fade_off_time, {dimmer})",
-            f"romasku.ownMcuNumeric(soft_dim_end, {dimmer})",
+            f"romasku.ownMcuNumeric(fade_off_slow_zone, {dimmer})",
             f"romasku.ownMcuNumeric(hold_time, {dimmer})",
-            f"romasku.ownMcuNumeric(hold_dim_end, {dimmer})",
+            f"romasku.ownMcuNumeric(hold_slow_zone, {dimmer})",
             # Open Dimmer 2.2.0 (shown only for it: a stock MCU's entities stay as they were)
             f"romasku.dimmerCountdown({dimmer})",
             f"romasku.dimmerSwitchMode({dimmer})",
@@ -48,15 +50,15 @@ ZDMS16_2_EXTENDS = [
             f"romasku.dimmerBrightnessFadeTime({dimmer})",
         )
     ],
-    "romasku.dimmerGestures(dimmer_left, dimmer_right)",
-    "romasku.dimmerPowerOnPerChannel(dimmer_left, dimmer_right)",
-    "romasku.dimmerIdentify(dimmer_left, dimmer_right)",
-    "romasku.mcuVersion(mcu_version, dimmer_left)",
+    "romasku.dimmerGestures(l1, l2)",
+    "romasku.dimmerPowerOnPerChannel(l1, l2)",
+    "romasku.dimmerIdentify(l1, l2)",
+    "romasku.mcuVersion(mcu_version)",
     "romasku.mcuFirmware()",
     "romasku.mcuHealth()",
-    "romasku.multiPressResetCount(multi_press_reset_count, dimmer_left)",
-    "romasku.deviceConfig(device_config, dimmer_left)",
-    "romasku.deviceConfigExt(device_config_ext, dimmer_left)",
+    "romasku.multiPressResetCount(multi_press_reset_count)",
+    "romasku.deviceConfig(device_config)",
+    "romasku.deviceConfigExt(device_config_ext)",
 ]
 
 
@@ -179,7 +181,7 @@ console.log(JSON.stringify({
     assert out["models"] == [["TS0601-ZDMS16-2"], ["TS0601-ZDMS16-2"]]
     stock = [["power_on_behavior", None, ["off", "on", "previous"]], ["mcu_firmware", None, None]]
     assert out["stock"] == [stock, stock]
-    assert out["od21"] == [["action", None, [f"{k}_{n}" for n in ("dimmer_left", "dimmer_right")
+    assert out["od21"] == [["action", None, [f"{k}_{n}" for n in ("l1", "l2")
                                              for k in ("single", "double", "triple", "hold", "release")]]]
 
 

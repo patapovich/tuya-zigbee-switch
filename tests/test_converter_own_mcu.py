@@ -21,7 +21,7 @@ def zdms16_block() -> str:
 # fromZigbee, as Zigbee2MQTT runs them).
 ZDMS = """
 const def = definitions.find((d) => d.model === "ZDMS16-2");
-const model = {endpoint: () => ({dimmer_left: 1, dimmer_right: 2})};
+const model = {endpoint: () => ({l1: 1, l2: 2})};
 const shown = (dev, options = {}) => def.extend.filter((x) => !x.fake)
     .flatMap((x) => x.exposes ?? []).flatMap((x) => (typeof x === "function" ? x(dev, options) : [x]))
     .map((x) => `${x.name}${x.endpoint ? "_" + x.endpoint : ""}`);
@@ -44,7 +44,7 @@ def test_curves_are_on_each_dimmer_endpoint_with_their_own_attribute():
     curves = re.findall(
         r'ownMcuEnum\(\{\s*name: "dimming_curve",\s*endpointName: "(\w+)",\s*attrId: (0x\w+)', block
     )
-    assert curves == [("dimmer_left", "0xff30"), ("dimmer_right", "0xff31")]
+    assert curves == [("l1", "0xff30"), ("l2", "0xff31")]
     assert "romasku.ownMcuOption()" in block
     assert "romasku.mcuVersionMeta()" in block
     assert "romasku.mcuFirmware()" in block
@@ -106,14 +106,14 @@ console.log(JSON.stringify({
   power: [fz(ver("1.0.7"), 1, { startUpOnOff: 255 }), fz(ver("1.0.7"), 2, { startUpOnOff: 0 }), fz(ver("1.0.7"), 2, { onOff: 1 })],
 }));
 """))
-    assert out["own"] == ["power_on_behavior_dimmer_left", "power_on_behavior_dimmer_right", "action"]
+    assert out["own"] == ["power_on_behavior_l1", "power_on_behavior_l2", "action"]
     assert out["stock"] == ["power_on_behavior"]
     assert out["hide"] == ["power_on_behavior"]
-    assert out["show"] == ["power_on_behavior_dimmer_left", "power_on_behavior_dimmer_right", "action"]
-    assert out["gestures"] == [[{"action": "double_dimmer_right"}], [{"action": "release_dimmer_left"}], [], []]
+    assert out["show"] == ["power_on_behavior_l1", "power_on_behavior_l2", "action"]
+    assert out["gestures"] == [[{"action": "double_l2"}], [{"action": "release_l1"}], [], []]
     assert out["power"] == [
-        [{"power_on_behavior_dimmer_left": "previous", "power_on_behavior": "previous"}],
-        [{"power_on_behavior_dimmer_right": "off"}],
+        [{"power_on_behavior_l1": "previous", "power_on_behavior": "previous"}],
+        [{"power_on_behavior_l2": "off"}],
         [],
     ]
 
@@ -132,12 +132,12 @@ const run = async (endpointName, entity) => {
 };
 (async () => console.log(JSON.stringify({
     shared: await run(undefined, dev.getEndpoint(1)),
-    right: await run("dimmer_right", dev.getEndpoint(2)),
+    right: await run("l2", dev.getEndpoint(2)),
 })))();
 """))
     assert out["shared"] == [
         [[1, 1], [2, 1]],
-        {"power_on_behavior": "on", "power_on_behavior_dimmer_left": "on", "power_on_behavior_dimmer_right": "on"},
+        {"power_on_behavior": "on", "power_on_behavior_l1": "on", "power_on_behavior_l2": "on"},
     ]
     assert out["right"] == [[[2, 1]], {"power_on_behavior": "on"}]
 
@@ -155,7 +155,7 @@ console.log(JSON.stringify({
     show: fz(ver("1.0.7"), 1, data, {open_dimmer_settings: "show"}),
 }));
 """))
-    assert out["own"] == [{"dimming_curve_dimmer_left": "linear"}, {"hold_time_dimmer_left": 950}]
+    assert out["own"] == [{"dimming_curve_l1": "linear"}, {"hold_time_l1": 0.95}]   # ms, shown in s
     assert out["stock"] == []
     assert out["unknown"] == []
     assert out["show"] == out["own"]
@@ -177,9 +177,9 @@ console.log(JSON.stringify({
 }));
 """))
     assert out["oldHide"] == 2                  # as a stock MCU: shared power_on_behavior, mcu_firmware
-    assert out["oldShow"] == 16 + 24            # "show": every Open Dimmer setting, those of 2.2.0 too
+    assert out["oldShow"] == 16 + 23            # "show": every Open Dimmer setting, those of 2.2.0 too
     assert out["newWins"] == [16, 2]
-    assert out["oldShowStored"] == [{"dimming_curve_dimmer_left": "linear"}]
+    assert out["oldShowStored"] == [{"dimming_curve_l1": "linear"}]
     assert out["options"] == [["open_dimmer_settings", ["auto", "show", "hide"], "Open Dimmer settings"],
                               ["transition", None, None]]    # its own description (dimmerTransition)
 
@@ -199,9 +199,9 @@ const publish = (dev, v, ep = 1) => {
 
 
 def test_mcu_version_and_mcu_firmware_payloads():
-    """mcu_version shows the version without the module's Open Dimmer marker, under the
-    key it always had (mcu_version_dimmer_left, so Home Assistant's entity keeps its
-    state); mcu_firmware says which firmware it is. Open Dimmer is sticky as for the
+    """mcu_version shows the version without the module's Open Dimmer marker, on the
+    device (key mcu_version, no endpoint: the MCU is the module's, not a channel's);
+    mcu_firmware says which firmware it is. Open Dimmer is sticky as for the
     settings: a bare 2.x after it is still Open Dimmer, only a stock version ends it.
     mcu_firmware publishes nothing while the version is not known ("" or 0.0.0). The
     kept version stays raw ("x.y.z own"): the detection reads the marker."""
@@ -221,7 +221,7 @@ console.log(JSON.stringify({
     od, stock = "Open Dimmer", "Tuya (stock)"
 
     def v(version, firmware=None):
-        return {"mcu_version_dimmer_left": version, **({"mcu_firmware": firmware} if firmware else {})}
+        return {"mcu_version": version, **({"mcu_firmware": firmware} if firmware else {})}
 
     assert out["steps"] == [
         ["2.1.10 own", v("2.1.10", od), "2.1.10 own"],
@@ -258,7 +258,7 @@ console.log(JSON.stringify({
               "category": "diagnostic",
               "description": "Firmware of the secondary MCU (the chip that drives the outputs): Open Dimmer or the stock Tuya firmware"}
     assert out["firmware"] == [[[expose], [expose]], [[]], [[]]]
-    text_args = {"name": "mcu_version", "endpointName": "dimmer_left", "access": "STATE_GET", "cluster": "genBasic",
+    text_args = {"name": "mcu_version", "access": "STATE_GET", "cluster": "genBasic",   # device level
                  "attribute": {"ID": 0xFF12, "type": 0x42},
                  "description": "Firmware version of the secondary MCU (the chip that drives the outputs)",
                  "entityCategory": "diagnostic"}
@@ -397,11 +397,11 @@ def test_device_level_numeric_has_no_endpoint_filter():
 const r = c.romasku;
 console.log(JSON.stringify([
     r.multiPressResetCount("multi_press_reset_count").args.endpointNames,
-    r.multiPressResetCount("multi_press_reset_count", "dimmer_left").args.endpointNames,
+    r.multiPressResetCount("multi_press_reset_count", "l1").args.endpointNames,
     r.dimmerMinLevel("min_level").args.endpointNames ?? null,
 ]));
 """))
-    assert out == [None, ["dimmer_left"], None]
+    assert out == [None, ["l1"], None]
 
 
 def test_fade_and_hold_settings_are_per_dimmer_with_their_own_attributes():
@@ -409,9 +409,9 @@ def test_fade_and_hold_settings_are_per_dimmer_with_their_own_attributes():
     found = re.findall(
         r'ownMcuNumeric\(\{\s*name: "(\w+)",\s*endpointName: "(\w+)",\s*attrId: (0x\w+)', block
     )
-    names = ["fade_on_time", "fade_off_time", "soft_dim_end", "hold_time", "hold_dim_end"]
-    assert found == [(n, "dimmer_left", f"0xff{0x32 + k:02x}") for k, n in enumerate(names)] + [
-        (n, "dimmer_right", f"0xff{0x37 + k:02x}") for k, n in enumerate(names)
+    names = ["fade_on_time", "fade_off_time", "fade_off_slow_zone", "hold_time", "hold_slow_zone"]
+    assert found == [(n, "l1", f"0xff{0x32 + k:02x}") for k, n in enumerate(names)] + [
+        (n, "l2", f"0xff{0x37 + k:02x}") for k, n in enumerate(names)
     ]
     assert block.count("minMcu: 2,") == 12          # 2 curves + 10 fade and hold settings
 
@@ -421,5 +421,5 @@ def test_every_dimmer_has_its_light_on_a_line_of_its_own():
     channel's light: Home Assistant then deletes the entity (2026-11-17)."""
     block = zdms16_block()
     lines = [l for l in block.splitlines() if "light({ endpointNames" in l]
-    assert [re.search(r'endpointNames: \["(\w+)"\]', l).group(1) for l in lines] == ["dimmer_left", "dimmer_right"]
+    assert [re.search(r'endpointNames: \["(\w+)"\]', l).group(1) for l in lines] == ["l1", "l2"]
     assert all(l.strip().startswith("light(") for l in lines)

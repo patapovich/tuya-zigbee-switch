@@ -14,6 +14,17 @@ zdms16-py32 release notes.
 
 ## Next
 
+- Z2M converter: the channels are `l1` / `l2` (were `dimmer_left` / `dimmer_right`), as the
+  stock definition of zigbee-herdsman-converters names them; `mcu_version`,
+  `multi_press_reset_count`, `device_config` and `device_config_ext` are on the device, not on
+  the first channel. Home Assistant gets new entities for them (unique ids change): rename the
+  old entities to the new ids first to keep their history.
+- Open Dimmer times in seconds (`fade_on_time`, `fade_off_time`, `hold_time`, `start_boost`;
+  the module keeps ms); `soft_dim_end` / `hold_dim_end` are `fade_off_slow_zone` /
+  `hold_slow_zone`; labels say what a setting is (Wall switch type / mode / fast press, On
+  level (wall switch), Power-on level); `on_level` has a preset previous (255);
+  `mcu_temperature_calibration` is no longer shown.
+
 ## 1.1.3-6598b921 (2026-11-19), carries Open Dimmer 2.2.2
 
 - A plain on (no brightness) is always the module's own on (`fade_on_time`, the level it

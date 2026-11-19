@@ -30,7 +30,7 @@ ZCL_CMD_LEVEL_STEP_WITH_ON_OFF = 0x06
 # converter for the key, the store (zhc's globalStore) kept along it as in Zigbee2MQTT.
 SEQ = ZDMS + """
 const tzFor = (key) => def.extend.flatMap((x) => x.toZigbee ?? [])
-    .find((t) => t.key?.includes(key) && (!t.endpoints || t.endpoints.includes("dimmer_left")));
+    .find((t) => t.key?.includes(key) && (!t.endpoints || t.endpoints.includes("l1")));
 const run = async (version, steps, options = {}) => {
     h.globalStore.clear();
     const dev = h.device();
@@ -40,7 +40,7 @@ const run = async (version, steps, options = {}) => {
         const key = Object.keys(message).find((k) => k !== "transition");
         h.log.length = 0;
         await tzFor(key).convertSet(dev.getEndpoint(1), key, message[key],
-            {device: dev, message: {...message}, options, state, endpoint_name: "dimmer_left", mapped: model});
+            {device: dev, message: {...message}, options, state, endpoint_name: "l1", mapped: model});
         out.push(h.log.filter((l) => l[0] === "command").map((l) => [l[2], l[3], l[4]]));
     }
     return out;

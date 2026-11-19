@@ -314,10 +314,12 @@ const romasku = {
         result.exposes = result.exposes.map((expose) => expose.withLabel("MCU version"));
         // The version alone, without the module's Open Dimmer marker (that is
         // mcu_firmware). Only the published value changes: msg.data, which the
-        // other converters read, keeps the raw "x.y.z own".
+        // other converters read, keeps the raw "x.y.z own". On the device (no
+        // endpoint) only endpoint 1's Basic cluster carries it, as for mcu_firmware.
         result.fromZigbee = result.fromZigbee.map((converter) => ({
             ...converter,
             convert: (model, msg, publish, options, meta) => {
+                if (!endpointName && msg.endpoint?.ID !== 1) return;
                 const r = converter.convert(model, msg, publish, options, meta);
                 if (r) for (const key of Object.keys(r)) r[key] = shownMcuVersion(r[key]);
                 return r;
@@ -419,14 +421,17 @@ const romasku = {
     },
     // Value datapoint attribute (Basic 0xffXX on endpoint 1, uint32) exposed on
     // the endpoint of the channel it belongs to, shown like ownMcuEnum.
-    ownMcuNumeric: ({name, endpointName, attrId, description, valueMin, valueMax, unit, minMcu}) => {
+    // divisor: shown = attribute / divisor (1000: an attribute in ms shown in s); valueMin and
+    // valueMax are the attribute's. valueStep: the step shown.
+    ownMcuNumeric: ({name, endpointName, attrId, description, valueMin, valueMax, unit, minMcu, divisor = 1, valueStep}) => {
         let expose = e.numeric(name, ea.ALL)
             .withEndpoint(endpointName)
-            .withValueMin(valueMin)
-            .withValueMax(valueMax)
+            .withValueMin(valueMin / divisor)
+            .withValueMax(valueMax / divisor)
             .withDescription(description)
             .withCategory("config");
         if (unit) expose = expose.withUnit(unit);
+        if (valueStep !== undefined) expose = expose.withValueStep(valueStep);
         const property = `${name}_${endpointName}`;
         return {
             isModernExtend: true,
@@ -437,17 +442,21 @@ const romasku = {
                 convert: (model, msg, publish, options) => {
                     if (msg.endpoint.ID !== 1 || msg.data?.[attrId] === undefined) return;
                     if (minMcu && !ownMcuShown(msg.device, options, minMcu)) return;   // as ownMcuEnum
-                    return {[property]: msg.data[attrId]};
+                    return {[property]: msg.data[attrId] / divisor};
                 },
             }],
             toZigbee: [{
                 key: [name],
                 endpoints: [endpointName],
                 convertSet: async (entity, key, value, meta) => {
-                    const v = Number(value);
-                    if (!Number.isInteger(v) || v < valueMin || v > valueMax) throw new Error(`${name}: an integer ${valueMin}..${valueMax}`);
+                    const n = value === "" || value === null ? NaN : Number(value);
+                    const v = Math.round(n * divisor);
+                    if (!Number.isFinite(n) || (divisor === 1 && !Number.isInteger(n)) || v < valueMin || v > valueMax) {
+                        throw new Error(divisor === 1 ? `${name}: an integer ${valueMin}..${valueMax}`
+                                                      : `${name}: ${valueMin / divisor}..${valueMax / divisor}${unit ? ` ${unit}` : ""}`);
+                    }
                     await meta.device.getEndpoint(1).write("genBasic", {[attrId]: {value: v, type: Zcl.DataType.UINT32}});
-                    return {state: {[key]: v}};
+                    return {state: {[key]: v / divisor}};
                 },
                 convertGet: async (entity, key, meta) => {
                     await meta.device.getEndpoint(1).read("genBasic", [attrId]);
@@ -776,8 +785,8 @@ const romasku = {
             valueMax: 254,
             entityCategory: "config",
         }),
-    dimmerOnLevel: (name, endpointName) =>
-        numeric({
+    dimmerOnLevel: (name, endpointName) => {
+        const extend = numeric({
             name,
             endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "genLevelCtrl",
@@ -786,7 +795,10 @@ const romasku = {
             valueMin: 1,
             valueMax: 255,
             entityCategory: "config",
-        }),
+        });
+        extend.exposes = extend.exposes.map((x) => (typeof x === "function" ? x : x.withPreset("previous", 255, "The brightness it had before")));
+        return extend;
+    },
     dimmerSwitchType: (name, endpointName) => {
         const lookup = { toggle: 0, state: 1, momentary: 2 };
         const extend = enumLookup({
@@ -795,7 +807,8 @@ const romasku = {
             lookup,
             cluster: "genOnOffSwitchCfg",
             attribute: "switchType",
-            description: "Type of physical dimmer/switch",
+            label: "Wall switch type",
+            description: "The wall switch on this channel's S input: toggle (a rocker switch, every flip toggles the light), state (a rocker switch, its position is on or off), momentary (a push button: a press toggles, a hold dims)",
             entityCategory: "config",
         });
         // ZCL marks switchType read-only and zigbee-herdsman refuses to write it
@@ -991,7 +1004,7 @@ const romasku = {
     dimmerSwitchMode: (endpointName) => {
         const lookup = {normal: 0, detached: 1, off: 2};
         const names = Object.keys(lookup);
-        const expose = e.enum("switch_mode", ea.ALL, names).withEndpoint(endpointName)
+        const expose = e.enum("switch_mode", ea.ALL, names).withEndpoint(endpointName).withLabel("Wall switch mode")
             .withDescription("Wall switch: normal (it switches and dims the light), detached (the light only follows the network; the switch's gestures are still reported as action, a toggle or state switch's change as a single) or off (ignored). Open Dimmer firmware")
             .withCategory("config");
         return romasku.dimmerOwnAttr({
@@ -1008,7 +1021,7 @@ const romasku = {
     // number entity), the presets name the two ends; their names are taken when written.
     dimmerStartupLevel: (endpointName) => {
         const presets = {minimum: 0, previous: 255};
-        const expose = e.numeric("current_level_startup", ea.ALL).withEndpoint(endpointName)
+        const expose = e.numeric("current_level_startup", ea.ALL).withEndpoint(endpointName).withLabel("Power-on level")
             .withValueMin(0).withValueMax(255)
             .withPreset("minimum", 0, "The channel's minimum brightness")
             .withPreset("previous", 255, "The brightness it had before")
@@ -1052,7 +1065,7 @@ const romasku = {
     // Fast press (Open Dimmer 2.2.0, DP 170 / 171 by genOnOffSwitchCfg 0xff11): in the
     // detached switch_mode a momentary switch's press is reported at once (action press_*).
     dimmerFastPress: (endpointName) => {
-        const expose = e.binary("fast_press", ea.ALL, true, false).withEndpoint(endpointName)
+        const expose = e.binary("fast_press", ea.ALL, true, false).withEndpoint(endpointName).withLabel("Wall switch fast press")
             .withDescription("In the detached switch_mode a momentary switch's press is reported at once as action press (no single / double / triple then; hold and release as before; Open Dimmer firmware)")
             .withCategory("config");
         return romasku.dimmerOwnAttr({
@@ -1085,7 +1098,7 @@ const romasku = {
     // OnLevel of the wall switch (Level Control 0xff11, kept by the module): a wall switch on
     // goes there, a network On to on_level. 255: as on_level.
     dimmerOnLevelLocal: (endpointName) => {
-        const expose = e.numeric("on_level_local", ea.ALL).withEndpoint(endpointName)
+        const expose = e.numeric("on_level_local", ea.ALL).withEndpoint(endpointName).withLabel("On level (wall switch)")
             .withValueMin(1).withValueMax(255)
             .withDescription("Brightness the light comes on at from the wall switch, set without a round trip through the network. 255 (default) = as on_level")
             .withCategory("config");
@@ -1100,18 +1113,19 @@ const romasku = {
         });
     },
     // Start boost (Open Dimmer 2.2.0, DP 168 / 169): coming on from dark at full that long.
+    // Shown in seconds like the other times; the attribute is in ms (the MCU keeps steps of 50).
     dimmerStartBoost: (endpointName) => {
         const expose = e.numeric("start_boost", ea.ALL).withEndpoint(endpointName)
-            .withValueMin(0).withValueMax(750).withValueStep(50).withUnit("ms")
+            .withValueMin(0).withValueMax(0.75).withValueStep(0.05).withUnit("s")
             .withDescription("Coming on from dark the output is at full this long, then goes to the brightness: for LED drivers that need a kick to start (0 = none; Open Dimmer firmware)")
             .withCategory("config");
         return romasku.dimmerOwnAttr({
             expose, endpointName, cluster: "lightingBallastCfg", attr: {ID: 0xff10}, type: Zcl.DataType.UINT16,
-            fromValue: (v) => v,
+            fromValue: (v) => v / 1000,
             toValue: (value) => {
                 const v = Number(value);
-                if (!Number.isInteger(v) || v < 0 || v > 750) throw new Error("start_boost: an integer 0..750");
-                return v;
+                if (value === "" || value === null || Number.isNaN(v) || v < 0 || v > 0.75) throw new Error("start_boost: 0..0.75 s");
+                return Math.round(v * 1000);
             },
         });
     },
@@ -1149,13 +1163,11 @@ const romasku = {
                 .withDescription("Why the dimming MCU last started: power (power-up or brown-out), software (an update or a fault), watchdog, pin... (Open Dimmer firmware)"),
             e.numeric("mcu_zero_cross_losses", ea.STATE_GET).withLabel("MCU zero-cross losses")
                 .withDescription("Times the dimming MCU lost its lock on the mains zero cross since its start (Open Dimmer firmware)"),
-            e.numeric("mcu_uart_rx_losses", ea.STATE_GET).withLabel("MCU UART losses")
+            e.numeric("mcu_uart_rx_losses", ea.STATE_GET).withLabel("MCU UART receive losses")
                 .withDescription("Bytes from the Zigbee module the dimming MCU lost since its start (Open Dimmer firmware)"),
             e.numeric("mcu_temperature", ea.STATE_GET).withUnit("°C").withLabel("MCU temperature")
                 .withDescription("Die temperature of the dimming MCU (Open Dimmer firmware)"),
-            e.text("mcu_temperature_calibration", ea.STATE_GET).withLabel("MCU temperature calibration")
-                .withDescription("Factory calibration of the dimming MCU's temperature sensor: its raw values at 30 and 85 °C (Open Dimmer firmware)"),
-            e.binary("mcu_settings_ring_moved", ea.STATE_GET, true, false).withLabel("MCU settings moved")
+            e.binary("mcu_settings_ring_moved", ea.STATE_GET, true, false).withLabel("MCU settings relocated")
                 .withDescription("The dimming MCU keeps its settings in the flash area of 2.1.14 and later, so firmware over 12 KB can be installed (Open Dimmer firmware)"),
         ].map((x) => x.withCategory("diagnostic"));
         return {
@@ -1172,9 +1184,8 @@ const romasku = {
                     const flags = b[14];
                     const reset = b[13];
                     const t = b.readInt16LE(15);
-                    const cal = b.length >= 21 ? b.readUInt32LE(17) : 0;
+                    // Bytes 17..20 (the temperature sensor's factory calibration) are not shown.
                     return {
-                        mcu_temperature_calibration: cal ? `${cal & 0xffff} at 30 °C, ${cal >>> 16} at 85 °C` : null,
                         mcu_uptime: b.readUInt32LE(1),
                         mcu_zero_cross_losses: b.readUInt32LE(5),
                         mcu_uart_rx_losses: b.readUInt32LE(9),
@@ -1303,6 +1314,9 @@ const romasku = {
                 valueMax: {{dp.max}},
                 unit: {{ dp.unit|tojson if dp.unit else "undefined" }},
                 minMcu: {{dp.min_mcu or 0}},
+{% if dp.divisor %}                divisor: {{dp.divisor}},
+{% endif %}{% if dp.step %}                valueStep: {{dp.step}},
+{% endif %}
             }),
 {% elif dp.type == "V" %}
             numeric({
@@ -1454,21 +1468,22 @@ const definitions = [
             romasku.dimmerPowerOnBehavior("power_on_behavior"),
             {% endif %}
             {% if device.dimmerNames %}
-            // Device: technical settings last.
+            // Device: technical settings last, on the device itself (no endpoint: they are the
+            // module's, not a channel's; the attributes are endpoint 1's Basic cluster).
             {% if device.has_secondary_mcu %}
-            romasku.mcuVersion("mcu_version", "{{first_endpoint}}"),
+            romasku.mcuVersion("mcu_version"),
             {% if device.secondary_mcu_image %}
             romasku.mcuFirmware(),
             romasku.mcuHealth(),
             {% endif %}
             {% endif %}
-            romasku.multiPressResetCount("multi_press_reset_count", "{{first_endpoint}}"),
+            romasku.multiPressResetCount("multi_press_reset_count"),
             {% if device.has_dedicated_net_led %}
-            romasku.networkIndicator("network_led", "{{first_endpoint}}"),
+            romasku.networkIndicator("network_led"),
             {% endif%}
-            romasku.deviceConfig("device_config", "{{first_endpoint}}"),
-            romasku.deviceConfigExt("device_config_ext", "{{first_endpoint}}"),
-            {% if device.dp_relay_cnt > 0 %}romasku.dpConfig("dp_config", "{{first_endpoint}}"),
+            romasku.deviceConfig("device_config"),
+            romasku.deviceConfigExt("device_config_ext"),
+            {% if device.dp_relay_cnt > 0 %}romasku.dpConfig("dp_config"),
             {% endif %}
             {% endif %}
         ],

@@ -14,9 +14,8 @@ from test_converter_own_mcu import CONFIGURE, ZDMS
 NEW_PER_CHANNEL = ["countdown", "switch_mode", "fast_press", "current_level_startup",
                    "start_boost", "execute_if_off", "on_level_local"]
 NEW_DEVICE = ["identify", "mcu_uptime", "mcu_reset_cause", "mcu_zero_cross_losses",
-              "mcu_uart_rx_losses", "mcu_temperature", "mcu_temperature_calibration",
-              "mcu_settings_ring_moved"]
-NEW = [f"{n}_{ch}" for ch in ("dimmer_left", "dimmer_right") for n in NEW_PER_CHANNEL] + NEW_DEVICE
+              "mcu_uart_rx_losses", "mcu_temperature", "mcu_settings_ring_moved"]
+NEW = [f"{n}_{ch}" for ch in ("l1", "l2") for n in NEW_PER_CHANNEL] + NEW_DEVICE
 
 # Every expose of the definition, the fake (static) extends' too, by name_endpoint.
 ALL = ZDMS + """
@@ -28,13 +27,13 @@ const all = (dev, options = {}) => [
 
 # The 2.1.x exposes before this change (test_converter_own_mcu: 15 Open Dimmer ones and
 # mcu_firmware) and a stock MCU's (the shared power_on_behavior and mcu_firmware).
-OWN_2_1 = ["dimming_curve_dimmer_left", "power_on_behavior_dimmer_left", "fade_on_time_dimmer_left",
-           "fade_off_time_dimmer_left", "soft_dim_end_dimmer_left", "hold_time_dimmer_left",
-           "hold_dim_end_dimmer_left", "dimming_curve_dimmer_right", "power_on_behavior_dimmer_right",
-           "fade_on_time_dimmer_right", "fade_off_time_dimmer_right", "soft_dim_end_dimmer_right",
-           "hold_time_dimmer_right", "hold_dim_end_dimmer_right", "action", "mcu_firmware"]
+OWN_2_1 = ["dimming_curve_l1", "power_on_behavior_l1", "fade_on_time_l1",
+           "fade_off_time_l1", "fade_off_slow_zone_l1", "hold_time_l1",
+           "hold_slow_zone_l1", "dimming_curve_l2", "power_on_behavior_l2",
+           "fade_on_time_l2", "fade_off_time_l2", "fade_off_slow_zone_l2",
+           "hold_time_l2", "hold_slow_zone_l2", "action", "mcu_firmware"]
 STOCK = ["power_on_behavior", "mcu_firmware"]
-FADE = ["brightness_fade_time_dimmer_left", "brightness_fade_time_dimmer_right"]   # from 2.1.14
+FADE = ["brightness_fade_time_l1", "brightness_fade_time_l2"]   # from 2.1.14
 
 
 def test_the_new_exposes_follow_the_open_dimmer_version():
@@ -68,9 +67,9 @@ const brief = (x) => x && ({type: x.type, access: x.access, min: x.value_min, ma
     step: x.value_step, unit: x.unit, values: x.values, presets: x.presets?.map((p) => [p.name, p.value]),
     category: x.category ?? null});
 console.log(JSON.stringify({
-    countdown: brief(pick("countdown", "dimmer_right")), mode: brief(pick("switch_mode", "dimmer_left")),
-    startup: brief(pick("current_level_startup", "dimmer_left")), boost: brief(pick("start_boost", "dimmer_right")),
-    eio: brief(pick("execute_if_off", "dimmer_left")), local: brief(pick("on_level_local", "dimmer_right")),
+    countdown: brief(pick("countdown", "l2")), mode: brief(pick("switch_mode", "l1")),
+    startup: brief(pick("current_level_startup", "l1")), boost: brief(pick("start_boost", "l2")),
+    eio: brief(pick("execute_if_off", "l1")), local: brief(pick("on_level_local", "l2")),
     identify: brief(pick("identify", undefined)), uptime: brief(pick("mcu_uptime", undefined)),
     temperature: brief(pick("mcu_temperature", undefined)), moved: brief(pick("mcu_settings_ring_moved", undefined)),
     descriptions: ex.filter((x) => x.description?.includes("Open Dimmer")).length,
@@ -84,8 +83,8 @@ console.log(JSON.stringify({
                               "presets": [["minimum", 0], ["previous", 255]], "category": "config"}
     assert out["eio"] == {"type": "binary", "access": 7, "category": "config"}
     assert out["local"] == {"type": "numeric", "access": 7, "min": 1, "max": 255, "category": "config"}
-    assert out["boost"] == {"type": "numeric", "access": 7, "min": 0, "max": 750, "step": 50,
-                            "unit": "ms", "category": "config"}
+    assert out["boost"] == {"type": "numeric", "access": 7, "min": 0, "max": 0.75, "step": 0.05,
+                            "unit": "s", "category": "config"}
     assert out["identify"] == {"type": "enum", "access": 2, "values": ["identify"], "category": "config"}
     assert out["uptime"] == {"type": "numeric", "access": 5, "unit": "min", "category": "diagnostic"}
     assert out["temperature"] == {"type": "numeric", "access": 5, "unit": "°C", "category": "diagnostic"}
@@ -110,15 +109,15 @@ console.log(JSON.stringify({
 """))
     # fz runs every converter of the definition on the message, whatever its cluster: genOnOff
     # 0xff10 also matches the other clusters' 0xff10 converters on that endpoint.
-    assert {"countdown_dimmer_left": 30} in out["countdown"]
-    assert out["off"] == [{"countdown_dimmer_right": 0}]
+    assert {"countdown_l1": 30} in out["countdown"]
+    assert out["off"] == [{"countdown_l2": 0}]
     assert out["on"] == []
-    assert {"switch_mode_dimmer_right": "detached"} in out["mode"]
-    assert out["startup"] == [[{"current_level_startup_dimmer_left": 0}],
-                              [{"current_level_startup_dimmer_left": 255}],
-                              [{"current_level_startup_dimmer_right": 128}]]
-    assert out["eio"] == [[{"execute_if_off_dimmer_left": True}], [{"execute_if_off_dimmer_right": False}]]
-    assert {"on_level_local_dimmer_right": 200} in out["local"]   # (0xff11 of genOnOffSwitchCfg too)
+    assert {"switch_mode_l2": "detached"} in out["mode"]
+    assert out["startup"] == [[{"current_level_startup_l1": 0}],
+                              [{"current_level_startup_l1": 255}],
+                              [{"current_level_startup_l2": 128}]]
+    assert out["eio"] == [[{"execute_if_off_l1": True}], [{"execute_if_off_l2": False}]]
+    assert {"on_level_local_l2": 200} in out["local"]   # (0xff11 of genOnOffSwitchCfg too)
     assert out["stock"] == [[], [], []]
 
 
@@ -133,8 +132,8 @@ const fzc = (cluster, ep, data) => def.extend.filter((x) => !x.fake).flatMap((x)
 console.log(JSON.stringify([fzc("genOnOff", 1, {[0xff10]: 30}), fzc("genOnOffSwitchCfg", 1, {[0xff10]: 2}),
                             fzc("lightingBallastCfg", 2, {[0xff10]: 300})]));
 """))
-    assert out == [[{"countdown_dimmer_left": 30}], [{"switch_mode_dimmer_left": "off"}],
-                   [{"start_boost_dimmer_right": 300}]]
+    assert out == [[{"countdown_l1": 30}], [{"switch_mode_l1": "off"}],
+                   [{"start_boost_l2": 0.3}]]
 
 
 SET = ZDMS + """
@@ -167,8 +166,9 @@ def test_writes_of_the_new_settings():
     eioBad: await set("execute_if_off", "maybe"),
     local: await set("on_level_local", 255),
     localBad: await set("on_level_local", 0),
-    boost: await set("start_boost", 300),
-    boostBad: await set("start_boost", 800),
+    boost: await set("start_boost", 0.3),
+    boostText: await set("start_boost", "0.25"),
+    boostBad: [await set("start_boost", 0.8), await set("start_boost", ""), await set("start_boost", -0.05)],
     identify: await set("identify", "identify"),
 })))();
 """))
@@ -192,9 +192,11 @@ def test_writes_of_the_new_settings():
     assert out["local"] == [[["write", 1, "genLevelCtrl", {str(0xff11): {"value": 255, "type": 0x20}}]],
                             {"on_level_local": 255}]
     assert "1..255" in out["localBad"]
+    # Shown in s, the attribute in ms.
     assert out["boost"] == [[["write", 1, "lightingBallastCfg", {str(0xff10): {"value": 300, "type": 0x21}}]],
-                            {"start_boost": 300}]
-    assert "0..750" in out["boostBad"]
+                            {"start_boost": 0.3}]
+    assert out["boostText"][0][0][3] == {str(0xff10): {"value": 250, "type": 0x21}}
+    assert all("0..0.75 s" in r for r in out["boostBad"]), out["boostBad"]
     assert out["identify"] == [[["command", 1, "genIdentify", "identify", {"identifytime": 3}],
                                 ["command", 2, "genIdentify", "identify", {"identifytime": 3}]], None]
 
@@ -225,13 +227,13 @@ console.log(JSON.stringify({{
     stock: fz(stock, 1, {{[0xff48]: Buffer.from({report})}}),
 }}));
 """))
+    # The sensor's factory calibration (bytes 17..20) is not published.
     assert out["own"] == [{"mcu_uptime": 4242, "mcu_zero_cross_losses": 3, "mcu_uart_rx_losses": 17,
                            "mcu_reset_cause": "software,power", "mcu_settings_ring_moved": True,
-                           "mcu_temperature": -5,
-                           "mcu_temperature_calibration": "949 at 30 °C, 1138 at 85 °C"}]
+                           "mcu_temperature": -5}]
     assert out["none"] == [{"mcu_uptime": 1, "mcu_zero_cross_losses": 0, "mcu_uart_rx_losses": 0,
                             "mcu_reset_cause": "watchdog", "mcu_settings_ring_moved": False,
-                            "mcu_temperature": None, "mcu_temperature_calibration": None}]
+                            "mcu_temperature": None}]
     assert out["empty"] == out["otherEndpoint"] == out["stock"] == []
 
 
@@ -285,7 +287,7 @@ const run = async (v, key, value, options = {}) => {
 (async () => console.log(JSON.stringify({
     stock: [await run("1.0.7", "countdown", 60), await run("1.0.7", "switch_mode", "off"),
             await run("1.0.7", "identify", "identify"), await run("1.0.7", "fast_press", true)],
-    od21: await run("2.1.14 own", "start_boost", 300),
+    od21: await run("2.1.14 own", "start_boost", 0.3),
     show: await run("1.0.7", "countdown", 60, {open_dimmer_settings: "show"}),
     own: await run("2.2.0 own", "fast_press", true),
 })))();
@@ -306,14 +308,14 @@ console.log(JSON.stringify({
     press21: fz(ver("2.1.14 own"), 2, {presentValue: 0x36}),
 }));
 """))
-    names = ("dimmer_left", "dimmer_right")
+    names = ("l1", "l2")
     assert out["od22"] == [[f"{k}_{n}" for n in names for k in ("single", "double", "triple", "hold",
                                                                 "release", "press")]]
     assert out["od21"] == [[f"{k}_{n}" for n in names for k in ("single", "double", "triple", "hold",
                                                                 "release")]]
     assert out["stock"] == []
-    assert out["press"] == [{"action": "press_dimmer_right"}]
-    assert out["hold"] == [{"action": "hold_dimmer_left"}]
+    assert out["press"] == [{"action": "press_l2"}]
+    assert out["hold"] == [{"action": "hold_l1"}]
     assert out["press21"] == []
 
 
@@ -322,7 +324,7 @@ console.log(JSON.stringify({
 SEND = ZDMS + """
 const tzFor = (key, ep) => def.extend.flatMap((x) => x.toZigbee ?? [])
     .find((t) => t.key?.includes(key) && (!t.endpoints || t.endpoints.includes(ep)));
-const send = async (version, message, options = {}, ep = "dimmer_right", state = {state: "ON", brightness: 100}) => {
+const send = async (version, message, options = {}, ep = "l2", state = {state: "ON", brightness: 100}) => {
     h.globalStore.clear();
     const dev = h.device(); dev.getEndpoint(1).clusters.genBasic.attributes[0xff12] = version;
     const key = Object.keys(message).find((k) => k !== "transition");
@@ -350,10 +352,10 @@ def test_a_level_change_without_a_transition_goes_out_as_none_for_open_dimmer():
             option12: await send(v, {brightness: 100}, {transition: 1.2}),
             option12Off: await send(v, {state: "OFF"}, {transition: 1.2}),
             option0On: await send(v, {state: "ON"}, {transition: 0}),
-            option12On: await send(v, {state: "ON"}, {transition: 1.2}, "dimmer_right", {state: "OFF", brightness: 100}),
-            option12Toggle: await send(v, {state: "TOGGLE"}, {transition: 1.2}, "dimmer_right", {state: "OFF", brightness: 100}),
+            option12On: await send(v, {state: "ON"}, {transition: 1.2}, "l2", {state: "OFF", brightness: 100}),
+            option12Toggle: await send(v, {state: "TOGGLE"}, {transition: 1.2}, "l2", {state: "OFF", brightness: 100}),
             option12ToggleOff: await send(v, {state: "TOGGLE"}, {transition: 1.2}),
-            given12On: await send(v, {state: "ON", transition: 1.2}, {}, "dimmer_right", {state: "OFF", brightness: 100}),
+            given12On: await send(v, {state: "ON", transition: 1.2}, {}, "l2", {state: "OFF", brightness: 100}),
             emptyOption: await send(v, {brightness: 100}, {transition: ""}),
             move: await send(v, {brightness_move: 40}),
         };
@@ -402,8 +404,8 @@ def test_after_an_off_with_a_time_a_plain_on_is_still_an_on():
             for (const [message, options, state] of steps) {
                 const key = Object.keys(message).find((k) => k !== "transition");
                 h.log.length = 0;
-                await tzFor(key, "dimmer_left").convertSet(dev.getEndpoint(1), key, message[key],
-                    {device: dev, message, options, state, endpoint_name: "dimmer_left", mapped: model});
+                await tzFor(key, "l1").convertSet(dev.getEndpoint(1), key, message[key],
+                    {device: dev, message, options, state, endpoint_name: "l1", mapped: model});
                 got.push(h.log.filter((l) => l[0] === "command").map((l) => [l[2], l[3], l[4].level ?? null, l[4].transtime ?? null]));
             }
             return {got, mark: h.globalStore.getValue(dev.getEndpoint(1), "turnedOffWithTransition") ?? null};
@@ -462,10 +464,10 @@ const ver = (v) => { const d = h.device(); d.getEndpoint(1).clusters.genBasic.at
     assert out["set0"] == [w(1, 0), {"brightness_fade_time": 0}]
     assert out["unset"] == [[w(1, 0xFFFF), {"brightness_fade_time": None}]] * 3
     assert "0..60" in out["bad"]
-    assert out["reports"] == [[{"brightness_fade_time_dimmer_left": 2.5}],
-                              [{"brightness_fade_time_dimmer_right": None}], [], []]
-    assert [p[:6] for p in out["presets"]] == [["dimmer_left", 0, 60, 0.1, "s", ["default"]],
-                                               ["dimmer_right", 0, 60, 0.1, "s", ["default"]]]
+    assert out["reports"] == [[{"brightness_fade_time_l1": 2.5}],
+                              [{"brightness_fade_time_l2": None}], [], []]
+    assert [p[:6] for p in out["presets"]] == [["l1", 0, 60, 0.1, "s", ["default"]],
+                                               ["l2", 0, 60, 0.1, "s", ["default"]]]
     for words in ("as the time for the whole range", "Empty: the module's default, the whole range in 2 s",
                   "A transition (in the message or the device option transition) wins", "Open Dimmer 2.1.14"):
         assert all(words in p[6] for p in out["presets"]), words
