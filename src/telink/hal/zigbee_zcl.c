@@ -59,10 +59,12 @@ static cluster_registerFunc_t get_register_func_by_cluster_id(u16 cluster_id) {
     if (cluster_id == ZCL_CLUSTER_GEN_ON_OFF) {
         return zcl_onOff_register;
     }
-#ifndef DIMMER_ONLY
+    /* Also on dimmer_only boards: their dimmer endpoints report Open Dimmer's wall switch
+     * gestures there (an unregistered cluster has no attributes for the stack: no reports). */
     if (cluster_id == ZCL_CLUSTER_GEN_MULTISTATE_INPUT_BASIC) {
         return zcl_multistate_input_register;
     }
+#ifndef DIMMER_ONLY
     if (cluster_id == ZCL_CLUSTER_CLOSURES_WINDOW_COVERING) {
         return zcl_windowCovering_custom_register;
     }

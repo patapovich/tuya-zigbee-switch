@@ -91,3 +91,66 @@ def test_a_config_with_every_dp_listener_starts(tmp_path):
         assert int(device.read_zigbee_attr(2, 0x0301, 0x0010)) == (300 * 254 + 500) // 1000  # ep 2: after the relay
     finally:
         proc.stop()
+
+
+# The Telink SDK's names of the cluster ids get_register_func_by_cluster_id() tests.
+SDK_CLUSTER_IDS = {
+    "ZCL_CLUSTER_GEN_BASIC": 0x0000, "ZCL_CLUSTER_GEN_POWER_CFG": 0x0001,
+    "ZCL_CLUSTER_POWER_CFG": 0x0001, "ZCL_CLUSTER_GEN_IDENTIFY": 0x0003,
+    "ZCL_CLUSTER_GEN_GROUPS": 0x0004, "ZCL_CLUSTER_GEN_ON_OFF": 0x0006,
+    "ZCL_CLUSTER_GEN_ON_OFF_SWITCH_CONFIG": 0x0007, "ZCL_CLUSTER_GEN_LEVEL_CONTROL": 0x0008,
+    "ZCL_CLUSTER_GEN_MULTISTATE_INPUT_BASIC": 0x0012, "ZCL_CLUSTER_GEN_POLL_CONTROL": 0x0020,
+    "ZCL_CLUSTER_CLOSURES_WINDOW_COVERING": 0x0102, "0x0301": 0x0301,
+    "ZCL_CLUSTER_COVER_SWITCH_CONFIG": 0xFC01,
+}
+OTA = 0x0019
+
+
+def registered_clusters(dimmer_only: bool) -> set[int]:
+    """The cluster ids the Telink HAL has a register function for (only those reach the
+    stack: an unregistered cluster has no attributes there), in a build with or without
+    DIMMER_ONLY, read from src/telink/hal/zigbee_zcl.c."""
+    text = (ROOT / "src/telink/hal/zigbee_zcl.c").read_text()
+    body = text[text.index("get_register_func_by_cluster_id(u16 cluster_id) {"):]
+    body = body[:body.index("\n}\n")]
+    if dimmer_only:
+        body = re.sub(r"#ifndef DIMMER_ONLY.*?#endif", "", body, flags=re.S)
+    names = re.findall(r"cluster_id == (\w+)", body)
+    unknown = [n for n in names if n not in SDK_CLUSTER_IDS]
+    assert not unknown, f"add their ids to SDK_CLUSTER_IDS: {unknown}"
+    return {SDK_CLUSTER_IDS[n] for n in names}
+
+
+def board_clusters(cwd: Path, board: dict) -> set[int]:
+    stub = os.environ.get("STUB_DEVICE", str(ROOT / "build/stub/stub_device"))
+    args = [stub, "--device-config", board["config_str"], "--freeze-time"]
+    if dp_config_of(board):
+        args += ["--dp-config", dp_config_of(board)]
+    out = subprocess.run(args, input="zcl_list_attrs\nq\n", capture_output=True, text=True,
+                         timeout=10, cwd=cwd).stdout
+    return {int(c, 16) for c in re.findall(r"Cluster 0x([0-9a-f]{4}) \((?:server|client)\)", out)}
+
+
+def test_the_zdms16_2_gesture_cluster_is_registered_in_its_dimmer_only_build():
+    """Its dimmer endpoints report Open Dimmer's wall switch gestures on genMultistateInput:
+    without a register function the cluster never reached the stack (no reports)."""
+    assert 0x0012 in registered_clusters(dimmer_only=True)
+    assert {0x0003, 0x0006, 0x0007, 0x0008, 0x0301} <= registered_clusters(dimmer_only=True)
+
+
+def test_every_cluster_of_every_telink_board_reaches_the_stack(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    def run(item):
+        name, board = item
+        cwd = tmp_path / name
+        cwd.mkdir()
+        return name, board_clusters(cwd, board) - {OTA}, bool(board.get("dimmer_only"))
+
+    with ThreadPoolExecutor(os.cpu_count() or 4) as pool:
+        results = list(pool.map(run, sorted(boards().items())))
+    assert len(results) > 100 and all(clusters for _, clusters, _ in results)
+    missing = {name: sorted(hex(c) for c in clusters - registered_clusters(dimmer_only))
+               for name, clusters, dimmer_only in results
+               if clusters - registered_clusters(dimmer_only)}
+    assert missing == {}
