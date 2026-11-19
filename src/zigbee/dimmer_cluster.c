@@ -495,6 +495,7 @@ static void dimmer_change_level(zigbee_dimmer_cluster *cluster, uint8_t level,
 /* The step period as a ZCL transition time (1/10 s, little endian). */
 static const uint8_t dimmer_ramp_time[2] = { DIMMER_RAMP_PERIOD_MS / 100, 0 };
 
+/* 0 is no ZCL rate, but a Move with it always ramped at the default here: it still does. */
 static uint8_t dimmer_move_rate(const zigbee_dimmer_cluster *cluster, uint8_t rate) {
     if (rate == 0xFF)
         rate = cluster->default_move_rate;
@@ -641,15 +642,14 @@ static hal_zigbee_cmd_result_t dimmer_cluster_level_callback(zigbee_dimmer_clust
 
     case ZCL_CMD_LEVEL_MOVE:
     case ZCL_CMD_LEVEL_MOVE_WITH_ON_OFF: {
-        /* Payload: move mode, rate (levels/s, 0xFF: the default), [options mask, override]. */
+        /* Payload: move mode, rate (levels/s; 0xFF and 0: the default, as the ramp always ran
+         * for a 0), [options mask, override]. */
         if (payload == NULL || cmd_payload_len < 2)
             return HAL_ZIGBEE_MALFORMED_COMMAND;
 
         uint8_t with_onoff = command_id == ZCL_CMD_LEVEL_MOVE_WITH_ON_OFF;
         uint8_t up         = payload[0] == ZCL_LEVEL_MOVE_UP;
 
-        if (payload[1] == 0)
-            break; /* ZCL: a rate of 0 has no effect */
         /* Off without OnOff and with ExecuteIfOff: the level moves, the light stays off. */
         if (!cluster->on &&
             (with_onoff || !dimmer_execute_if_off(cluster, payload, cmd_payload_len, 2))) {

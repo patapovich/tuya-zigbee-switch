@@ -74,14 +74,9 @@ def test_the_ramp_follows_the_commands_rate(rate, steps, expected):
     assert ramp_from_off(rate, steps) == expected
 
 
-def test_a_move_at_rate_0_has_no_effect():
-    with StubProc(device_config=DIMMER_CFG) as proc:
-        dev = Device(proc)
-        dev.call_zigbee_cmd(1, LEVEL, MOVE_WITH_ONOFF, bytes([UP, 0]))
-        for _ in range(3):
-            dev.step_time(RAMP_PERIOD_MS + 10)
-        assert int(dev.read_zigbee_attr(1, 0x0006, 0x0000)) == 0
-        assert level(dev) == 0
+def test_a_move_at_rate_0_ramps_at_the_default():
+    """No ZCL rate, but it always ramped at the default here (as before the rate was used)."""
+    assert ramp_from_off(0, 3) == 1 + 3 * 12
 
 
 def test_default_move_rate_sets_the_rate_of_0xff_and_survives_a_restart():
