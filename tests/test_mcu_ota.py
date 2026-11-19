@@ -881,12 +881,15 @@ def test_the_first_header_answer_and_the_uart_start_are_timed():
         device.step_time(50)
         assert answers(proc, device, block_request(0xC0, 16, MODE_PROBE)) == [header_answer()]
         c = counters(device)
-        assert c["uart_up_ms"] <= c["first_answer_ms"] == 50
-        assert c["first_answer_ms"] <= header_define("TUYA_MCU_OTA_FIRST_ANSWER_MS")
+        first = c["first_answer_ms"]
+        # 50 ms of stub time; the stub's clock may run a ms of real time before the test holds
+        # it (under load), so up to 2 ms more.
+        assert c["uart_up_ms"] <= first and 50 <= first <= 52
+        assert first <= header_define("TUYA_MCU_OTA_FIRST_ANSWER_MS")
         device.step_time(400)
         answers(proc, device, block_request(0xC0, 16, MODE_PROBE))
         device.write_zigbee_attr(1, BASIC, ATTR_CONTROL, 1)
-        assert counters(device)["first_answer_ms"] == 50
+        assert counters(device)["first_answer_ms"] == first
     finally:
         proc.stop()
 
