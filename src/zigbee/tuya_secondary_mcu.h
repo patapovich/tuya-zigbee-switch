@@ -106,7 +106,8 @@ uint8_t tuya_secondary_mcu_report_is_superseded(void);
 uint16_t tuya_secondary_mcu_reports(void);
 
 /** Every DP the MCU reports is given to every listener; each one picks the DPs
- *  it owns. Returns -1 when all listener slots are taken. */
+ *  it owns. Returns -1 when all listener slots are taken (printed; the stub
+ *  stops then); callers check it. */
 typedef void (*tuya_secondary_mcu_dp_listener_t)(uint8_t dpid, uint8_t dp_type,
                                                  const uint8_t *value,
                                                  uint16_t value_len);

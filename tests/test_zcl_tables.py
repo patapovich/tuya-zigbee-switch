@@ -74,3 +74,20 @@ def test_a_config_over_the_limits_is_said_so(tmp_path):
                           "--freeze-time"], input="q\n", capture_output=True, text=True,
                          timeout=10, cwd=tmp_path).stderr
     assert "the ZCL tables of the Telink HAL would overflow" in out
+
+
+def test_a_config_with_every_dp_listener_starts(tmp_path):
+    """Dimmers, a DP relay and dp attributes on one MCU (with the health report, every user of
+    the DP listener table, which stops the stub when full): it starts and maps its DPs."""
+    from client import StubProc
+    from conftest import Device
+    from tuya_mcu import TUYA_CMD_REPORT_PASSIVE, enum_dp, mcu_report, value_dp
+    proc = StubProc(device_config="A;B;DM1;RT18;M;", dp_config="65E30;").start()
+    try:
+        device = Device(proc)
+        assert proc.is_running()
+        mcu_report(proc, enum_dp(0x65, 3), value_dp(3, 300), cmd=TUYA_CMD_REPORT_PASSIVE)
+        assert int(device.read_zigbee_attr(1, 0x0000, 0xFF30)) == 3          # dp attribute
+        assert int(device.read_zigbee_attr(2, 0x0301, 0x0010)) == (300 * 254 + 500) // 1000  # ep 2: after the relay
+    finally:
+        proc.stop()

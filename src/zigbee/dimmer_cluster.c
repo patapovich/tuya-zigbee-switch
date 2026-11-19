@@ -3,6 +3,7 @@
 #include "hal/nvm.h"
 #include "zigbee/cluster_common.h"
 #include "zigbee/consts.h"
+#include "hal/printf_selector.h"
 #include "hal/timer.h"
 #include "zigbee/tuya_mcu_app.h"
 #include "zigbee/tuya_mcu_ota.h"
@@ -1098,7 +1099,9 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
 
     // Receive DP state reports from the secondary MCU (e.g. physical button
     // presses) for every registered dimmer, not just this endpoint.
-    tuya_secondary_mcu_add_dp_listener(dimmer_cluster_on_dp_report);
+    if (tuya_secondary_mcu_add_dp_listener(dimmer_cluster_on_dp_report) != 0) {
+        printf("dimmer_cluster_on_dp_report: not registered, its DPs are not taken\r\n");
+    }
 
     /* Nothing is pushed to the MCU here. It stores min/max/switch type and
      * power-on behaviour itself, and those are read back from its answer to

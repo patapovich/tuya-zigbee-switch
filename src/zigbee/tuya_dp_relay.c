@@ -3,6 +3,7 @@
 #include "base_components/relay.h"
 #include "base_components/button.h"
 #include "zigbee/tuya_secondary_mcu.h"
+#include "hal/printf_selector.h"
 #include "zigbee/dp_attr.h"
 #include "hal/timer.h"
 
@@ -156,5 +157,7 @@ void tuya_dp_relay_init(void) {
     }
     tuya_secondary_mcu_set_tx_callback(dp_relay_on_tx);
 
-    tuya_secondary_mcu_add_dp_listener(tuya_dp_relay_on_report);
+    if (tuya_secondary_mcu_add_dp_listener(tuya_dp_relay_on_report) != 0) {
+        printf("tuya_dp_relay_on_report: not registered, its DPs are not taken\r\n");
+    }
 }

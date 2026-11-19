@@ -7,6 +7,9 @@
 #include "hal/uart.h"
 
 #include <string.h>
+#ifdef HAL_STUB
+#include <stdlib.h>
+#endif
 
 /* ---- framing -------------------------------------------------------------- */
 
@@ -590,7 +593,8 @@ void tuya_secondary_mcu_set_tx_callback(tuya_secondary_mcu_tx_callback_t callbac
 
 /* ---- RX ------------------------------------------------------------------- */
 
-#define MAX_DP_LISTENERS    4
+/* Today's users: the dimmers, dp attributes, DP relays, Open Dimmer's health report. */
+#define MAX_DP_LISTENERS    6
 static tuya_secondary_mcu_dp_listener_t g_listeners[MAX_DP_LISTENERS];
 static uint8_t g_listener_cnt = 0;
 static tuya_secondary_mcu_command_callback_t g_command_callback = NULL;
@@ -602,6 +606,11 @@ int tuya_secondary_mcu_add_dp_listener(tuya_secondary_mcu_dp_listener_t listener
         }
     }
     if (listener == NULL || g_listener_cnt >= MAX_DP_LISTENERS) {
+        /* A listener left out would miss its DPs quietly: say so, and stop the stub. */
+        printf("DP listener table full (%d): one left out\r\n", MAX_DP_LISTENERS);
+#ifdef HAL_STUB
+        abort();
+#endif
         return -1;
     }
     g_listeners[g_listener_cnt++] = listener;

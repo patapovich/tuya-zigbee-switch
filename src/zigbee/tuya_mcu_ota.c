@@ -523,7 +523,9 @@ static void health_on_dp(uint8_t dpid, uint8_t dp_type, const uint8_t *value,
 
 void tuya_mcu_ota_init(void) {
     g_health.temperature = -32768;
-    tuya_secondary_mcu_add_dp_listener(health_on_dp);
+    if (tuya_secondary_mcu_add_dp_listener(health_on_dp) != 0) {
+        printf("health_on_dp: not registered, its DPs are not taken\r\n");
+    }
 }
 
 uint8_t tuya_mcu_ota_register_attrs(hal_zigbee_attribute *table, uint8_t start_index) {

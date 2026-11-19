@@ -218,7 +218,9 @@ void dp_attr_init(void) {
     if (dp_attrs_cnt == 0) {
         return;
     }
-    tuya_secondary_mcu_add_dp_listener(dp_attr_on_report);
+    if (tuya_secondary_mcu_add_dp_listener(dp_attr_on_report) != 0) {
+        printf("dp_attr_on_report: not registered, its DPs are not taken\r\n");
+    }
 }
 
 void dp_attr_query_all(void) {
