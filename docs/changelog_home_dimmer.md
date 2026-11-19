@@ -14,6 +14,9 @@ zdms16-py32 release notes.
 
 ## Next
 
+## 1.1.3-db24e888 (2026-11-19), carries Open Dimmer 2.1.13
+
+- Carries Open Dimmer 2.1.13.
 - Open Dimmer bootloader v2 support: update offers go by build number, the carried image is
   checked as the bootloader checks it, the bootloader's power-on probe, rescue and link-probe
   requests are answered and shown in the link diagnostics; the contract the bootloader relies
