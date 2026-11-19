@@ -18,6 +18,10 @@ zdms16-py32 release notes.
   Dimmer from 2.1.14 (build 400): the change takes exactly that long at one even rate, on, off
   and level alike. Older Open Dimmer versions and factory MCUs fade by their own settings, as
   before (nothing more is sent to them).
+- Smaller firmware: the ZDMS16-2 build leaves out what only other boards use (switch, relay
+  and cover endpoints, GPIO buttons, LEDs and battery), about 14 KB of the OTA file, so new
+  features and a larger Open Dimmer image fit below the SDK's size limit. The device works as
+  before; tokens of those features in a hand-written device config are ignored.
 
 ## 1.1.3-db24e888 (2026-11-19), carries Open Dimmer 2.1.13
 
