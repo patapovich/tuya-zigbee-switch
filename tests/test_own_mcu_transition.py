@@ -6,6 +6,7 @@ import pytest
 from own_mcu import own_mcu_contact
 from test_dimmer_mcu import (
     ZCL_CLUSTER_LEVEL_CONTROL,
+    ZCL_CLUSTER_ON_OFF,
     ZCL_CMD_LEVEL_MOVE_TO_LEVEL,
     ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF,
     ZCL_CMD_LEVEL_STEP_WITH_ON_OFF,
@@ -136,5 +137,40 @@ def test_a_level_change_while_off_sends_nothing():
         device.step_time(2000)
         to_level(device, 120, 20, with_onoff=False)      # ZCL: no effect while off
         assert ack_writes(proc, device) == []
+    finally:
+        proc.stop()
+
+
+ONOFF_CLUSTER, ONOFF_OFF, ONOFF_ON, ONOFF_TOGGLE = 0x0006, 0x00, 0x01, 0x02
+
+
+@pytest.mark.parametrize("cmd", [ONOFF_OFF, ONOFF_TOGGLE])
+def test_an_onoff_command_right_after_a_timed_one_takes_the_time_back(cmd):
+    proc, device = contact(400)
+    try:
+        to_level(device, 200, 30)                        # on in 3 s
+        ack_writes(proc, device)
+        device.step_time(500)
+        device.call_zigbee_cmd(1, ONOFF_CLUSTER, cmd, b"")
+        w = ack_writes(proc, device)
+        assert w[:2] == [(DP_TRANSITION_L1, 0), (DP_ON_L1, 0)]
+        device.step_time(2000)
+        device.call_zigbee_cmd(1, ONOFF_CLUSTER, ONOFF_ON, b"")   # long after: nothing more
+        w = ack_writes(proc, device)
+        assert DP_TRANSITION_L1 not in dps(w) and DP_ON_L1 in dps(w)
+    finally:
+        proc.stop()
+
+
+@pytest.mark.parametrize("after_ms, sends_zero", [(1400, True), (1500, False)])
+def test_the_take_back_window_is_1500_ms(after_ms, sends_zero):
+    proc, device = contact(400)
+    try:
+        to_level(device, 200, 30)
+        ack_writes(proc, device)                         # the acks take no stub time
+        device.step_time(after_ms)
+        to_level(device, 220, 0)
+        w = ack_writes(proc, device)
+        assert ((DP_TRANSITION_L1, 0) in w) == sends_zero
     finally:
         proc.stop()

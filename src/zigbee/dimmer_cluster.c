@@ -207,8 +207,11 @@ static uint8_t dimmer_own_mcu(const zigbee_dimmer_cluster *cluster);
  * from OPEN_DIMMER_TRANSITION_BUILD takes it as the ms its network changes of the next second
  * take (DP 160 / 161, before the on / off / level writes). Any other MCU fades by its own
  * settings, as before, and gets nothing more. 0 and 0xFFFF (none given; Zigbee2MQTT sends 0
- * without a transition): the fade settings, so a 0 goes out only while an earlier time could
- * still apply to this change. */
+ * without a transition), and the On / Off / Toggle commands: the fade settings, so a 0 goes out
+ * only while an earlier time could still apply to this change.
+ * The write queue keeps one frame in flight and sends a lost one again before the next, so the
+ * time always reaches the MCU before its change; a time lost for good leaves that change at the
+ * fade settings. */
 #define DIMMER_TRANSITION_VALID_MS    1500 /* the MCU's window is 1 s from its receipt */
 
 static void dimmer_send_transition(zigbee_dimmer_cluster *cluster, const uint8_t *tt) {
@@ -350,6 +353,21 @@ static hal_zigbee_cmd_result_t dimmer_cluster_callback(zigbee_dimmer_cluster *cl
     if (cluster == NULL)
         return HAL_ZIGBEE_CMD_SKIPPED;
 
+    static const uint8_t no_time[2] = { 0, 0 };
+
+    switch (command_id) {
+    case ZCL_CMD_ONOFF_ON:
+    case ZCL_CMD_ON_WITH_RECALL_GLOBAL_SCENE:
+    case ZCL_CMD_ONOFF_OFF:
+    case ZCL_CMD_OFF_WITH_EFFECT:
+    case ZCL_CMD_ONOFF_TOGGLE:
+        /* No transition here: an earlier time that could still apply is taken back. */
+        dimmer_send_transition(cluster, no_time);
+        break;
+    default:
+        return HAL_ZIGBEE_CMD_SKIPPED;
+    }
+
     switch (command_id) {
     case ZCL_CMD_ONOFF_ON:
     case ZCL_CMD_ON_WITH_RECALL_GLOBAL_SCENE:
@@ -366,7 +384,7 @@ static hal_zigbee_cmd_result_t dimmer_cluster_callback(zigbee_dimmer_cluster *cl
             dimmer_turn_on_default(cluster);
         break;
     default:
-        return HAL_ZIGBEE_CMD_SKIPPED;
+        break;
     }
     return HAL_ZIGBEE_CMD_PROCESSED;
 }
