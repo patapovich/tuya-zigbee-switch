@@ -14,6 +14,22 @@ zdms16-py32 release notes.
 
 ## Next
 
+- Open Dimmer 2.2.0 settings (shown in Zigbee2MQTT for Open Dimmer 2.2 and later only; a module
+  with the factory MCU keeps its entities as they were): `countdown` (auto-off, also ZCL
+  OnWithTimedOff), `switch_mode` (normal / detached / off), `current_level_startup` (brightness
+  after a power cut), `start_boost` (for LED drivers that need a kick), `identify`.
+- Health of the dimming MCU as diagnostic sensors (Open Dimmer 2.2): uptime, reset cause,
+  zero-cross and UART losses, temperature, its sensor's calibration, whether its settings have
+  moved.
+- `execute_if_off` per channel: a brightness change while off sets the brightness the light comes
+  on at (the factory MCU too: the module keeps it). `on_level_local`: the wall switch's own on
+  level, apart from `on_level`. Both shown for Open Dimmer 2.2.
+- Dimming by a held button (ZCL Move) follows the remote's rate; Open Dimmer moves smoothly
+  between the steps.
+- The dimmer endpoints are Dimmable Lights (device id 0x0101).
+- Ready for Open Dimmer images over 12 KB (up to 14 KB): such an image is offered and sent only to
+  a module whose MCU has reported that its settings moved (2.1.14 and later).
+
 ## 1.1.3-5bb263e7 (2026-11-19), carries Open Dimmer 2.1.14
 
 - Carries Open Dimmer 2.1.14.
