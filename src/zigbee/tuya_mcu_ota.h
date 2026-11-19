@@ -32,8 +32,13 @@
  *     image, without state, for any offset; the header sits at image offset
  *     0xC0. Serving is gated only by the image check and the failure pause,
  *     never by build, version or the request's mode; an image over 12 KB also by
- *     the ring gate below, which looks at the request's mode for one thing only:
- *     an MCU without a valid app (mode 2) is served what it can take.
+ *     the ring gate below, which looks at the request's mode for two things only:
+ *     an MCU without a valid app (mode 2) is served what it can take, and the
+ *     header request (offset 0xC0) of a probe (mode 3, or 6 for a link probe)
+ *     that the gate keeps the image from gets a refusal at once: a header
+ *     answer of size 0, CRC 0, version 0 and 16 zero bytes, which the v2
+ *     bootloader takes for "nothing here" and starts its app (boot.c pick(),
+ *     PICK_REFUSE), instead of waiting out its 3 s probe window.
  *  2. Robust. No crash and no stall on any request a bootloader can send:
  *     offset 0..0xFFFFFFFF, max_len 0..0xFFFF, 6 to 16 bytes, at up to one
  *     request per 50 ms for days (a unit without an app asks every 500 ms).
@@ -153,7 +158,9 @@ uint16_t tuya_mcu_ota_own_build(void);
  * (request mode 2, e.g. after a power cut during an update, which also restarted this
  * firmware, so it has heard no report) is served whatever the image: the bootloader itself
  * takes up to 14 KB there ("recovery comes before settings", BOOTLOADER.md section 1); a
- * refusal would leave the lamp dark. Images up to 12 KB are not gated. A request for offset 0
+ * refusal would leave the lamp dark. A probe (mode 3 or 6) that the gate keeps the image from
+ * gets a refusal for its header request (contract item 1) within the first-answer time of
+ * contract item 3, so a power-up is not 3 s slower. Images up to 12 KB are not gated. A request for offset 0
  * is a restart sign (contract item 4 (a)) whether the gate serves it or not. A factory MCU
  * never reports, so with such an image it gets no block answer at all (to the 0xA1 requests a
  * stock MCU should never send): fewer frames than phase 1, each one a reply it would have had

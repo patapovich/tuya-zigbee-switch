@@ -42,6 +42,7 @@
 #define NOTIFY_LEN              11    /* version size crc build; a 2.1.x app reads the first 9 */
 #define REQUEST_LEN             16    /* v2 bootloader: + version, mode, installed header 8..15 */
 #define REQUEST_MODE_NO_APP     2     /* no valid app: served past the ring gate */
+#define REQUEST_MODE_PROBE      3     /* power-on probe: gated, a header refusal ends it */
 #define REQUEST_MODE_RESCUE     4     /* 3 unconfirmed boots */
 #define REQUEST_MODE_BUTTON     5     /* the module button at power-on */
 #define REQUEST_MODE_LINK       6     /* the app's link watchdog asked for a probe */
@@ -424,25 +425,39 @@ static void answer_block(uint16_t seq, const uint8_t *data, uint16_t len) {
     if (!image_info(&img)) {
         return;
     }
-    if (!ring_gate_open(&img) && !(len >= REQUEST_LEN && data[7] == REQUEST_MODE_NO_APP)) {
-        return;
-    }
-    uint16_t n = 0;
+    uint16_t       n    = 0;
+    const uint8_t *body = secondary_mcu_image + off;
+    uint8_t        head[BLOCK_HEADER_LEN];
 
-    if (off < img.size) {
+    if (!ring_gate_open(&img) && !(len >= REQUEST_LEN && data[7] == REQUEST_MODE_NO_APP)) {
+        /* Gated. A v2 probe (power-on, or asked by the app's link watchdog) waits its whole
+         * window for a header and only then starts the app: its header request gets a
+         * refusal, a header answer the bootloader takes for no image (all zero: no magic, size
+         * 0, CRC 0), which ends the probe at once (zdms16-py32 boot/boot.c pick()). Nothing
+         * else of the gated image is answered. A refusal counts as no failure and no offer. */
+        static const uint8_t refusal[16] = { 0 };
+        if (!(len >= REQUEST_LEN && off == IMAGE_HEADER_OFFSET &&
+              (data[7] == REQUEST_MODE_PROBE || data[7] == REQUEST_MODE_LINK))) {
+            return;
+        }
+        img.size    = 0;
+        img.crc     = 0;
+        img.version = 0;
+        body        = refusal;
+        n           = want < sizeof(refusal) ? want : (uint16_t)sizeof(refusal);
+    } else if (off < img.size) {
         uint32_t left = img.size - off;
         n = want < BLOCK_MAX ? want : BLOCK_MAX;
         if (n > left) {
             n = (uint16_t)left;
         }
     }
-    uint8_t head[BLOCK_HEADER_LEN];
     put_be32(&head[0], off);
     put_be32(&head[4], img.size);
     put_be32(&head[8], img.crc);
     head[12] = img.version;
     if (tuya_secondary_mcu_send_long_reply(TUYA_MCU_CMD_OTA_BLOCK, seq, head, sizeof(head),
-                                           n ? secondary_mcu_image + off : NULL, n) == 0 &&
+                                           n ? body : NULL, n) == 0 &&
         tuya_mcu_diag.first_answer_ms == 0) {
         tuya_mcu_diag.first_answer_ms = tuya_mcu_diag_ms(hal_millis());   /* contract item 3 */
     }

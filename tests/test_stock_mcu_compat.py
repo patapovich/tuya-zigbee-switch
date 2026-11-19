@@ -20,11 +20,14 @@ One more, when the carried image is over 12 KB (Open Dimmer 2.2.0 and later):
 the ring gate (tuya_mcu_ota.h) serves such an image only to an Open Dimmer that
 reported its settings ring moved, or to a bootloader without an app (mode 2).
 A factory MCU never reports anything of the kind, so the block answers to the
-0xA1 requests it should never send (scenario spurious_frames) are left out and
-the trace is phase 1's without them (without_block_answers). That is the safe
-direction of rule 3: fewer frames, each one a reply the MCU had asked for and
-on which the stock firmware acts in no way, and none longer than before; the
-frames around them, the restart sign of an offset-0 request included, stay."""
+0xA1 requests it should never send (scenario spurious_frames) are left out,
+except that a v2 probe's header request (mode 3 or 6) gets the gate's refusal
+(a header answer of zeros, of the same length and place as the real one), and
+the trace is phase 1's so (without_block_answers). That is the safe direction
+of rule 3: fewer frames or the same frames with zeros, each one a reply the
+MCU had asked for and on which the stock firmware acts in no way, and none
+longer than before; the frames around them, the restart sign of an offset-0
+request included, stay."""
 
 import json
 import os
@@ -245,10 +248,25 @@ def without_dump_retry(trace: list) -> list:
     return trace[:retries[0]] + trace[retries[0] + 1:]
 
 
+# spurious_frames' block requests in order: v1 offset 0, v1 header, mode 3 header, mode 6
+# header, mode 6 block. Gated, the two v2 probe header requests get the refusal.
+REFUSED_ANSWERS = (2, 3)
+
+
 def without_block_answers(trace: list) -> list:
     """The trace as the module sends it with a carried image over 12 KB (module docstring):
-    no 0xA1 block answers to a factory MCU."""
-    return [f for f in trace if f[1] != OTA_BLOCK] if GATED else trace
+    of the 0xA1 block answers to a factory MCU only the refusals of the probe's header
+    requests (encoded as the header answers they replace)."""
+    if not GATED:
+        return trace
+    out, k = [], 0
+    for f in trace:
+        if f[1] == OTA_BLOCK:
+            k += 1
+            if k - 1 not in REFUSED_ANSWERS:
+                continue
+        out.append(f)
+    return out
 
 
 @pytest.mark.parametrize("name", [n for n in SCENARIOS if n != "late_ready"])
@@ -279,9 +297,9 @@ def test_stock_mcu_gets_only_the_phase_1_command_set_within_its_limits(runs, nam
     assert set(mcu.cmds()) <= STOCK_CMDS
     assert not [c for c in mcu.cmds() if c in (0xA0, 0xA2, 0xA3)]
     assert mcu.faults == []
-    # Every block request got its one reply; with a gated image none (module docstring):
-    # spurious_frames sends 5.
-    assert mcu.requests == (5 if GATED and name == "spurious_frames" else 0)
+    # Every block request got its one reply; with a gated image only the 2 probe header
+    # requests of spurious_frames' 5 (module docstring).
+    assert mcu.requests == (3 if GATED and name == "spurious_frames" else 0)
 
 
 def test_block_answers_hold_the_carried_image(runs):
@@ -290,6 +308,9 @@ def test_block_answers_hold_the_carried_image(runs):
             if cmd != OTA_BLOCK:
                 continue
             off = int.from_bytes(data[:4], "big")
+            if GATED:                       # the refusal of a probe's header request
+                assert off == 0xC0 and data[4:] == bytes(len(data) - 4) and len(data) == 13 + 16
+                continue
             assert data[4:13] == (SIZE.to_bytes(4, "big") + CRC.to_bytes(4, "big")
                                   + bytes([VERSION]))
             assert data[13:] == IMAGE[off:off + len(data) - 13]
@@ -300,8 +321,8 @@ def test_block_requests_of_a_link_probe_are_answered_like_any_other(runs):
     probe (mode 3) and a v1 bootloader get."""
     mcu, _ = runs["spurious_frames"]
     answers = [data for _, cmd, data in mcu.trace if cmd == OTA_BLOCK]
-    if GATED:
-        assert answers == []            # alike: none to a factory MCU (module docstring)
+    if GATED:                           # alike: the refusal (module docstring)
+        assert len(answers) == 2 and answers[0] == answers[1] and answers[0][4:] == bytes(25)
         return
     assert len(answers) == 5
     assert answers[1] == answers[2] == answers[3]          # 0xC0 / 16: v1, mode 3, mode 6
