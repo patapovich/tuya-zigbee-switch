@@ -14,7 +14,17 @@ It is the phase-1 behaviour and is never recorded again from a later build
 change towards the factory MCU and must be argued in the design (section 15),
 not re-recorded. The one difference argued there is the dump retry (section
 10, change 6): when the run's first-contact dump got no DP report, it is
-asked once more, 1 s after the contact (scenario late_ready), once per run."""
+asked once more, 1 s after the contact (scenario late_ready), once per run.
+
+One more, when the carried image is over 12 KB (Open Dimmer 2.2.0 and later):
+the ring gate (tuya_mcu_ota.h) serves such an image only to an Open Dimmer that
+reported its settings ring moved, or to a bootloader without an app (mode 2).
+A factory MCU never reports anything of the kind, so the block answers to the
+0xA1 requests it should never send (scenario spurious_frames) are left out and
+the trace is phase 1's without them (without_block_answers). That is the safe
+direction of rule 3: fewer frames, each one a reply the MCU had asked for and
+on which the stock firmware acts in no way, and none longer than before; the
+frames around them, the restart sign of an offset-0 request included, stay."""
 
 import json
 import os
@@ -31,7 +41,7 @@ from test_dimmer_mcu import (
     ZDMS16_2,
     ZDMS16_2_DP_CONFIG,
 )
-from test_mcu_ota import CRC, IMAGE, SIZE, VERSION
+from test_mcu_ota import CRC, GATED, IMAGE, SIZE, VERSION
 from tuya_mcu import OTA_BLOCK, StockMcu, pump
 from zcl_consts import (
     ZCL_CLUSTER_LEVEL_CONTROL,
@@ -235,11 +245,18 @@ def without_dump_retry(trace: list) -> list:
     return trace[:retries[0]] + trace[retries[0] + 1:]
 
 
+def without_block_answers(trace: list) -> list:
+    """The trace as the module sends it with a carried image over 12 KB (module docstring):
+    no 0xA1 block answers to a factory MCU."""
+    return [f for f in trace if f[1] != OTA_BLOCK] if GATED else trace
+
+
 @pytest.mark.parametrize("name", [n for n in SCENARIOS if n != "late_ready"])
 def test_stock_mcu_gets_what_phase_1_sends(runs, name):
     mcu, st = runs[name]
     want = golden()["scenarios"][name]
-    assert diff(encode(mcu), want["trace"]) is None, diff(encode(mcu), want["trace"])
+    trace = without_block_answers(want["trace"])
+    assert diff(encode(mcu), trace) is None, diff(encode(mcu), trace)
     assert st == want["state"]
 
 
@@ -250,7 +267,8 @@ def test_a_late_stock_mcu_gets_phase_1_and_the_dump_retry(runs):
     mcu, st = runs["late_ready"]
     want = golden()["scenarios"]["late_ready"]
     got = without_dump_retry(encode(mcu))
-    assert diff(got, want["trace"]) is None, diff(got, want["trace"])
+    trace = without_block_answers(want["trace"])
+    assert diff(got, trace) is None, diff(got, trace)
     assert want["state"]["min_1"] == "1"                     # phase 1: lost
     assert st == {**want["state"], "min_1": "51", "min_2": "51"}
 
@@ -261,7 +279,9 @@ def test_stock_mcu_gets_only_the_phase_1_command_set_within_its_limits(runs, nam
     assert set(mcu.cmds()) <= STOCK_CMDS
     assert not [c for c in mcu.cmds() if c in (0xA0, 0xA2, 0xA3)]
     assert mcu.faults == []
-    assert mcu.requests == 0             # every block request got its one reply
+    # Every block request got its one reply; with a gated image none (module docstring):
+    # spurious_frames sends 5.
+    assert mcu.requests == (5 if GATED and name == "spurious_frames" else 0)
 
 
 def test_block_answers_hold_the_carried_image(runs):
@@ -280,6 +300,9 @@ def test_block_requests_of_a_link_probe_are_answered_like_any_other(runs):
     probe (mode 3) and a v1 bootloader get."""
     mcu, _ = runs["spurious_frames"]
     answers = [data for _, cmd, data in mcu.trace if cmd == OTA_BLOCK]
+    if GATED:
+        assert answers == []            # alike: none to a factory MCU (module docstring)
+        return
     assert len(answers) == 5
     assert answers[1] == answers[2] == answers[3]          # 0xC0 / 16: v1, mode 3, mode 6
     assert answers[1][13:] == IMAGE[0xC0:0xD0]

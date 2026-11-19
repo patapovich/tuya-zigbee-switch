@@ -40,6 +40,23 @@ IMAGE = carried_image()
 SIZE = int.from_bytes(IMAGE[0xC4:0xC8], "little")
 CRC = int.from_bytes(IMAGE[0xC8:0xCC], "little")
 VERSION = IMAGE[0xCC]
+IMAGE_BUILD = int.from_bytes(IMAGE[0xCE:0xD0], "little")
+
+APP_FLAG_DIAG, APP_FLAG_CONFIRMS, APP_FLAG_RING_HIGH = 0x04, 0x08, 0x10
+APP_BASE = 0x08001000
+MODE_NO_APP, MODE_PROBE, MODE_RESCUE, MODE_BUTTON, MODE_LINK = 2, 3, 4, 5, 6
+RING_MOVER_BUILD = 400              # 2.1.14: the first app whose health report says bit 25
+
+# The ring gate (tuya_mcu_ota.h): an image over 12 KB is offered and served only to an Open
+# Dimmer identified with build >= 400 whose health report said its settings ring moved (DP 137
+# bit 25), and to a bootloader without a valid app (mode 2). py32-bump carries such an image
+# from 2.2.0, so the tests that are not about the gate (which has tests of its own, below, on
+# both sides of it) do what reaches the carried image whatever its size: a bootloader fetching
+# it is a v1 one (6-byte request) up to 12 KB and one without an app (mode 2) above (a v1
+# bootloader takes at most 12 KB), and an MCU to offer it to identifies itself and reports
+# its ring moved first (ready_own() below).
+GATED = SIZE > 12 * 1024
+FETCH_MODE = MODE_NO_APP if GATED else None
 
 
 def offer(image: bytes = IMAGE) -> bytes:
@@ -194,10 +211,37 @@ def test_own_mcu_with_the_carried_version_is_left_alone():
         proc.stop()
 
 
+def ring_report(proc, device) -> list[tuple[int, bytes]]:
+    """The health report of an app that has moved its settings ring (DP 137 bits 24, 25)."""
+    proc.exec(health_frame(RING_HIGH | RING_MOVED))
+    return cmds_after(proc, device, 200)
+
+
+def contact_as_updatable_own(proc, device, running: int):
+    """contact_as_own() of an older Open Dimmer that may take the carried image: a 2.1.x app
+    (7-byte identity, the version byte rule) for an image up to 12 KB; for a larger one the
+    ring mover (2.1.14, build 400), which then reports its ring moved (the ring gate: the
+    offer comes with the run's first such report, or at the identity once it came)."""
+    if not GATED:
+        return contact_as_own(proc, device, running)
+    assert IMAGE_BUILD > RING_MOVER_BUILD
+    cmds, frames = contact_as_own(proc, device, running, build=RING_MOVER_BUILD, boot=2)
+    return cmds, frames + ring_report(proc, device)
+
+
+def ready_own(proc, device) -> None:
+    """For an image over 12 KB: an Open Dimmer with the carried build identifies itself and
+    reports its ring moved, so every request mode is served (nothing is offered: same build).
+    Up to 12 KB: nothing (any bootloader is served)."""
+    if GATED:
+        _, frames = contact_as_own(proc, device, VERSION, build=IMAGE_BUILD, boot=2)
+        assert OTA_NOTIFY not in [cmd for cmd, _ in frames + ring_report(proc, device)]
+
+
 def test_own_mcu_with_an_older_version_is_offered_the_carried_one():
     proc, device = start()
     try:
-        cmds, frames = contact_as_own(proc, device, older_version())
+        cmds, frames = contact_as_updatable_own(proc, device, older_version())
         assert OTA_IDENT in cmds
         offers = [data for cmd, data in frames if cmd == OTA_NOTIFY]
         assert offers == [offer()]                   # a 2.1.x app reads the first 9 bytes
@@ -207,7 +251,8 @@ def test_own_mcu_with_an_older_version_is_offered_the_carried_one():
 
 
 def request(proc, device, offset: int, want: int) -> bytes:
-    data = offset.to_bytes(4, "big") + want.to_bytes(2, "big")
+    """A block of the carried image, as the bootloader that fetches it asks (FETCH_MODE)."""
+    data = block_request(offset, want, FETCH_MODE)
     proc.exec(f"uart_rx {tuya_frame(OTA_BLOCK, data)}")
     blocks = [d for cmd, d in cmds_after(proc, device) if cmd == OTA_BLOCK]
     assert len(blocks) == 1
@@ -291,8 +336,7 @@ def test_a_bootloader_fetching_the_image_is_not_asked_its_version():
         assert TUYA_CMD_MCU_VERSION in [cmd for cmd, _ in parse_frames(take_tx(proc))]
         sent = []
         for k in range(40):                          # 8 s of blocks
-            data = (64 * k).to_bytes(4, "big") + (64).to_bytes(2, "big")
-            proc.exec(f"uart_rx {tuya_frame(OTA_BLOCK, data)}")
+            proc.exec(f"uart_rx {tuya_frame(OTA_BLOCK, block_request(64 * k, 64, FETCH_MODE))}")
             sent += [cmd for cmd, _ in cmds_after(proc, device, 200)]
         assert sent.count(OTA_BLOCK) == 40
         assert TUYA_CMD_MCU_VERSION not in sent
@@ -389,7 +433,7 @@ def fail(proc, device) -> None:
 
 
 def served(proc, device) -> bool:
-    proc.exec(f"uart_rx {tuya_frame(OTA_BLOCK, (0).to_bytes(4, 'big') + (64).to_bytes(2, 'big'))}")
+    proc.exec(f"uart_rx {tuya_frame(OTA_BLOCK, block_request(0, 64, FETCH_MODE))}")
     return OTA_BLOCK in [cmd for cmd, _ in cmds_after(proc, device)]
 
 
@@ -448,15 +492,30 @@ def test_the_pause_doubles_up_to_a_day_and_a_good_result_ends_it():
         proc.stop()
 
 
+def base_image() -> bytes:
+    """What variant() changes: the carried image; when that is over 12 KB (behind the ring
+    gate, which has tests of its own), its first 11 KB with the reset vector moved inside
+    them, so that the header, vector and build rules are tested on their own whatever
+    py32-bump carries (the module checks the header, the vectors and the CRC, not the code)."""
+    if not GATED:
+        return IMAGE
+    img = bytearray(IMAGE[:11 * 1024])
+    img[4:8] = (APP_BASE + 0x201).to_bytes(4, "little")       # odd: a Thumb entry
+    return bytes(img)
+
+
+BASE = base_image()
+
+
 def variant(flags: int = 0, build: int | None = None, sp: int | None = None,
             reset: int | None = None, pad_to: int | None = None, version: int | None = None,
             crc: int | None = None, clear_flags: int = 0) -> bytes:
-    """The carried image with header fields or vectors changed; the size and
+    """The carried image (BASE) with header fields or vectors changed; the size and
     CRC fields are made right again (unless `crc` is given), so the change is
     the only thing wrong with it."""
-    img = bytearray(IMAGE)
+    img = bytearray(BASE)
     if pad_to is not None:
-        img += bytes(pad_to - len(img))
+        img += bytes(max(0, pad_to - len(img)))   # a carried image may be that big already
     img[0xCD] = (img[0xCD] & ~clear_flags) | flags
     if build is not None:
         img[0xCE:0xD0] = build.to_bytes(2, "little")
@@ -555,7 +614,7 @@ def test_offers_stop_when_the_update_never_starts():
     try:
         offers = 0
         for _ in range(5):
-            _, frames = contact_as_own(proc, device, older_version())
+            _, frames = contact_as_updatable_own(proc, device, older_version())
             offers += [cmd for cmd, _ in frames].count(OTA_NOTIFY)
             proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_QUERY_NETWORK, seq=0)}")   # it restarts
             cmds_after(proc, device, 200)
@@ -569,9 +628,6 @@ def test_offers_stop_when_the_update_never_starts():
 # replaced only over SWD, needs from every later release of this firmware.
 
 OTA_H = ROOT / "src/zigbee/tuya_mcu_ota.h"
-APP_FLAG_DIAG, APP_FLAG_CONFIRMS, APP_FLAG_RING_HIGH = 0x04, 0x08, 0x10
-APP_BASE = 0x08001000
-MODE_NO_APP, MODE_PROBE, MODE_RESCUE, MODE_BUTTON, MODE_LINK = 2, 3, 4, 5, 6
 
 
 def header_define(name: str) -> int:
@@ -742,10 +798,10 @@ def test_a_2_1_x_identity_leaves_build_and_bootloader_at_0():
 
 # -- what is carried: image_info mirrors the bootloader ----------------------
 
-RESET = int.from_bytes(IMAGE[4:8], "little")
+RESET = int.from_bytes(BASE[4:8], "little")
 OVER_12K = 12 * 1024 + 128
 OVER_14K = 14 * 1024 + 128
-LAST_ODD = (APP_BASE + len(IMAGE) - 1) | 1 if len(IMAGE) % 2 == 0 else APP_BASE + len(IMAGE) - 2
+LAST_ODD = (APP_BASE + len(BASE) - 1) | 1 if len(BASE) % 2 == 0 else APP_BASE + len(BASE) - 2
 
 REFUSED = {
     "diag": variant(flags=APP_FLAG_DIAG),
@@ -759,7 +815,7 @@ REFUSED = {
     "sp in the mailbox": variant(sp=0x20000BF0),
     "sp below the mailbox": variant(sp=0x20000BD0),
     "reset vector even": variant(reset=RESET & ~1),
-    "reset vector past the image": variant(reset=(APP_BASE + len(IMAGE)) | 1),
+    "reset vector past the image": variant(reset=(APP_BASE + len(BASE)) | 1),
     "reset vector in the bootloader": variant(reset=APP_BASE - 0xF00 + 1),
     "over 12 KB without RING_HIGH": variant(clear_flags=APP_FLAG_RING_HIGH, pad_to=OVER_12K),
     "over 14 KB with RING_HIGH": variant(flags=APP_FLAG_RING_HIGH, pad_to=OVER_14K),
@@ -830,7 +886,10 @@ def test_a_header_request_gets_the_16_header_bytes_and_no_first_contact_reset(mo
     offset 0 means the MCU restarted)."""
     proc, device = start()
     try:
-        contact_by_mcu(proc, device)
+        if GATED:
+            ready_own(proc, device)
+        else:
+            contact_by_mcu(proc, device)
         assert answers(proc, device, block_request(0xC0, 16, mode)) == [header_answer()]
         assert TUYA_CMD_MCU_VERSION not in mcu_query(proc, device)
     finally:
@@ -856,6 +915,7 @@ def test_any_request_a_bootloader_can_send_gets_a_well_formed_answer():
     rng = random.Random(20261118)
     proc, device = start()
     try:
+        ready_own(proc, device)
         for _ in range(500):
             off = rng.choice([0, 0xC0, SIZE - 1, SIZE, SIZE + 1, 0x7FFFFFFF, 0xFFFFFFFF,
                               rng.randrange(SIZE), rng.randrange(1 << 32)])
@@ -881,7 +941,10 @@ def test_the_first_header_answer_and_the_uart_start_are_timed():
         c = counters(device)
         assert c["uart_up_ms"] >= 1 and c["first_answer_ms"] == 0
         device.step_time(50)
-        assert answers(proc, device, block_request(0xC0, 16, MODE_PROBE)) == [header_answer()]
+        # A gated image (over 12 KB) goes to no probe before a ring report; a bootloader
+        # without an app gets it from the first poll on: the timing is the module's either way.
+        mode = MODE_NO_APP if GATED else MODE_PROBE
+        assert answers(proc, device, block_request(0xC0, 16, mode)) == [header_answer()]
         c = counters(device)
         first = c["first_answer_ms"]
         # 50 ms of stub time; the stub's clock may run a ms of real time before the test holds

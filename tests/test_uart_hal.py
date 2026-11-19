@@ -13,7 +13,17 @@ from test_dimmer_mcu import (
     tuya_to_zcl,
 )
 from test_mcu_diag import counters
-from test_mcu_ota import IMAGE, OTA_BLOCK, OTA_IDENT, SIZE, VERSION, cmds_after, shown_version
+from test_mcu_ota import (
+    FETCH_MODE,
+    IMAGE,
+    OTA_BLOCK,
+    OTA_IDENT,
+    SIZE,
+    VERSION,
+    block_request,
+    cmds_after,
+    shown_version,
+)
 from tuya_mcu import (
     TUYA_CMD_REPORT,
     TUYA_CMD_REPORT_PASSIVE,
@@ -129,8 +139,8 @@ def test_tx_capture_keeps_everything_past_256_bytes():
     used to take head == tail for empty at 256 bytes and lose all of it."""
     proc, device = start()
     try:
-        for i in range(4):
-            data = (64 * i).to_bytes(4, "big") + (64).to_bytes(2, "big")
+        for i in range(4):                  # as the bootloader that fetches the carried image asks
+            data = block_request(64 * i, 64, FETCH_MODE)
             inject(proc, frame(OTA_BLOCK, data, i))
             pump(proc)
         blocks = [d for cmd, d in parse_frames(take_tx(proc)) if cmd == OTA_BLOCK]
