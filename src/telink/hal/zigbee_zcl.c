@@ -174,6 +174,7 @@ static status_t cmd_callback_poll_control(zclIncomingAddrInfo_t *pAddrInfo,
 }
 
 #ifdef DIMMER_SCENES
+
 /* The Scenes command being handled (hal_zigbee_send_response answers it) and whether it was
  * answered (no default response then). */
 static zclIncoming_t *scene_in_msg;
@@ -196,16 +197,17 @@ void hal_zigbee_send_response(uint8_t command_id, const uint8_t *payload, uint8_
 
     if (in == NULL)
         return;
+
     scene_answered = 1;
     if (!UNICAST_MSG(in->msg))
         return; /* ZCL: a command to a group or a broadcast gets no response */
 
     epInfo_t dst;
     TL_SETSTRUCTCONTENT(dst, 0);
-    dst.dstAddrMode     = APS_SHORT_DSTADDR_WITHEP;
+    dst.dstAddrMode       = APS_SHORT_DSTADDR_WITHEP;
     dst.dstAddr.shortAddr = in->addrInfo.srcAddr;
-    dst.dstEp           = in->addrInfo.srcEp;
-    dst.profileId       = in->addrInfo.profileId;
+    dst.dstEp             = in->addrInfo.srcEp;
+    dst.profileId         = in->addrInfo.profileId;
     zcl_sendCmd(in->addrInfo.dstEp, &dst, ZCL_CLUSTER_GEN_SCENES, command_id, TRUE,
                 ZCL_FRAME_SERVER_CLIENT_DIR, TRUE, 0, in->addrInfo.seqNum, payload_len,
                 (u8 *)payload);

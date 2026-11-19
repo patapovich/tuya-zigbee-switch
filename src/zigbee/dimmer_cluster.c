@@ -968,6 +968,7 @@ static uint8_t dimmer_own_mcu(const zigbee_dimmer_cluster *cluster) {
 }
 
 #ifdef DIMMER_BINDINGS
+
 /* ---- the wall switch's bindings (its own endpoint, 3 / 4 on the ZDMS16-2) -----------------
  *
  * Lights bound to it follow the wall switch. Normal mode (DP 162 / 163 0, also any MCU that does
@@ -999,9 +1000,9 @@ static void dimmer_bind_send(const zigbee_dimmer_cluster *cluster, uint16_t clus
         .profile_id          = ZCL_HA_PROFILE,
         .cluster_id          = cluster_id,
         .command_id          = command_id,
-        .cluster_specific    = 1,
+        .cluster_specific    =                               1,
         .direction           = HAL_ZIGBEE_DIR_CLIENT_TO_SERVER,
-        .disable_default_rsp = 1,
+        .disable_default_rsp =                               1,
         .payload             = payload,
         .payload_len         = len,
     };
@@ -1027,19 +1028,22 @@ static void dimmer_bind_gesture(zigbee_dimmer_cluster *cluster, uint8_t gesture)
         p[0] = ZCL_LEVEL_MAX;
         p[1] = 4; /* 0.4 s */
         p[2] = 0;
-        dimmer_bind_send(cluster, ZCL_CLUSTER_LEVEL_CONTROL, ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF,
+        dimmer_bind_send(cluster, ZCL_CLUSTER_LEVEL_CONTROL,
+                         ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF,
                          p, 3);
         break;
     case DIMMER_GESTURE_HOLD:
         p[0] = cluster->bind_hold_down ? ZCL_LEVEL_MOVE_DOWN : ZCL_LEVEL_MOVE_UP;
         p[1] = rate && rate != 0xFF ? rate : DIMMER_BIND_RATE;
         dimmer_bind_send(cluster, ZCL_CLUSTER_LEVEL_CONTROL,
-                         cluster->bind_hold_down ? ZCL_CMD_LEVEL_MOVE : ZCL_CMD_LEVEL_MOVE_WITH_ON_OFF,
+                         cluster->bind_hold_down ? ZCL_CMD_LEVEL_MOVE :
+                         ZCL_CMD_LEVEL_MOVE_WITH_ON_OFF,
                          p, 2);
         cluster->bind_hold_down ^= 1;
         break;
     case DIMMER_GESTURE_RELEASE:
-        dimmer_bind_send(cluster, ZCL_CLUSTER_LEVEL_CONTROL, ZCL_CMD_LEVEL_STOP_WITH_ON_OFF, NULL, 0);
+        dimmer_bind_send(cluster, ZCL_CLUSTER_LEVEL_CONTROL, ZCL_CMD_LEVEL_STOP_WITH_ON_OFF, NULL,
+                         0);
         break;
     }
 }

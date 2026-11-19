@@ -18,7 +18,7 @@ typedef enum {
     HAL_ZIGBEE_INVALID_VALUE,
     HAL_ZIGBEE_MALFORMED_COMMAND,
     HAL_ZIGBEE_ACTION_DENIED,
-#ifdef DIMMER_SCENES /* (only there: other boards keep their builds byte for byte) */
+#ifdef DIMMER_SCENES          /* (only there: other boards keep their builds byte for byte) */
     HAL_ZIGBEE_NOT_FOUND,     /* ZCL NOT_FOUND (Scenes: no such scene) */
     HAL_ZIGBEE_INVALID_FIELD, /* ZCL INVALID_FIELD (Scenes: the endpoint is not in the group) */
 #endif
@@ -221,6 +221,7 @@ bool hal_zigbee_group_has_endpoint(uint16_t group_id, uint8_t endpoint);
  *  command of the Groups cluster on an endpoint. */
 typedef void (*hal_group_removed_callback_t)(uint8_t endpoint, uint16_t group_id, bool all);
 void hal_zigbee_register_on_group_removed_callback(hal_group_removed_callback_t callback);
+
 #endif
 
 /** Find cluster definition by endpoint and cluster ID */
