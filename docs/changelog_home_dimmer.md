@@ -14,6 +14,8 @@ zdms16-py32 release notes.
 
 ## Next
 
+## 1.1.3-ab06b9a0 (2026-11-19), carries Open Dimmer 2.2.3
+
 - Conversion from the stock firmware: the outgoing NWK frame counter starts at 0x10000000 once
   (it lived in flash at a much lower value). Routers still on stock Tuya firmware remembered
   the counter the stock firmware had reached, including the thousands of frames of the
