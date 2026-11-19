@@ -31,9 +31,10 @@ typedef struct {
     uint8_t              action_seq;
     uint16_t             action_state;
 
-    /* genOnOff: onoff, startup, [countdown]; genLevelCtrl from DIMMER_LEVEL_ATTRS: current
-     * level, on level, default move rate, [start-up level] ([]: boards with an image only). */
-    hal_zigbee_attribute attr_infos[7];
+    /* genOnOff: onoff, startup, [countdown]; genLevelCtrl after them: current level, on
+     * level, default move rate, options, on level local, [start-up level] ([]: boards with an
+     * image only). */
+    hal_zigbee_attribute attr_infos[9];
     hal_zigbee_attribute multistate_attr_infos[4];  // wall switch gestures (own MCU)
     hal_zigbee_attribute ballast_attr_infos[3];     // min/max level, [start boost] (lightingBallastCfg)
     hal_zigbee_attribute switch_type_attr_infos[2]; // switch type, [wall switch mode] (genOnOffSwitchCfg)
@@ -65,6 +66,19 @@ typedef struct {
      * (NV_ITEM_DIMMER_CLUSTER_DATA); on_level_saved is the value stored
      * there, so only a real change is written. */
     uint8_t              on_level;
+
+    /* The OnLevel of the wall switch (Level Control 0xff11, same values, NV-kept like it):
+     * when set, a wall switch on goes there instead of to OnLevel; 0xFF (default): OnLevel. */
+    uint8_t              on_level_local;
+    uint8_t              on_level_local_saved;
+
+    /* Level Control Options (bit 0 ExecuteIfOff), NV-kept. A level command without OnOff
+     * while off, with ExecuteIfOff in effect, sets the level the light comes on at: Open
+     * Dimmer keeps a level written while off; a stock MCU does not, so it is kept here
+     * (current_level, pending_level) and written at the next on. */
+    uint8_t              level_options;
+    uint8_t              level_options_saved;
+    uint8_t              pending_level;
 
     /* Set once the MCU has told us its on/off state, so its first report
      * after boot is not taken for a switch press. */

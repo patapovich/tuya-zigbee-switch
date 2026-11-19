@@ -41,8 +41,12 @@
 // slot: 38..41. Frozen like the ids above; the extra relay block (37) must not
 // grow into it (the NV id tests check that every id is unique).
 #define NV_LAYOUT_DIMMERS    4
-#define NV_ITEM_DIMMER_CLUSTER_DATA(dimmer_idx)    (38 + (dimmer_idx))
+#define NV_ITEM_DIMMER_CLUSTER_DATA(dimmer_idx)      (38 + (dimmer_idx))
 // Their DefaultMoveRate (Level Control), one byte per dimmer slot: 42..45.
-#define NV_ITEM_DIMMER_MOVE_RATE(dimmer_idx)       (42 + (dimmer_idx))
+#define NV_ITEM_DIMMER_MOVE_RATE(dimmer_idx)         (42 + (dimmer_idx))
+// Their Level Control Options (ExecuteIfOff): 46..49.
+#define NV_ITEM_DIMMER_LEVEL_OPTIONS(dimmer_idx)     (46 + (dimmer_idx))
+// Their OnLevel of the wall switch (Level Control 0xff11): 50..53.
+#define NV_ITEM_DIMMER_ON_LEVEL_LOCAL(dimmer_idx)    (50 + (dimmer_idx))
 
 #endif /* DEVICE_CONFIG_NVM_ITEMS_H_ */

@@ -112,7 +112,9 @@
 // Level Control cluster
 #define ZCL_ATTR_LEVEL_CURRENT_LEVEL                                 0x0000
 #define ZCL_ATTR_LEVEL_ON_LEVEL                                      0x0011
+#define ZCL_ATTR_LEVEL_OPTIONS                                       0x000F
 #define ZCL_ATTR_LEVEL_DEFAULT_MOVE_RATE                             0x0014
+#define ZCL_ATTR_LEVEL_ON_LEVEL_LOCAL                                0xff11 /* dimmer: OnLevel of the wall switch */
 #define ZCL_ATTR_LEVEL_START_UP_CURRENT_LEVEL                        0x4000
 
 // Identify cluster
@@ -208,6 +210,10 @@
 
 #define ZCL_START_UP_CURRENT_LEVEL_MINIMUM     0x00
 #define ZCL_START_UP_CURRENT_LEVEL_PREVIOUS    0xFF
+
+// Options bits
+
+#define ZCL_LEVEL_OPTIONS_EXECUTE_IF_OFF    0x01
 
 // WindowCovering cluster
 

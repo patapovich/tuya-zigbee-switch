@@ -142,6 +142,8 @@ static void dimmer_set_on(zigbee_dimmer_cluster *cluster, uint8_t on) {
         return;
 
     cluster->on = on;
+    if (on)
+        cluster->pending_level = 0; /* applied by whoever switched it on */
     dimmer_notify_onoff(cluster);
     /* Open Dimmer: any off (ours, the wall switch, the countdown's own end) ends it. */
     if (!on && cluster->countdown) {
@@ -344,8 +346,12 @@ static void dimmer_turn_on_at(zigbee_dimmer_cluster *cluster, uint8_t level) {
     dimmer_write_level(cluster, level);
 }
 
+static uint8_t dimmer_level_set(uint8_t level) {
+    return level >= ZCL_LEVEL_MIN && level <= ZCL_LEVEL_MAX;
+}
+
 static uint8_t dimmer_on_level_set(const zigbee_dimmer_cluster *cluster) {
-    return cluster->on_level >= ZCL_LEVEL_MIN && cluster->on_level <= ZCL_LEVEL_MAX;
+    return dimmer_level_set(cluster->on_level);
 }
 
 /* ---- OnLevel in NV --------------------------------------------------------
@@ -386,6 +392,16 @@ static void dimmer_load_on_level(zigbee_dimmer_cluster *cluster) {
     cluster->default_move_rate =
         dimmer_nv_load(cluster, NV_ITEM_DIMMER_MOVE_RATE(cluster->dimmer_idx));
     cluster->default_move_rate_saved = cluster->default_move_rate;
+
+    value = dimmer_nv_load(cluster, NV_ITEM_DIMMER_ON_LEVEL_LOCAL(cluster->dimmer_idx));
+    if (!dimmer_level_set(value))
+        value = DIMMER_ON_LEVEL_UNDEFINED;
+    cluster->on_level_local       = value;
+    cluster->on_level_local_saved = value;
+
+    value = dimmer_nv_load(cluster, NV_ITEM_DIMMER_LEVEL_OPTIONS(cluster->dimmer_idx));
+    cluster->level_options       = value == 0xFF ? 0 : value;   /* none stored: 0 */
+    cluster->level_options_saved = value;
 }
 
 static void dimmer_store_on_level(zigbee_dimmer_cluster *cluster) {
@@ -393,16 +409,32 @@ static void dimmer_store_on_level(zigbee_dimmer_cluster *cluster) {
                     &cluster->on_level, &cluster->on_level_saved);
 }
 
-/* ZCL On: to OnLevel when one is set, else wherever the MCU left it. A
- * channel that is already on keeps its level (ZCL: On does nothing to a lit
- * light); "on" still goes to the MCU, in case it is off after all. (With a
- * transition Zigbee2MQTT sends MoveToLevelWithOnOff(OnLevel) instead of On,
- * and that goes to OnLevel whether lit or not.) */
+/* ZCL On: to OnLevel when one is set, else wherever the MCU left it (a level
+ * set while off by ExecuteIfOff for a stock MCU: that one). A channel that is
+ * already on keeps its level (ZCL: On does nothing to a lit light); "on" still
+ * goes to the MCU, in case it is off after all. (With a transition
+ * Zigbee2MQTT sends MoveToLevelWithOnOff(OnLevel) instead of On, and that goes
+ * to OnLevel whether lit or not.) */
 static void dimmer_turn_on_default(zigbee_dimmer_cluster *cluster) {
     if (!cluster->on && dimmer_on_level_set(cluster))
         dimmer_turn_on_at(cluster, cluster->on_level);
+    else if (!cluster->on && cluster->pending_level)
+        dimmer_turn_on_at(cluster, cluster->current_level);
     else
         dimmer_turn_on(cluster);
+}
+
+/* The level a wall switch on goes to (0: where the MCU goes by itself): the
+ * wall switch's OnLevel, else OnLevel, else a level set while off for a stock
+ * MCU (pending: as it was before the on). */
+static uint8_t dimmer_local_on_level(const zigbee_dimmer_cluster *cluster, uint8_t pending) {
+    if (dimmer_level_set(cluster->on_level_local))
+        return cluster->on_level_local;
+
+    if (dimmer_on_level_set(cluster))
+        return cluster->on_level;
+
+    return pending ? cluster->current_level : 0;
 }
 
 static void dimmer_turn_off(zigbee_dimmer_cluster *cluster) {
@@ -411,12 +443,39 @@ static void dimmer_turn_off(zigbee_dimmer_cluster *cluster) {
     dimmer_set_on(cluster, 0);
 }
 
-/* Level change without OnOff: no effect while off (ZCL, and the Telink stack
- * drops MoveToLevel for an off light before it reaches us anyway). */
-static void dimmer_change_level(zigbee_dimmer_cluster *cluster, uint8_t level) {
-    if (!cluster->on)
-        return;
+/* ZCL ExecuteIfOff of a level command without OnOff: Options bit 0, unless its
+ * OptionsMask / OptionsOverride (at payload[at], when there) set it otherwise. */
+static uint8_t dimmer_execute_if_off(const zigbee_dimmer_cluster *cluster, const uint8_t *payload,
+                                     uint16_t len, uint16_t at) {
+    uint8_t options = cluster->level_options;
 
+    if (len >= at + 2)
+        options = (uint8_t)((options & ~payload[at]) | (payload[at + 1] & payload[at]));
+    return options & ZCL_LEVEL_OPTIONS_EXECUTE_IF_OFF;
+}
+
+/* While off (ExecuteIfOff): the level the light comes on at, the light stays
+ * off. Open Dimmer keeps a level written while off; a stock MCU would forget
+ * it, so it is kept here for the next on. */
+static void dimmer_set_off_level(zigbee_dimmer_cluster *cluster, uint8_t level) {
+    dimmer_set_current_level(cluster, level);
+    if (dimmer_own_mcu(cluster)) {
+        dimmer_write_level(cluster, level);
+    } else {
+        cluster->level_value   = dimmer_level_to_value(cluster, level);
+        cluster->pending_level = 1;
+    }
+}
+
+/* Level change without OnOff: while off only with ExecuteIfOff (ZCL; the
+ * Telink stack drops the others for an off light before they reach us). */
+static void dimmer_change_level(zigbee_dimmer_cluster *cluster, uint8_t level,
+                                uint8_t execute_if_off) {
+    if (!cluster->on) {
+        if (execute_if_off)
+            dimmer_set_off_level(cluster, level);
+        return;
+    }
     dimmer_set_current_level(cluster, level);
     dimmer_write_level(cluster, level);
 }
@@ -459,9 +518,9 @@ static void dimmer_cluster_ramp_step(void *arg) {
                                                : level <= ZCL_LEVEL_MIN;
 
     if (level != cluster->current_level) {
-        dimmer_send_transition(cluster, dimmer_ramp_time);
-        dimmer_set_current_level(cluster, level);
-        dimmer_write_level(cluster, level);
+        if (cluster->on)
+            dimmer_send_transition(cluster, dimmer_ramp_time);
+        dimmer_change_level(cluster, level, 1); /* off: a Move with ExecuteIfOff */
     }
 
     if (at_limit) {
@@ -564,7 +623,8 @@ static hal_zigbee_cmd_result_t dimmer_cluster_level_callback(zigbee_dimmer_clust
             dimmer_send_transition(cluster, payload + 1);
 
         if (!with_onoff) {
-            dimmer_change_level(cluster, dimmer_clamp_level(payload[0]));
+            dimmer_change_level(cluster, dimmer_clamp_level(payload[0]),
+                                dimmer_execute_if_off(cluster, payload, cmd_payload_len, 3));
             break;
         }
         if (payload[0] == 0) {
@@ -590,7 +650,9 @@ static hal_zigbee_cmd_result_t dimmer_cluster_level_callback(zigbee_dimmer_clust
 
         if (payload[1] == 0)
             break; /* ZCL: a rate of 0 has no effect */
-        if (!cluster->on) {
+        /* Off without OnOff and with ExecuteIfOff: the level moves, the light stays off. */
+        if (!cluster->on &&
+            (with_onoff || !dimmer_execute_if_off(cluster, payload, cmd_payload_len, 2))) {
             if (!(with_onoff && up))
                 break; /* nothing to move while off */
             /* ZCL: start from the minimum level when switching on by moving. */
@@ -617,8 +679,14 @@ static hal_zigbee_cmd_result_t dimmer_cluster_level_callback(zigbee_dimmer_clust
         int     base       = cluster->current_level;
 
         dimmer_stop_move(cluster);
+        if (!cluster->on && !with_onoff) {
+            if (dimmer_execute_if_off(cluster, payload, cmd_payload_len, 4))
+                dimmer_set_off_level(cluster, dimmer_clamp_level(up ? base + payload[1]
+                                                                    : base - payload[1]));
+            break;
+        }
         if (!cluster->on) {
-            if (!(with_onoff && up))
+            if (!up)
                 break;
             base = 0; /* stepping up from off starts at the bottom */
         }
@@ -743,18 +811,20 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
             uint8_t switched_on = value[0] && cluster->state_known && !cluster->on &&
                                   !tuya_secondary_mcu_report_is_passive() &&
                                   !tuya_secondary_mcu_report_acks_write();
+            uint8_t pending = cluster->pending_level;
 
             if (!value[0])
                 dimmer_stop_move(cluster);
             dimmer_set_on(cluster, value[0]);
             cluster->state_known = 1;
 
-            /* Go to OnLevel at once, with no round trip through the
-             * network: the MCU is fading in to the level it remembers and
-             * turns towards this one instead. */
-            if (switched_on && dimmer_on_level_set(cluster)) {
-                dimmer_set_current_level(cluster, cluster->on_level);
-                dimmer_write_level(cluster, cluster->on_level);
+            /* Go to the wall switch's OnLevel (else OnLevel) at once, with
+            * no round trip through the network: the MCU is fading in to
+            * the level it remembers and turns towards this one instead. */
+            uint8_t on_at = switched_on ? dimmer_local_on_level(cluster, pending) : 0;
+            if (on_at) {
+                dimmer_set_current_level(cluster, on_at);
+                dimmer_write_level(cluster, on_at);
             }
         } else if (dp_type == TUYA_DP_TYPE_VALUE && dpid == cluster->level_dpid) {
             if (cluster->move_active || cluster->level_holdoff) {
@@ -856,7 +926,7 @@ static hal_zigbee_cmd_result_t dimmer_cluster_identify_callback_trampoline(
 #define DIMMER_OD_ATTRS       0
 #endif
 #define DIMMER_ONOFF_ATTRS    (2 + DIMMER_OD_ATTRS)
-#define DIMMER_LEVEL_ATTRS    (3 + DIMMER_OD_ATTRS)
+#define DIMMER_LEVEL_ATTRS    (5 + DIMMER_OD_ATTRS)
 
 static void dimmer_add_cluster(hal_zigbee_endpoint *endpoint, uint16_t cluster_id,
                                uint8_t attribute_count, hal_zigbee_attribute *attributes,
@@ -890,6 +960,7 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
     cluster->mcu_max         = 0;
     cluster->level_value     = 0;
     cluster->state_known     = 0;
+    cluster->pending_level   = 0;
     cluster->countdown       = 0;
     cluster->startup_value   = 0;
     cluster->startup_level   = ZCL_START_UP_CURRENT_LEVEL_PREVIOUS;
@@ -915,6 +986,10 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
                          ATTR_WRITABLE, cluster->on_level);
     SETUP_ATTR_FOR_TABLE(level_attrs, 2, ZCL_ATTR_LEVEL_DEFAULT_MOVE_RATE, ZCL_DATA_TYPE_UINT8,
                          ATTR_WRITABLE, cluster->default_move_rate);
+    SETUP_ATTR_FOR_TABLE(level_attrs, 3, ZCL_ATTR_LEVEL_OPTIONS, ZCL_DATA_TYPE_BITMAP8,
+                         ATTR_WRITABLE, cluster->level_options);
+    SETUP_ATTR_FOR_TABLE(level_attrs, 4, ZCL_ATTR_LEVEL_ON_LEVEL_LOCAL, ZCL_DATA_TYPE_UINT8,
+                         ATTR_WRITABLE, cluster->on_level_local);
 
     // Min/max brightness on the standard lightingBallastCfg cluster (0x0301),
     // so Zigbee2MQTT can render sliders bound to these without a custom cluster.
@@ -932,7 +1007,7 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
     /* Open Dimmer's settings (from OPEN_DIMMER_FEATURES_BUILD), next to the standard ones. */
     SETUP_ATTR(2, ZCL_ATTR_ONOFF_COUNTDOWN, ZCL_DATA_TYPE_UINT32, ATTR_WRITABLE,
                cluster->countdown);
-    SETUP_ATTR_FOR_TABLE(level_attrs, 3, ZCL_ATTR_LEVEL_START_UP_CURRENT_LEVEL,
+    SETUP_ATTR_FOR_TABLE(level_attrs, 5, ZCL_ATTR_LEVEL_START_UP_CURRENT_LEVEL,
                          ZCL_DATA_TYPE_UINT8, ATTR_WRITABLE, cluster->startup_level);
     SETUP_ATTR_FOR_TABLE(cluster->ballast_attr_infos, 2, ZCL_ATTR_BALLAST_START_BOOST,
                          ZCL_DATA_TYPE_UINT16, ATTR_WRITABLE, cluster->start_boost);
@@ -1027,6 +1102,12 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
         } else if (attribute_id == ZCL_ATTR_LEVEL_DEFAULT_MOVE_RATE) {
             dimmer_nv_store(cluster, NV_ITEM_DIMMER_MOVE_RATE(cluster->dimmer_idx),
                             &cluster->default_move_rate, &cluster->default_move_rate_saved);
+        } else if (attribute_id == ZCL_ATTR_LEVEL_OPTIONS) {
+            dimmer_nv_store(cluster, NV_ITEM_DIMMER_LEVEL_OPTIONS(cluster->dimmer_idx),
+                            &cluster->level_options, &cluster->level_options_saved);
+        } else if (attribute_id == ZCL_ATTR_LEVEL_ON_LEVEL_LOCAL) {
+            dimmer_nv_store(cluster, NV_ITEM_DIMMER_ON_LEVEL_LOCAL(cluster->dimmer_idx),
+                            &cluster->on_level_local, &cluster->on_level_local_saved);
         }
 #ifdef SECONDARY_MCU_IMAGE
         else if (attribute_id == ZCL_ATTR_LEVEL_START_UP_CURRENT_LEVEL) {
