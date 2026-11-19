@@ -31,6 +31,15 @@ case "${1:-}" in
     grep -rq "mirror+file:$LIST" /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null ||
         echo "::warning::the apt sources do not use $LIST: mirror choice has no effect"
     mirrors "$A" "$B"
+    # The security pocket too (packages newer there come from security.ubuntu.com, which failed
+    # runs with 503s): the same mirror list carries <release>-security.
+    for f in /etc/apt/sources.list.d/*.sources; do
+        [ -f "$f" ] && sudo sed -i -E "s#^URIs: https?://security\.ubuntu\.com/ubuntu/?\$#URIs: mirror+file:$LIST#" "$f"
+    done
+    [ -f /etc/apt/sources.list ] &&
+        sudo sed -i -E "s#^(deb(-src)? )https?://security\.ubuntu\.com/ubuntu/?( )#\1mirror+file:$LIST\3#" /etc/apt/sources.list
+    grep -rhE "security\.ubuntu\.com" /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null | head -2 |
+        sed 's/^/::warning::security source left as it was: /'
     ;;
 key)
     name=$2; shift 2
