@@ -11,8 +11,8 @@ import json
 from generated_converter import run_node
 from test_converter_own_mcu import CONFIGURE, ZDMS
 
-NEW_PER_CHANNEL = ["countdown", "switch_mode", "current_level_startup", "start_boost",
-                   "execute_if_off", "on_level_local"]
+NEW_PER_CHANNEL = ["countdown", "switch_mode", "fast_press", "current_level_startup",
+                   "start_boost", "execute_if_off", "on_level_local"]
 NEW_DEVICE = ["identify", "mcu_uptime", "mcu_reset_cause", "mcu_zero_cross_losses",
               "mcu_uart_rx_losses", "mcu_temperature", "mcu_temperature_calibration",
               "mcu_settings_ring_moved"]
@@ -117,7 +117,7 @@ console.log(JSON.stringify({
                               [{"current_level_startup_dimmer_left": 255}],
                               [{"current_level_startup_dimmer_right": 128}]]
     assert out["eio"] == [[{"execute_if_off_dimmer_left": True}], [{"execute_if_off_dimmer_right": False}]]
-    assert out["local"] == [{"on_level_local_dimmer_right": 200}]
+    assert {"on_level_local_dimmer_right": 200} in out["local"]   # (0xff11 of genOnOffSwitchCfg too)
     assert out["stock"] == [[], [], []]
 
 
@@ -137,7 +137,7 @@ console.log(JSON.stringify([fzc("genOnOff", 1, {[0xff10]: 30}), fzc("genOnOffSwi
 
 
 SET = ZDMS + """
-const dev = h.device();
+const dev = h.device(); dev.getEndpoint(1).clusters.genBasic.attributes[0xff12] = "2.2.0 own";
 const tz = (key) => def.extend.filter((x) => !x.fake).flatMap((x) => x.toZigbee ?? [])
     .find((t) => t.key.includes(key));
 const set = async (key, value, ep = 1) => {
@@ -250,7 +250,7 @@ def test_configure_binds_basic_and_reads_the_new_settings_of_2_2_only():
     assert own["ownReads"] == [f"ff{a:02x}" for a in range(0x30, 0x3C)] + ["ff48"]
     assert "1:genBasic" in own["binds"]
     new_reads = [f"{ep}:{cluster}" for ep in (1, 2) for cluster in
-                 ("genOnOff:65296", "genOnOffSwitchCfg:65296",
+                 ("genOnOff:65296", "genOnOffSwitchCfg:65296+65297",
                   "genLevelCtrl:startUpCurrentLevel+options+65297", "lightingBallastCfg:65296")]
     assert [r for r in own["dimmerReads"] if r in new_reads] == new_reads
     assert len(own["dimmerReads"]) == 8 + 8
@@ -261,3 +261,53 @@ def test_configure_binds_basic_and_reads_the_new_settings_of_2_2_only():
         assert len(run["dimmerReads"]) == 8, v
         assert run["reporting"] == own["reporting"]      # no reporting added for any of it
     assert len(own["reporting"]) == 6
+
+
+def test_a_setting_that_is_not_shown_is_not_written():
+    """A stock unit or an older Open Dimmer (no 2.2 settings shown): a write is refused before
+    it goes out, so no state the module would not keep; "show" lets it through."""
+    out = json.loads(run_node(ZDMS + """
+const tz = (key) => def.extend.filter((x) => !x.fake).flatMap((x) => x.toZigbee ?? []).find((t) => t.key.includes(key));
+const run = async (v, key, value, options = {}) => {
+    const dev = h.device(); dev.getEndpoint(1).clusters.genBasic.attributes[0xff12] = v;
+    h.log.length = 0;
+    try {
+        await tz(key).convertSet(dev.getEndpoint(1), key, value, {device: dev, mapped: model, options});
+        return h.log.filter((l) => l[0] === "write" || l[0] === "command").length;
+    } catch (error) {
+        return error.message;
+    }
+};
+(async () => console.log(JSON.stringify({
+    stock: [await run("1.0.7", "countdown", 60), await run("1.0.7", "switch_mode", "off"),
+            await run("1.0.7", "identify", "identify"), await run("1.0.7", "fast_press", true)],
+    od21: await run("2.1.14 own", "start_boost", 300),
+    show: await run("1.0.7", "countdown", 60, {open_dimmer_settings: "show"}),
+    own: await run("2.2.0 own", "fast_press", true),
+})))();
+"""))
+    assert all("Open Dimmer 2.2 setting" in r for r in out["stock"]), out["stock"]
+    assert "Open Dimmer 2.2 setting" in out["od21"]
+    assert out["show"] == 1 and out["own"] == 1
+
+
+def test_the_press_gesture_is_an_action_of_open_dimmer_2_2_only():
+    out = json.loads(run_node(ALL + """
+const actions = (v) => def.extend.filter((x) => !x.fake).flatMap((x) => x.exposes ?? [])
+    .flatMap((x) => (typeof x === "function" ? x(ver(v), {}) : [x])).filter((x) => x.name === "action")
+    .map((x) => x.values);
+console.log(JSON.stringify({
+    od22: actions("2.2.0 own"), od21: actions("2.1.14 own"), stock: actions("1.0.7"),
+    press: fz(ver("2.2.0 own"), 2, {presentValue: 0x36}), hold: fz(ver("2.2.0 own"), 1, {presentValue: 0x24}),
+    press21: fz(ver("2.1.14 own"), 2, {presentValue: 0x36}),
+}));
+"""))
+    names = ("dimmer_left", "dimmer_right")
+    assert out["od22"] == [[f"{k}_{n}" for n in names for k in ("single", "double", "triple", "hold",
+                                                                "release", "press")]]
+    assert out["od21"] == [[f"{k}_{n}" for n in names for k in ("single", "double", "triple", "hold",
+                                                                "release")]]
+    assert out["stock"] == []
+    assert out["press"] == [{"action": "press_dimmer_right"}]
+    assert out["hold"] == [{"action": "hold_dimmer_left"}]
+    assert out["press21"] == []

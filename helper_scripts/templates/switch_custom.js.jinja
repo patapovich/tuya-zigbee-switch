@@ -866,21 +866,29 @@ const romasku = {
     // Wall switch gestures of the Open Dimmer firmware (momentary switch type):
     // genMultistateInput presentValue on the dimmer endpoint = sequence << 4 |
     // gesture. The light itself acts on every press regardless.
+    // Open Dimmer 2.2 adds gesture 6, press (fast_press): only its action list has it, so the
+    // list of every other device stays as it was.
     dimmerGestures: (dimmerNames) => {
         const kinds = ["single", "double", "triple", "hold", "release"];
+        const kinds22 = [...kinds, "press"];
+        const description = "Wall switch gesture (Open Dimmer firmware, momentary switch type, or any type in the detached switch_mode); in the normal switch_mode the light acts on every press too";
         const expose = e.action(dimmerNames.flatMap((n) => kinds.map((k) => `${k}_${n}`)))
-            .withDescription("Wall switch gesture (Open Dimmer firmware, momentary switch type, or any type in the detached switch_mode); in the normal switch_mode the light acts on every press too");
+            .withDescription(description);
+        const expose22 = e.action(dimmerNames.flatMap((n) => kinds22.map((k) => `${k}_${n}`)))
+            .withDescription(description);
         return {
             isModernExtend: true,
-            exposes: [(device, options) => (ownMcuShown(device, options, 2) ? [expose] : [])],
+            exposes: [(device, options) => (ownMcuShown(device, options, OPEN_DIMMER_2_2) ? [expose22]
+                                            : ownMcuShown(device, options, 2) ? [expose] : [])],
             fromZigbee: [{
                 cluster: "genMultistateInput",
                 type: ["attributeReport"],
-                convert: (model, msg) => {
+                convert: (model, msg, publish, options) => {
                     const name = endpointNameOf(model, msg);
                     const g = (msg.data?.presentValue ?? 0) & 0x0f;
-                    if (!dimmerNames.includes(name) || g < 1 || g > kinds.length) return;
-                    return {action: `${kinds[g - 1]}_${name}`};
+                    const list = ownMcuShown(msg.device, options, OPEN_DIMMER_2_2) ? kinds22 : kinds;
+                    if (!dimmerNames.includes(name) || g < 1 || g > list.length) return;
+                    return {action: `${list[g - 1]}_${name}`};
                 },
             }],
         };
@@ -929,6 +937,9 @@ const romasku = {
                 key: [expose.name],
                 endpoints: [endpointName],
                 convertSet: async (entity, key, value, meta) => {
+                    // Not shown for this device (a stock MCU, an older Open Dimmer): the
+                    // module would not pass it on, so no state that is not there.
+                    if (!shown(meta.device, meta.options)) throw new Error(`${key}: an Open Dimmer 2.2 setting (see open_dimmer_settings)`);
                     const raw = toValue(value);
                     await entity.write(cluster, {[attr.ID]: {value: raw, type}});
                     return {state: {[key]: fromValue(raw)}};
@@ -996,6 +1007,22 @@ const romasku = {
             },
         });
     },
+    // Fast press (Open Dimmer 2.2.0, DP 170 / 171 by genOnOffSwitchCfg 0xff11): in the
+    // detached switch_mode a momentary switch's press is reported at once (action press_*).
+    dimmerFastPress: (endpointName) => {
+        const expose = e.binary("fast_press", ea.ALL, true, false).withEndpoint(endpointName)
+            .withDescription("In the detached switch_mode a momentary switch's press is reported at once as action press (no single / double / triple then; hold and release as before; Open Dimmer firmware)")
+            .withCategory("config");
+        return romasku.dimmerOwnAttr({
+            expose, endpointName, cluster: "genOnOffSwitchCfg", attr: {ID: 0xff11}, type: Zcl.DataType.BOOLEAN,
+            fromValue: (v) => v === 1 || v === true,
+            toValue: (value) => {
+                if (value === true || value === "ON" || value === "true") return 1;
+                if (value === false || value === "OFF" || value === "false") return 0;
+                throw new Error("fast_press: true or false");
+            },
+        });
+    },
     // ZCL ExecuteIfOff (Level Control Options bit 0, kept by the module): a brightness change
     // without on/off while off sets the brightness the light comes on at, the light stays off.
     dimmerExecuteIfOff: (endpointName) => {
@@ -1058,6 +1085,7 @@ const romasku = {
             toZigbee: [{
                 key: ["identify"],
                 convertSet: async (entity, key, value, meta) => {
+                    if (!ownMcuShown(meta.device, meta.options, OPEN_DIMMER_2_2)) throw new Error("identify: an Open Dimmer 2.2 setting (see open_dimmer_settings)");
                     const map = typeof meta.mapped?.endpoint === "function" ? meta.mapped.endpoint(meta.device) : {};
                     const ids = dimmerNames.map((name) => map[name]).filter((id) => id !== undefined);
                     for (const id of ids.length ? ids : [entity.ID]) {
@@ -1306,6 +1334,7 @@ const definitions = [
             {% if device.secondary_mcu_image %}
             romasku.dimmerCountdown("{{dimmerName}}"),
             romasku.dimmerSwitchMode("{{dimmerName}}"),
+            romasku.dimmerFastPress("{{dimmerName}}"),
             romasku.dimmerStartupLevel("{{dimmerName}}"),
             romasku.dimmerStartBoost("{{dimmerName}}"),
             romasku.dimmerExecuteIfOff("{{dimmerName}}"),
@@ -1512,7 +1541,7 @@ const definitions = [
                 // not there: no gestures
             }
             if (openDimmer22) {
-                for (const [cluster, attrs] of [["genOnOff", [0xff10]], ["genOnOffSwitchCfg", [0xff10]],
+                for (const [cluster, attrs] of [["genOnOff", [0xff10]], ["genOnOffSwitchCfg", [0xff10, 0xff11]],
                                                 ["genLevelCtrl", ["startUpCurrentLevel", "options", 0xff11]],
                                                 ["lightingBallastCfg", [0xff10]]]) {
                     try {

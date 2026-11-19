@@ -39,6 +39,7 @@ ZDMS16_2_EXTENDS = [
             # Open Dimmer 2.2.0 (shown only for it: a stock MCU's entities stay as they were)
             f"romasku.dimmerCountdown({dimmer})",
             f"romasku.dimmerSwitchMode({dimmer})",
+            f"romasku.dimmerFastPress({dimmer})",
             f"romasku.dimmerStartupLevel({dimmer})",
             f"romasku.dimmerStartBoost({dimmer})",
             f"romasku.dimmerExecuteIfOff({dimmer})",
@@ -152,3 +153,29 @@ def test_the_entry_parser_sees_a_commented_out_extend():
     """The guards above rely on the parser dropping comments."""
     definition = 'extend: [\n    a("x", "y"),\n    // b("z"), light({ endpointNames: ["q"] }),\n    c(["p"]),\n],'
     assert [summary(e) for e in extend_entries(definition)] == ["a(x, y)", "c(p)"]
+
+
+def test_zdms16_2_matching_and_the_entities_of_a_stock_unit_stay():
+    """Zigbee2MQTT picks the definition by the model id (the device id and the new clusters do
+    not take part); a module with the stock MCU (the house units) keeps exactly the entities it
+    had: no Open Dimmer expose, no action. An Open Dimmer before 2.2 keeps its action list."""
+    import json
+
+    from generated_converter import run_node
+    out = json.loads(run_node("""
+const defs = definitions.filter((d) => d.model === "ZDMS16-2");
+const ver = (v) => { const d = h.device(); d.getEndpoint(1).clusters.genBasic.attributes[0xff12] = v; return d; };
+const dynamic = (def, dev) => def.extend.filter((x) => !x.fake).flatMap((x) => x.exposes ?? [])
+    .flatMap((x) => (typeof x === "function" ? x(dev, {}) : [x]))
+    .map((x) => [x.name, x.endpoint ?? null, x.values ?? null]);
+console.log(JSON.stringify({
+    models: defs.map((d) => d.zigbeeModel),
+    stock: defs.map((d) => dynamic(d, ver("1.0.7"))),
+    od21: dynamic(defs[0], ver("2.1.14 own")).filter(([n]) => n === "action"),
+}));
+"""))
+    assert out["models"] == [["TS0601-ZDMS16-2"], ["TS0601-ZDMS16-2"]]
+    stock = [["power_on_behavior", None, ["off", "on", "previous"]], ["mcu_firmware", None, None]]
+    assert out["stock"] == [stock, stock]
+    assert out["od21"] == [["action", None, [f"{k}_{n}" for n in ("dimmer_left", "dimmer_right")
+                                             for k in ("single", "double", "triple", "hold", "release")]]]
