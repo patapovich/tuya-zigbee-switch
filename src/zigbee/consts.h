@@ -18,6 +18,10 @@
 #define ZCL_CLUSTER_COVER_SWITCH_CONFIG        0xFC01
 #define ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG    0x0301
 
+// Device ids (HA profile)
+
+#define ZCL_HA_DEVICE_ID_DIMMABLE_LIGHT    0x0101
+
 
 // Attributes
 

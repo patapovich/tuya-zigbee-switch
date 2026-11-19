@@ -652,6 +652,8 @@ void parse_config() {
 
     int dimmer_base = switch_clusters_cnt + relay_clusters_cnt;
     for (int index = 0; index < dimmer_clusters_cnt; index++) {
+        /* HA Dimmable Light: a coordinator that goes by the device id offers a light. */
+        endpoints[dimmer_base + index].device_id = ZCL_HA_DEVICE_ID_DIMMABLE_LIGHT;
         if (dimmer_base + index != 0) {
             cluster_ptr += endpoints[dimmer_base + index - 1].cluster_count;
             endpoints[dimmer_base + index].clusters = cluster_ptr;

@@ -14,6 +14,7 @@ The MCU fades internally and reports intermediate brightness values while it
 fades (seen with OpenBeken on the WiFi twin). OpenBeken also needed a TX queue
 (one frame in flight) to drive this MCU reliably.
 """
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -651,6 +652,28 @@ def test_nv_item_ids_are_unique():
 
 # --------------------------------------------------------------------------
 # parser / endpoint layout
+
+
+def endpoint_device_ids(tmp_path, config: str) -> dict[int, str]:
+    """The device id of every endpoint, from the stub's log at init (its NV in tmp_path)."""
+    stub = os.environ.get("STUB_DEVICE",
+                          str(Path(__file__).resolve().parent.parent / "build/stub/stub_device"))
+    out = subprocess.run([stub, "--device-config", config, "--freeze-time"], input="q\n",
+                         capture_output=True, text=True, timeout=10, cwd=tmp_path).stderr
+    ids = {}
+    for line in out.splitlines():
+        if "] Endpoint " in line and "device=" in line:
+            ep = int(line.split("Endpoint ")[1].split(":")[0])
+            ids[ep] = line.split("device=")[1].split(",")[0]
+    return ids
+
+
+def test_dimmer_endpoints_are_dimmable_lights(tmp_path):
+    """HA Dimmable Light (0x0101) on the dimmer endpoints; the other endpoints keep 0xffff."""
+    assert endpoint_device_ids(tmp_path, ZDMS16_2) == {1: "0x0101", 2: "0x0101"}
+    assert endpoint_device_ids(tmp_path, "A;B;SA0u;RB0;DM1;") == {1: "0xffff", 2: "0xffff",
+                                                                  3: "0x0101"}
+
 
 
 ZCL_CLUSTER_GROUPS = 0x0004
