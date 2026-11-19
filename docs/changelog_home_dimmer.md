@@ -14,13 +14,17 @@ zdms16-py32 release notes.
 
 ## Next
 
-- SWD master for the dimming MCU, dormant: with two extra wires from free module pads to the
-  MCU's SWD pads and the config token `SW<clk><dio>` (e.g. `SWD3D7`), the module can read the
-  MCU over SWD: `survey_dp` (the debug port's id) and `survey_full` (identity, option bytes,
-  ROM / bootloader checksums, app header), read only. Started with the device option
-  `mcu_flasher: show` and one write of `mcu_flasher`; the result is `mcu_flasher_status`.
-  Without the token no pin is touched and no attribute is added; the option's default (`hide`)
-  shows nothing.
+- Open Dimmer without a probe: solder two wires from the module's free pads D3 and D7 to the
+  MCU's SWD pads (CN2 SWC and SWD), power the module on, and it installs Open Dimmer by itself
+  (a factory MCU: read protection removed, which erases it; the bootloader written; the app
+  sent over the UART; Open Dimmer's default settings). The SWD master is on by default
+  (`SWD3D7` in the board's config); without the wires it reads one pin per start-up and nothing
+  else. It installs once, at the first start-up that sees the wires; an MCU that runs Open
+  Dimmer already is left alone. The wires need no resistors: the module drives both lines
+  open-drain. With the device option `mcu_flasher: show`, `mcu_flasher_status` tells what it
+  did, and `mcu_flasher` starts the manual jobs: `survey_dp`, `survey_full` (identity, option
+  bytes, checksums, app header; read only), `update_bootloader` / `update_bootloader_force`
+  and `install` (writing jobs: the job's name into `mcu_flasher_confirm` first), `abort`.
 - Green Power is left out of the ZDMS16-2 build (`src/telink/patch_sdk/gp_stub.c`): this
   firmware never starts it, so a GP frame never got past the stack; now the frame is dropped at
   once. The OTA image is 6.2 KB smaller (room for the SWD master and Scenes). The OTA files are

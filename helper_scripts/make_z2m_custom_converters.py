@@ -176,6 +176,8 @@ if __name__ == "__main__":
         for peripheral in peripherals:
             if peripheral == "SLP" or peripheral == "M":
                 continue
+            if peripheral[:2] == "SW":
+                continue  # SW<clk><dio>: the SWD master's pins (mcu_flasher.c), not a switch
             if peripheral[0] == "R":
                 relay_cnt += 1
             if peripheral[:2] == "RT":

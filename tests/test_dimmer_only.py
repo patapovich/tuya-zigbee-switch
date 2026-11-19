@@ -30,8 +30,10 @@ ROOT = Path(__file__).resolve().parent.parent
 FULL = str(ROOT / "build/stub/stub_device")
 
 # The tokens a DIMMER_ONLY build parses (config_parser.c): dimmers (DM, DR,
-# Pxx, U), the MCU link (IT, W, Y) and the image type (i); not PT (relays).
-DIMMER_TOKENS = ("DM", "DR", "P", "U", "IT", "W", "Y", "i")
+# Pxx, U), the MCU link (IT, W, Y), the image type (i) and, in a board that
+# carries the MCU image (both dimmer_only boards do), the SWD master's pins
+# (SW); not PT (relays).
+DIMMER_TOKENS = ("DM", "DR", "P", "U", "IT", "W", "Y", "i", "SW")
 CHECK = ROOT / "helper_scripts" / "check_dimmer_only_symbols.py"
 
 
