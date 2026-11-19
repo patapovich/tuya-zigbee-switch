@@ -26,7 +26,7 @@ COUNTER_FIELDS = (
     # (bootloader version << 8 | mode, the installed build), rescues and link
     # probes asked for
     "mcu_build", "mcu_boot", "uart_up_ms", "first_answer_ms",
-    "request_boot_mode", "request_build", "rescues", "link_probes",
+    "request_boot_mode", "request_build", "rescues", "link_probes", "zcl_tables_dropped",
 )
 
 KINDS = {

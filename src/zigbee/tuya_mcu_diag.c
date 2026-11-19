@@ -1,5 +1,6 @@
 #include "zigbee/tuya_mcu_diag.h"
 #include "zigbee/consts.h"
+#include "hal/zigbee_limits.h"
 #include "hal/timer.h"
 
 #include <stddef.h>
@@ -15,7 +16,8 @@ typedef struct {
     uint8_t data[DIAG_PAGE_ENTRIES * DIAG_ENTRY_SIZE];
 } tuya_mcu_diag_page_t;
 
-tuya_mcu_diag_counters_t    tuya_mcu_diag;
+tuya_mcu_diag_counters_t tuya_mcu_diag;
+uint16_t hal_zigbee_tables_dropped;
 static tuya_mcu_diag_page_t g_pages[TUYA_MCU_DIAG_LOG_PAGES];
 static uint8_t g_log[DIAG_LOG_ENTRIES * DIAG_ENTRY_SIZE];
 static uint8_t g_log_count = 0;
@@ -34,6 +36,7 @@ void tuya_mcu_diag_clear(void) {
     tuya_mcu_diag.len    = (uint8_t)(sizeof(tuya_mcu_diag) - 1);
     tuya_mcu_diag.format = DIAG_FORMAT;
     memcpy((uint8_t *)&tuya_mcu_diag + DIAG_STATE_START, state, sizeof(state));
+    tuya_mcu_diag.zcl_tables_dropped = hal_zigbee_tables_dropped;   /* since the start */
     memset(g_pages, 0, sizeof(g_pages));
     g_log_count = 0;
 }

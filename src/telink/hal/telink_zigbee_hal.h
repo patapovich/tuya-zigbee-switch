@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hal/zigbee.h"
+#include "hal/zigbee_limits.h"
 
 #pragma pack(push, 1)
 #include "tl_common.h"
@@ -9,10 +10,10 @@
 #pragma pack(pop)
 
 // Shared constants
-#define MAX_ENDPOINTS         8
-#define MAX_IN_CLUSTERS       32
-#define MAX_OUT_CLUSTERS      32
-#define MAX_ATTRS             128
+#define MAX_ENDPOINTS         HAL_ZIGBEE_MAX_ENDPOINTS
+#define MAX_IN_CLUSTERS       HAL_ZIGBEE_MAX_IN_CLUSTERS
+#define MAX_OUT_CLUSTERS      HAL_ZIGBEE_MAX_OUT_CLUSTERS
+#define MAX_ATTRS             HAL_ZIGBEE_MAX_ATTRS
 #define OTA_QUERY_INTERVAL    15 * 60 // 15 minutes
 
 // Network module functions (implemented in zigbee_network.c)

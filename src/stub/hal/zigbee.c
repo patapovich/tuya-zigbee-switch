@@ -1,4 +1,5 @@
 #include "hal/zigbee.h"
+#include "hal/zigbee_limits.h"
 #include "stub/machine_io.h"
 #include <stdint.h>
 #include <stdio.h>
@@ -51,6 +52,37 @@ void hal_zigbee_init(hal_zigbee_endpoint *ep_list, uint8_t ep_count) {
 
     endpoints       = ep_list;
     endpoints_count = ep_count;
+
+    /* What the Telink HAL and stack would have to register (hal/zigbee_limits.h), logged for
+     * tests/test_zcl_tables.py, which checks every Telink board's config against it. Over
+     * the limits the stub goes on (the tests run synthetic configs larger than any board),
+     * saying so and counting it as the Telink HAL would drop it. */
+    int in = 0, out = 0, infos = 0, attrs = 0;
+    for (int i = 0; i < ep_count; i++) {
+        for (int j = 0; j < ep_list[i].cluster_count; j++) {
+            const hal_zigbee_cluster *c = &ep_list[i].clusters[j];
+            if (c->is_server)
+                in++;
+            else
+                out++;
+            if (c->cluster_id != 0x0019) { /* OTA: the SDK's own */
+                infos++;
+                attrs += c->attribute_count;
+            }
+        }
+    }
+    io_log("ZIGBEE", "ZCL tables: endpoints %d/%d in_clusters %d/%d out_clusters %d/%d "
+           "zcl_clusters %d/%d attributes %d/%d", ep_count, HAL_ZIGBEE_MAX_ENDPOINTS, in,
+           HAL_ZIGBEE_MAX_IN_CLUSTERS, out, HAL_ZIGBEE_MAX_OUT_CLUSTERS,
+           infos + HAL_ZIGBEE_SDK_ZCL_CLUSTERS, HAL_ZIGBEE_MAX_ZCL_CLUSTERS, attrs,
+           HAL_ZIGBEE_MAX_ATTRS);
+    if (ep_count > HAL_ZIGBEE_MAX_ENDPOINTS || in > HAL_ZIGBEE_MAX_IN_CLUSTERS ||
+        out > HAL_ZIGBEE_MAX_OUT_CLUSTERS || infos > HAL_ZIGBEE_MAX_CLUSTER_INFOS ||
+        infos + HAL_ZIGBEE_SDK_ZCL_CLUSTERS > HAL_ZIGBEE_MAX_ZCL_CLUSTERS ||
+        attrs > HAL_ZIGBEE_MAX_ATTRS) {
+        io_log("ZIGBEE", "Error: the ZCL tables of the Telink HAL would overflow");
+        hal_zigbee_tables_dropped++;
+    }
 
     io_log("ZIGBEE", "Initialized Zigbee with %d endpoints", ep_count);
 

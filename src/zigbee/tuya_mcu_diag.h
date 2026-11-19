@@ -95,6 +95,10 @@ typedef struct __attribute__((packed)) {
      * per run of requests (see TUYA_MCU_DIAG_BOOT_REQUEST). */
     uint16_t rescues;
     uint16_t link_probes;
+
+    /* Clusters and attributes the Zigbee HAL could not register at start (its tables full;
+     * hal/zigbee_limits.h): 0. Kept by a clear. */
+    uint16_t zcl_tables_dropped;
 } tuya_mcu_diag_counters_t;
 
 /* Counters, updated in place by the link. */

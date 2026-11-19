@@ -13,6 +13,7 @@
 
 #include "hal/zigbee.h"
 #include "telink_zigbee_hal.h"
+#include "hal/printf_selector.h"
 #include "zigbee/battery_cluster.h"
 #include "zigbee/consts.h"
 
@@ -20,8 +21,13 @@
 static af_simple_descriptor_t endpoint_descriptors[MAX_ENDPOINTS];
 static u16 in_clusters[MAX_IN_CLUSTERS];
 static u16 out_clusters[MAX_OUT_CLUSTERS];
-static zcl_specClusterInfo_t cluster_infos[MAX_IN_CLUSTERS + MAX_OUT_CLUSTERS];
+static zcl_specClusterInfo_t cluster_infos[HAL_ZIGBEE_MAX_CLUSTER_INFOS];
 static zclAttrInfo_t         attr_tables[MAX_ATTRS];
+
+/* hal/zigbee_limits.h states the SDK's limit; a negative array size stops the build when the
+ * two part (the Telink gcc 4.5 has no _Static_assert). */
+typedef char zcl_cluster_limit_matches_the_sdk[
+        ZCL_CLUSTER_NUM_MAX == HAL_ZIGBEE_MAX_ZCL_CLUSTERS ? 1 : -1];
 
 // HAL state tracking
 static hal_zigbee_endpoint *hal_endpoints = NULL;
@@ -216,11 +222,16 @@ void telink_zigbee_hal_zcl_init(hal_zigbee_endpoint *endpoints,
     hal_endpoints     = endpoints;
     hal_endpoints_cnt =
         endpoints_cnt < MAX_ENDPOINTS ? endpoints_cnt : MAX_ENDPOINTS;
+    if (endpoints_cnt > hal_endpoints_cnt) {
+        hal_zigbee_tables_dropped += (uint16_t)(endpoints_cnt - hal_endpoints_cnt);
+    }
     af_simple_descriptor_t *endpoint_desc_ptr = endpoint_descriptors;
     u16 *in_cluster_ptr  = in_clusters;
     u16 *out_cluster_ptr = out_clusters;
     zcl_specClusterInfo_t *cluster_info_ptr = cluster_infos;
     zclAttrInfo_t *        attr_table_ptr   = attr_tables;
+    /* What the SDK's ZCL cluster list still takes after its own (OTA client, Green Power). */
+    uint8_t zcl_room = HAL_ZIGBEE_MAX_ZCL_CLUSTERS - HAL_ZIGBEE_SDK_ZCL_CLUSTERS;
 
     for (hal_zigbee_endpoint *endpoint = endpoints;
          endpoint < endpoints + hal_endpoints_cnt; endpoint++) {
@@ -234,6 +245,18 @@ void telink_zigbee_hal_zcl_init(hal_zigbee_endpoint *endpoints,
         zcl_specClusterInfo_t *endpoint_first_cluster_ptr = cluster_info_ptr;
         for (hal_zigbee_cluster *cluster = endpoint->clusters;
              cluster < endpoint->clusters + endpoint->cluster_count; cluster++) {
+            /* A full table: the cluster is not registered (counted), never written past. */
+            uint8_t ota = cluster->cluster_id == ZCL_CLUSTER_OTA;
+            if ((cluster->is_server ? in_cluster_ptr >= in_clusters + MAX_IN_CLUSTERS
+                                    : out_cluster_ptr >= out_clusters + MAX_OUT_CLUSTERS) ||
+                (!ota && (cluster_info_ptr >= cluster_infos + HAL_ZIGBEE_MAX_CLUSTER_INFOS ||
+                          zcl_room == 0 ||
+                          attr_table_ptr + cluster->attribute_count > attr_tables + MAX_ATTRS))) {
+                hal_zigbee_tables_dropped++;
+                printf("ZCL tables full: cluster 0x%04x of endpoint %d not registered\r\n",
+                       cluster->cluster_id, endpoint->endpoint);
+                continue;
+            }
             if (cluster->is_server) {
                 *in_cluster_ptr = cluster->cluster_id;
                 in_cluster_ptr++;
@@ -243,9 +266,10 @@ void telink_zigbee_hal_zcl_init(hal_zigbee_endpoint *endpoints,
                 out_cluster_ptr++;
                 endpoint_desc_ptr->app_out_cluster_count++;
             }
-            if (cluster->cluster_id == ZCL_CLUSTER_OTA) {
+            if (ota) {
                 continue;
             }
+            zcl_room--;
             cluster_info_ptr->clusterId           = cluster->cluster_id;
             cluster_info_ptr->manuCode            = 0;
             cluster_info_ptr->attrTbl             = attr_table_ptr;
