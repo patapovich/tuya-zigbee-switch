@@ -533,7 +533,8 @@ static void dimmer_change_level(zigbee_dimmer_cluster *cluster, uint8_t level,
  * always got at the pace it always got them, only the step size follows the rate (a slow one
  * skips a step's write now and then). Open Dimmer from OPEN_DIMMER_TRANSITION_BUILD takes each
  * step in the step period (a transition time before it): one even movement instead of a fade
- * per step. */
+ * per step. (2.1.14, build 400, already gives a level change within 1 s of a DP 160 / 161 that
+ * time, zdms16-py32 v2.1.14 apply(): a 300 ms time every 300 ms step is continuous.) */
 
 #define DIMMER_RAMP_PERIOD_MS    300
 #define DIMMER_RAMP_RATE         40  /* levels/s, the wall switch's speed: 12 per step */
