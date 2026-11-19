@@ -356,29 +356,41 @@ static uint8_t dimmer_on_level_set(const zigbee_dimmer_cluster *cluster) {
 
 #define DIMMER_ON_LEVEL_UNDEFINED    0xFF
 
-static void dimmer_load_on_level(zigbee_dimmer_cluster *cluster) {
-    uint8_t value = DIMMER_ON_LEVEL_UNDEFINED;
+/* One byte the Zigbee side keeps for a dimmer (its OnLevel, its DefaultMoveRate); 0xFF when
+ * there is none. */
+static uint8_t dimmer_nv_load(const zigbee_dimmer_cluster *cluster, uint8_t item) {
+    uint8_t value = 0xFF;
 
     if (cluster->dimmer_idx >= NV_LAYOUT_DIMMERS ||
-        hal_nvm_read(NV_ITEM_DIMMER_CLUSTER_DATA(cluster->dimmer_idx), sizeof(value),
-                     &value) != HAL_NVM_SUCCESS ||
-        ((value < ZCL_LEVEL_MIN || value > ZCL_LEVEL_MAX) &&
-         value != DIMMER_ON_LEVEL_UNDEFINED)) {
-        value = DIMMER_ON_LEVEL_UNDEFINED;
+        hal_nvm_read(item, sizeof(value), &value) != HAL_NVM_SUCCESS) {
+        value = 0xFF;
     }
-    cluster->on_level       = value;
-    cluster->on_level_saved = value;
+    return value;
+}
+
+static void dimmer_nv_store(const zigbee_dimmer_cluster *cluster, uint8_t item, uint8_t *value,
+                            uint8_t *saved) {
+    if (*value != *saved && cluster->dimmer_idx < NV_LAYOUT_DIMMERS &&
+        hal_nvm_write(item, sizeof(*value), value) == HAL_NVM_SUCCESS) {
+        *saved = *value;
+    }
+}
+
+static void dimmer_load_on_level(zigbee_dimmer_cluster *cluster) {
+    uint8_t value = dimmer_nv_load(cluster, NV_ITEM_DIMMER_CLUSTER_DATA(cluster->dimmer_idx));
+
+    if (value < ZCL_LEVEL_MIN || value > ZCL_LEVEL_MAX)
+        value = DIMMER_ON_LEVEL_UNDEFINED;
+    cluster->on_level          = value;
+    cluster->on_level_saved    = value;
+    cluster->default_move_rate =
+        dimmer_nv_load(cluster, NV_ITEM_DIMMER_MOVE_RATE(cluster->dimmer_idx));
+    cluster->default_move_rate_saved = cluster->default_move_rate;
 }
 
 static void dimmer_store_on_level(zigbee_dimmer_cluster *cluster) {
-    if (cluster->on_level == cluster->on_level_saved ||
-        cluster->dimmer_idx >= NV_LAYOUT_DIMMERS) {
-        return;
-    }
-    if (hal_nvm_write(NV_ITEM_DIMMER_CLUSTER_DATA(cluster->dimmer_idx),
-                      sizeof(cluster->on_level), &cluster->on_level) == HAL_NVM_SUCCESS) {
-        cluster->on_level_saved = cluster->on_level;
-    }
+    dimmer_nv_store(cluster, NV_ITEM_DIMMER_CLUSTER_DATA(cluster->dimmer_idx),
+                    &cluster->on_level, &cluster->on_level_saved);
 }
 
 /* ZCL On: to OnLevel when one is set, else wherever the MCU left it. A
@@ -409,10 +421,26 @@ static void dimmer_change_level(zigbee_dimmer_cluster *cluster, uint8_t level) {
     dimmer_write_level(cluster, level);
 }
 
-/* ---- ramp (Move / MoveWithOnOff) ----------------------------------------- */
+/* ---- ramp (Move / MoveWithOnOff) -----------------------------------------
+ *
+ * A step every DIMMER_RAMP_PERIOD_MS, as many levels as the command's rate (levels/s; 0xFF:
+ * DefaultMoveRate, else DIMMER_RAMP_RATE) makes in that time, so any MCU gets the frames it
+ * always got at the pace it always got them, only the step size follows the rate (a slow one
+ * skips a step's write now and then). Open Dimmer from OPEN_DIMMER_TRANSITION_BUILD takes each
+ * step in the step period (a transition time before it): one even movement instead of a fade
+ * per step. */
 
 #define DIMMER_RAMP_PERIOD_MS    300
-#define DIMMER_RAMP_STEP         12  /* ~40 levels/s, same as the wall switch */
+#define DIMMER_RAMP_RATE         40  /* levels/s, the wall switch's speed: 12 per step */
+
+/* The step period as a ZCL transition time (1/10 s, little endian). */
+static const uint8_t dimmer_ramp_time[2] = { DIMMER_RAMP_PERIOD_MS / 100, 0 };
+
+static uint8_t dimmer_move_rate(const zigbee_dimmer_cluster *cluster, uint8_t rate) {
+    if (rate == 0xFF)
+        rate = cluster->default_move_rate;
+    return (rate == 0 || rate == 0xFF) ? DIMMER_RAMP_RATE : rate;
+}
 
 static void dimmer_cluster_ramp_step(void *arg) {
     zigbee_dimmer_cluster *cluster = (zigbee_dimmer_cluster *)arg;
@@ -420,13 +448,18 @@ static void dimmer_cluster_ramp_step(void *arg) {
     if (cluster == NULL || !cluster->move_active)
         return;
 
-    int next = cluster->current_level +
-               (cluster->move_direction ? DIMMER_RAMP_STEP : -DIMMER_RAMP_STEP);
+    uint32_t acc  = cluster->move_acc + (uint32_t)cluster->move_rate * DIMMER_RAMP_PERIOD_MS;
+    int      step = (int)(acc / 1000u);
+
+    cluster->move_acc = (uint16_t)(acc % 1000u);
+
+    int     next     = cluster->current_level + (cluster->move_direction ? step : -step);
     uint8_t level    = dimmer_clamp_level(next);
     uint8_t at_limit = cluster->move_direction ? level >= ZCL_LEVEL_MAX
                                                : level <= ZCL_LEVEL_MIN;
 
     if (level != cluster->current_level) {
+        dimmer_send_transition(cluster, dimmer_ramp_time);
         dimmer_set_current_level(cluster, level);
         dimmer_write_level(cluster, level);
     }
@@ -548,14 +581,15 @@ static hal_zigbee_cmd_result_t dimmer_cluster_level_callback(zigbee_dimmer_clust
 
     case ZCL_CMD_LEVEL_MOVE:
     case ZCL_CMD_LEVEL_MOVE_WITH_ON_OFF: {
-        /* Payload: move mode, rate, [options mask, override]. The rate is not
-         * used: the ramp runs at the wall switch's fixed speed. */
+        /* Payload: move mode, rate (levels/s, 0xFF: the default), [options mask, override]. */
         if (payload == NULL || cmd_payload_len < 2)
             return HAL_ZIGBEE_MALFORMED_COMMAND;
 
         uint8_t with_onoff = command_id == ZCL_CMD_LEVEL_MOVE_WITH_ON_OFF;
         uint8_t up         = payload[0] == ZCL_LEVEL_MOVE_UP;
 
+        if (payload[1] == 0)
+            break; /* ZCL: a rate of 0 has no effect */
         if (!cluster->on) {
             if (!(with_onoff && up))
                 break; /* nothing to move while off */
@@ -564,6 +598,8 @@ static hal_zigbee_cmd_result_t dimmer_cluster_level_callback(zigbee_dimmer_clust
         }
         cluster->move_direction  = up;
         cluster->move_with_onoff = with_onoff;
+        cluster->move_rate       = dimmer_move_rate(cluster, payload[1]);
+        cluster->move_acc        = 0;
         cluster->move_active     = 1;
         hal_tasks_unschedule(&cluster->ramp_task);
         hal_tasks_schedule(&cluster->ramp_task, DIMMER_RAMP_PERIOD_MS);
@@ -820,7 +856,7 @@ static hal_zigbee_cmd_result_t dimmer_cluster_identify_callback_trampoline(
 #define DIMMER_OD_ATTRS       0
 #endif
 #define DIMMER_ONOFF_ATTRS    (2 + DIMMER_OD_ATTRS)
-#define DIMMER_LEVEL_ATTRS    (2 + DIMMER_OD_ATTRS)
+#define DIMMER_LEVEL_ATTRS    (3 + DIMMER_OD_ATTRS)
 
 static void dimmer_add_cluster(hal_zigbee_endpoint *endpoint, uint16_t cluster_id,
                                uint8_t attribute_count, hal_zigbee_attribute *attributes,
@@ -877,6 +913,8 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
                          ATTR_READONLY, cluster->current_level);
     SETUP_ATTR_FOR_TABLE(level_attrs, 1, ZCL_ATTR_LEVEL_ON_LEVEL, ZCL_DATA_TYPE_UINT8,
                          ATTR_WRITABLE, cluster->on_level);
+    SETUP_ATTR_FOR_TABLE(level_attrs, 2, ZCL_ATTR_LEVEL_DEFAULT_MOVE_RATE, ZCL_DATA_TYPE_UINT8,
+                         ATTR_WRITABLE, cluster->default_move_rate);
 
     // Min/max brightness on the standard lightingBallastCfg cluster (0x0301),
     // so Zigbee2MQTT can render sliders bound to these without a custom cluster.
@@ -894,7 +932,7 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
     /* Open Dimmer's settings (from OPEN_DIMMER_FEATURES_BUILD), next to the standard ones. */
     SETUP_ATTR(2, ZCL_ATTR_ONOFF_COUNTDOWN, ZCL_DATA_TYPE_UINT32, ATTR_WRITABLE,
                cluster->countdown);
-    SETUP_ATTR_FOR_TABLE(level_attrs, 2, ZCL_ATTR_LEVEL_START_UP_CURRENT_LEVEL,
+    SETUP_ATTR_FOR_TABLE(level_attrs, 3, ZCL_ATTR_LEVEL_START_UP_CURRENT_LEVEL,
                          ZCL_DATA_TYPE_UINT8, ATTR_WRITABLE, cluster->startup_level);
     SETUP_ATTR_FOR_TABLE(cluster->ballast_attr_infos, 2, ZCL_ATTR_BALLAST_START_BOOST,
                          ZCL_DATA_TYPE_UINT16, ATTR_WRITABLE, cluster->start_boost);
@@ -984,8 +1022,12 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
         break;
 
     case ZCL_CLUSTER_LEVEL_CONTROL:
-        if (attribute_id == ZCL_ATTR_LEVEL_ON_LEVEL)
+        if (attribute_id == ZCL_ATTR_LEVEL_ON_LEVEL) {
             dimmer_store_on_level(cluster);
+        } else if (attribute_id == ZCL_ATTR_LEVEL_DEFAULT_MOVE_RATE) {
+            dimmer_nv_store(cluster, NV_ITEM_DIMMER_MOVE_RATE(cluster->dimmer_idx),
+                            &cluster->default_move_rate, &cluster->default_move_rate_saved);
+        }
 #ifdef SECONDARY_MCU_IMAGE
         else if (attribute_id == ZCL_ATTR_LEVEL_START_UP_CURRENT_LEVEL) {
             /* 0xFF previous: 0, the last level; 0x00 minimum: the lowest value, which the MCU

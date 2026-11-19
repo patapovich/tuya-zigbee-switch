@@ -607,6 +607,7 @@ int main(void) {
     for (int i = 0; i < MAX_COVERS; i++) printf("cover %d\n", NV_ITEM_COVER_CONFIG(i));
     for (int i = 0; i < MAX_SWITCHES; i++) printf("switch %d\n", NV_ITEM_SWITCH_CLUSTER_DATA(i));
     for (int i = 0; i < NV_LAYOUT_DIMMERS; i++) printf("dimmer %d\n", NV_ITEM_DIMMER_CLUSTER_DATA(i));
+    for (int i = 0; i < NV_LAYOUT_DIMMERS; i++) printf("dimmer_rate %d\n", NV_ITEM_DIMMER_MOVE_RATE(i));
     printf("fixed %d\nfixed %d\nfixed %d\nfixed %d\nfixed %d\nfixed %d\nfixed %d\nfixed %d\n",
            NV_ITEM_CURRENT_VERSION_IN_NV, NV_ITEM_DEVICE_CONFIG, NV_ITEM_BASIC_CLUSTER_DATA,
            NV_ITEM_DEVICE_TYPE, NV_ITEM_MULTI_PRESS_RESET_COUNT, NV_ITEM_POLL_CONTROL_CONFIG,
@@ -637,11 +638,12 @@ def test_nv_item_ids_match_released_layout():
 
 def test_nv_item_ids_of_the_fork_are_frozen():
     """Ids the fork added after upstream's 34 (DP config, config ext, relay 6,
-    dimmer OnLevel): devices updated over the air keep them."""
+    dimmer OnLevel and DefaultMoveRate): devices updated over the air keep them."""
     ids = _nv_ids()
     assert ids["fixed"][-2:] == [35, 36]
     assert ids["relay"][5:] == [37]
     assert ids["dimmer"] == [38, 39, 40, 41]
+    assert ids["dimmer_rate"] == [42, 43, 44, 45]
 
 
 def test_nv_item_ids_are_unique():

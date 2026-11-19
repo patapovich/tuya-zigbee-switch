@@ -31,9 +31,9 @@ typedef struct {
     uint8_t              action_seq;
     uint16_t             action_state;
 
-    /* genOnOff: onoff, startup, [countdown]; genLevelCtrl after them: current level, on
-     * level, [start-up level] ([]: boards with an image only). */
-    hal_zigbee_attribute attr_infos[6];
+    /* genOnOff: onoff, startup, [countdown]; genLevelCtrl from DIMMER_LEVEL_ATTRS: current
+     * level, on level, default move rate, [start-up level] ([]: boards with an image only). */
+    hal_zigbee_attribute attr_infos[7];
     hal_zigbee_attribute multistate_attr_infos[4];  // wall switch gestures (own MCU)
     hal_zigbee_attribute ballast_attr_infos[3];     // min/max level, [start boost] (lightingBallastCfg)
     hal_zigbee_attribute switch_type_attr_infos[2]; // switch type, [wall switch mode] (genOnOffSwitchCfg)
@@ -82,11 +82,18 @@ typedef struct {
      * MCU clamps, so the ends of the slider do nothing). */
     uint8_t              scale_levels;
 
-    /* Level ramp (ZCL Move / MoveWithOnOff). */
+    /* Level ramp (ZCL Move / MoveWithOnOff): a step every DIMMER_RAMP_PERIOD_MS at the
+     * command's rate in levels/s (move_acc: thousandths of a level left for the next step).
+     * DefaultMoveRate is the rate of a Move with rate 0xFF (0xFF: the built-in one); kept in
+     * NV like OnLevel (default_move_rate_saved). */
     hal_task_t           ramp_task;
     uint8_t              move_direction; /* 0 = down, 1 = up */
     uint8_t              move_active;
     uint8_t              move_with_onoff;
+    uint8_t              move_rate;
+    uint16_t             move_acc;
+    uint8_t              default_move_rate;
+    uint8_t              default_move_rate_saved;
 
     /* The MCU fades towards a written level and reports where it is on the
      * way. While a fade we started is running, those reports are kept aside

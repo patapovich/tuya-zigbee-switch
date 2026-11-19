@@ -110,6 +110,7 @@
 // Level Control cluster
 #define ZCL_ATTR_LEVEL_CURRENT_LEVEL                                 0x0000
 #define ZCL_ATTR_LEVEL_ON_LEVEL                                      0x0011
+#define ZCL_ATTR_LEVEL_DEFAULT_MOVE_RATE                             0x0014
 #define ZCL_ATTR_LEVEL_START_UP_CURRENT_LEVEL                        0x4000
 
 // Identify cluster

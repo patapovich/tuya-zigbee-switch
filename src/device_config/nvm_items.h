@@ -42,5 +42,7 @@
 // grow into it (the NV id tests check that every id is unique).
 #define NV_LAYOUT_DIMMERS    4
 #define NV_ITEM_DIMMER_CLUSTER_DATA(dimmer_idx)    (38 + (dimmer_idx))
+// Their DefaultMoveRate (Level Control), one byte per dimmer slot: 42..45.
+#define NV_ITEM_DIMMER_MOVE_RATE(dimmer_idx)       (42 + (dimmer_idx))
 
 #endif /* DEVICE_CONFIG_NVM_ITEMS_H_ */
