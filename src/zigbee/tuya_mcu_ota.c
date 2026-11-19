@@ -20,9 +20,10 @@
 #define IMAGE_APP_BASE          0x08001000u   /* where the bootloader puts it */
 #define IMAGE_SP                0x20000BE0u   /* every app's initial SP: below the RAM mailbox */
 #define IMAGE_LIMIT_LEGACY      (12u * 1024u) /* an app whose settings ring is at 0x08004000 */
-#define IMAGE_MAX               (12u * 1024u) /* 14 KB only in the release that carries the
-                                               * first app over 12 KB, after the ring move
-                                               * (BOOTLOADER.md section 1) */
+#define IMAGE_MAX               (14u * 1024u) /* 0x3800, the v2 bootloader's BOOT_APP_MAX: over
+                                               * 12 KB only with RING_HIGH, after the ring move
+                                               * (BOOTLOADER.md section 1), and behind the ring
+                                               * gate (tuya_mcu_ota.h) */
 #define IMAGE_FLAG_SIM          0x01          /* bench build with a virtual zero cross */
 #define IMAGE_FLAG_MEASURE      0x02          /* measurement build: outputs always off */
 #define IMAGE_FLAG_DIAG         0x04          /* diagnostics build: takes no update */
@@ -40,6 +41,7 @@
 #define IDENT_TIMEOUT_MS        500   /* first wait; doubles at every retry */
 #define NOTIFY_LEN              11    /* version size crc build; a 2.1.x app reads the first 9 */
 #define REQUEST_LEN             16    /* v2 bootloader: + version, mode, installed header 8..15 */
+#define REQUEST_MODE_NO_APP     2     /* no valid app: served past the ring gate */
 #define REQUEST_MODE_RESCUE     4     /* 3 unconfirmed boots */
 #define REQUEST_MODE_BUTTON     5     /* the module button at power-on */
 #define REQUEST_MODE_LINK       6     /* the app's link watchdog asked for a probe */
@@ -205,6 +207,16 @@ static uint8_t    g_ident_retries;
 static uint8_t    g_ident_gave_up;          /* its version answer's questions all ran out */
 static uint8_t    g_ident_late;             /* asked at its queries since */
 static uint16_t   g_own_build;              /* the build in its last identity answer */
+static uint8_t    g_own_running;            /* its version byte, whether it said a build */
+static uint8_t    g_own_has_build;
+static uint8_t    g_own_offerable;          /* its update protocol is ours */
+static uint8_t    g_ring_moved;             /* its last health report said DP 137 bit 25 */
+
+/* The ring gate (tuya_mcu_ota.h): an image this MCU may get. */
+static uint8_t ring_gate_open(const image_info_t *img) {
+    return img->size <= IMAGE_LIMIT_LEGACY ||
+           (g_ring_moved && g_own_build >= OPEN_DIMMER_TRANSITION_BUILD);
+}
 
 static void ident_timeout(void *arg);
 
@@ -282,6 +294,8 @@ void tuya_mcu_ota_mcu_queried(void) {
     ident_ask(IDENT_RETRIES, (uint32_t)IDENT_TIMEOUT_MS << IDENT_RETRIES);
 }
 
+static void offer_update(uint8_t gated_only);
+
 /* Only our own firmware answers the identity query. The protocol byte is
  * the update protocol: a firmware with another one is still ours (its DPs),
  * it is only not offered an image it could not take. A v2 app adds its build
@@ -303,6 +317,9 @@ static void on_ident(const uint8_t *data, uint16_t len) {
     uint16_t build     = has_build ? (uint16_t)((data[7] << 8) | data[8]) : 0;
     uint8_t  boot      = len >= IDENT_LEN_BOOT ? data[9] : 0;
     g_own_build             = build;
+    g_own_running           = running;
+    g_own_has_build         = has_build;
+    g_own_offerable         = data[6] == IDENT_PROTOCOL;
     tuya_mcu_diag.mcu_build = build;
     tuya_mcu_diag.mcu_boot  = boot;
     tuya_mcu_diag_log(TUYA_MCU_DIAG_IDENT, running,
@@ -310,16 +327,22 @@ static void on_ident(const uint8_t *data, uint16_t len) {
     printf("Own MCU firmware 0x%02x build %u, bootloader %u\r\n", running, build, boot);
     tuya_mcu_app_set_mcu_own();             /* shows "x.y.z own" */
 
-    image_info_t img;
-    if (data[6] != IDENT_PROTOCOL) {
+    if (!g_own_offerable) {
         printf("Own MCU firmware with update protocol %u: not offered\r\n", data[6]);
         return;
     }
+    offer_update(0);
+}
 
-    /* Only ever to a newer firmware: by the build when the app tells one (a
-     * carried 2.1.x image, build 0, is never newer), else by the version
-     * byte, as a 2.1.x app compares. */
-    if (!image_info(&img) || (has_build ? img.build <= build : img.version <= running)) {
+/* Only ever to a newer firmware: by the build when the app tells one (a carried 2.1.x image,
+ * build 0, is never newer), else by the version byte, as a 2.1.x app compares; and past the
+ * ring gate. gated_only: only an image the gate held back (one over 12 KB). */
+static void offer_update(uint8_t gated_only) {
+    image_info_t img;
+
+    if (!g_own_offerable || !image_info(&img) || !ring_gate_open(&img) ||
+        (gated_only && img.size <= IMAGE_LIMIT_LEGACY) ||
+        (g_own_has_build ? img.build <= g_own_build : img.version <= g_own_running)) {
         return;
     }
     if (g_offers >= OFFERS_MAX) {
@@ -388,7 +411,8 @@ static void answer_block(uint16_t seq, const uint8_t *data, uint16_t len) {
         return;
     }
     note_request(data, len);
-    if (!image_info(&img)) {
+    if (!image_info(&img) ||
+        (!ring_gate_open(&img) && !(len >= REQUEST_LEN && data[7] == REQUEST_MODE_NO_APP))) {
         return;
     }
     uint32_t off  = be32(data);
@@ -430,6 +454,7 @@ static void answer_block(uint16_t seq, const uint8_t *data, uint16_t len) {
 #define DP_HEALTH_BOOT_WORD      137
 #define DP_HEALTH_TEMPERATURE    138
 #define HEALTH_FORMAT            1
+#define BOOT_WORD_RING_MOVED     (1u << 25)
 
 static tuya_mcu_health_t g_health;
 static uint8_t           g_health_rounds;
@@ -467,12 +492,19 @@ static void health_on_dp(uint8_t dpid, uint8_t dp_type, const uint8_t *value,
     case DP_HEALTH_UART_LOSSES:
         g_health.uart_losses = v;
         break;
-    case DP_HEALTH_BOOT_WORD:
+    case DP_HEALTH_BOOT_WORD: {
+        uint8_t moved = (v & BOOT_WORD_RING_MOVED) != 0;
         g_health.flags = (uint8_t)((v >> 24) & 0x03);
+        if (moved && !g_ring_moved) {
+            g_ring_moved = 1;
+            offer_update(1);        /* an image over 12 KB waited for this */
+        }
+        g_ring_moved = moved;
         if (g_own_build < OPEN_DIMMER_FEATURES_BUILD) {
             health_round_done();    /* no DP 138 follows */
         }
         break;
+    }
     case DP_HEALTH_TEMPERATURE:
         g_health.temperature = (int16_t)(int32_t)v;
         health_round_done();

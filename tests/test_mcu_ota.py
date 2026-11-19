@@ -70,13 +70,14 @@ def answer_version(proc, device, packed: int) -> list[tuple[int, bytes]]:
 
 def test_carried_image_is_an_own_firmware():
     assert IMAGE[0xC0:0xC4] == b"APDZ"
-    assert SIZE == len(IMAGE) <= 12 * 1024           # app area behind the 4 KB bootloader
+    assert SIZE == len(IMAGE) <= 14 * 1024           # app area behind the 4 KB bootloader
+    assert SIZE <= 12 * 1024 or IMAGE[0xCD] & 0x10   # over 12 KB only above the moved ring
     assert VERSION >> 6 >= 2
     assert not IMAGE[0xCD] & (IMAGE_FLAG_SIM | IMAGE_FLAG_MEASURE)   # never a bench build
     zeroed = IMAGE[:0xC8] + bytes(4) + IMAGE[0xCC:]
     assert zlib.crc32(zeroed) == CRC
     sp, reset = int.from_bytes(IMAGE[0:4], "little"), int.from_bytes(IMAGE[4:8], "little")
-    assert 0x08001000 <= reset < 0x08004000 and sp >> 20 == 0x200
+    assert 0x08001000 <= reset < 0x08001000 + SIZE and sp >> 20 == 0x200
 
 
 def ident_answer(version: int, build: int | None = None, boot: int | None = None) -> str:
@@ -449,14 +450,14 @@ def test_the_pause_doubles_up_to_a_day_and_a_good_result_ends_it():
 
 def variant(flags: int = 0, build: int | None = None, sp: int | None = None,
             reset: int | None = None, pad_to: int | None = None, version: int | None = None,
-            crc: int | None = None) -> bytes:
+            crc: int | None = None, clear_flags: int = 0) -> bytes:
     """The carried image with header fields or vectors changed; the size and
     CRC fields are made right again (unless `crc` is given), so the change is
     the only thing wrong with it."""
     img = bytearray(IMAGE)
     if pad_to is not None:
         img += bytes(pad_to - len(img))
-    img[0xCD] |= flags
+    img[0xCD] = (img[0xCD] & ~clear_flags) | flags
     if build is not None:
         img[0xCE:0xD0] = build.to_bytes(2, "little")
     if version is not None:
@@ -743,6 +744,7 @@ def test_a_2_1_x_identity_leaves_build_and_bootloader_at_0():
 
 RESET = int.from_bytes(IMAGE[4:8], "little")
 OVER_12K = 12 * 1024 + 128
+OVER_14K = 14 * 1024 + 128
 LAST_ODD = (APP_BASE + len(IMAGE) - 1) | 1 if len(IMAGE) % 2 == 0 else APP_BASE + len(IMAGE) - 2
 
 REFUSED = {
@@ -759,8 +761,8 @@ REFUSED = {
     "reset vector even": variant(reset=RESET & ~1),
     "reset vector past the image": variant(reset=(APP_BASE + len(IMAGE)) | 1),
     "reset vector in the bootloader": variant(reset=APP_BASE - 0xF00 + 1),
-    "over 12 KB": variant(pad_to=OVER_12K),
-    "over 12 KB with RING_HIGH": variant(flags=APP_FLAG_RING_HIGH, pad_to=OVER_12K),
+    "over 12 KB without RING_HIGH": variant(clear_flags=APP_FLAG_RING_HIGH, pad_to=OVER_12K),
+    "over 14 KB with RING_HIGH": variant(flags=APP_FLAG_RING_HIGH, pad_to=OVER_14K),
     "crc": variant(crc=0x12345678),
 }
 SERVED = {
@@ -1117,7 +1119,17 @@ def test_the_health_dps_of_a_v2_app_only_reach_the_link_log():
         proc.stop()
 
 
+# -- the ring gate: an image over 12 KB (tuya_mcu_ota.h) -------------------------
+
+IMAGE_13K = variant(flags=APP_FLAG_CONFIRMS | APP_FLAG_RING_HIGH, build=600, pad_to=13 * 1024)
 RING_HIGH, RING_MOVED = 1 << 24, 1 << 25
+MODE_ASKED = 1
+
+
+@pytest.fixture(scope="module")
+def stub_13k(tmp_path_factory) -> list[str]:
+    """Carries a 13 KB image (RING_HIGH, build 600), as the first Open Dimmer over 12 KB."""
+    return built(tmp_path_factory, "13k", IMAGE_13K)
 
 
 def health_frame(boot_word: int, uptime: int = 61) -> str:
@@ -1125,6 +1137,109 @@ def health_frame(boot_word: int, uptime: int = 61) -> str:
     values = [uptime, 0x08, 2, 0, 9, 1, 0xEAC45031, boot_word]
     units = b"".join(bytes([130 + i, 2, 0, 4]) + v.to_bytes(4, "big") for i, v in enumerate(values))
     return f"uart_rx {tuya_frame(0x06, units)}"
+
+
+def health(proc, device, boot_word: int) -> list[tuple[int, bytes]]:
+    proc.exec(health_frame(boot_word))
+    return cmds_after(proc, device, 200)
+
+
+# Every request mode of a bootloader with an app, and a v1 bootloader (6 bytes).
+GATED_REQUESTS = {
+    "v1": block_request(0xC0, 16),
+    "asked": block_request(0xC0, 16, MODE_ASKED),
+    "probe": block_request(0xC0, 16, MODE_PROBE),
+    "rescue": block_request(0xC0, 16, MODE_RESCUE),
+    "button": block_request(0xC0, 16, MODE_BUTTON),
+    "link": block_request(0xC0, 16, MODE_LINK),
+    "a block past 12 KB": block_request(12 * 1024, 64, MODE_ASKED),
+}
+
+
+def gated(proc, device) -> dict[str, bool]:
+    """Which of GATED_REQUESTS are answered."""
+    return {name: answers(proc, device, req) != [] for name, req in GATED_REQUESTS.items()}
+
+
+NONE_SERVED = {name: False for name in GATED_REQUESTS}
+ALL_SERVED = {name: True for name in GATED_REQUESTS}
+
+
+def test_an_image_over_12_kb_waits_for_the_ring_moved_report(stub_13k):
+    proc, device = start_with(stub_13k)
+    try:
+        _, frames = contact_as_own(proc, device, VERSION, build=500, boot=2)
+        assert OTA_NOTIFY not in [cmd for cmd, _ in frames]          # no report yet
+        assert gated(proc, device) == NONE_SERVED
+        assert OTA_NOTIFY not in [cmd for cmd, _ in health(proc, device, RING_HIGH)]
+        assert gated(proc, device) == NONE_SERVED                     # bit 25 not yet
+        frames = health(proc, device, RING_HIGH | RING_MOVED)
+        assert [d for cmd, d in frames if cmd == OTA_NOTIFY] == [offer(IMAGE_13K)]
+        assert gated(proc, device) == ALL_SERVED
+        assert OTA_NOTIFY not in [cmd for cmd, _ in health(proc, device, RING_HIGH | RING_MOVED)]
+        assert health(proc, device, RING_HIGH) == []                  # its last report: closed
+        assert gated(proc, device) == NONE_SERVED
+    finally:
+        proc.stop()
+
+
+def test_the_gate_stays_open_through_the_update(stub_13k):
+    """Once open, the bootloader's whole run is served: its offset-0 request (the MCU
+    restarts, so it is no longer identified) does not close it."""
+    proc, device = start_with(stub_13k)
+    try:
+        contact_as_own(proc, device, VERSION, build=500, boot=2)
+        health(proc, device, RING_HIGH | RING_MOVED)
+        for off in range(0, len(IMAGE_13K), 64):
+            got = answers(proc, device, block_request(off, 64, MODE_ASKED))
+            assert len(got) == 1 and got[0][13:] == IMAGE_13K[off:off + 64], off
+    finally:
+        proc.stop()
+
+
+@pytest.mark.parametrize("build", [300, None])
+def test_the_ring_moved_bit_of_an_app_before_the_ring_mover_opens_nothing(stub_13k, build):
+    proc, device = start_with(stub_13k)
+    try:
+        contact_as_own(proc, device, older_version() if build is None else VERSION, build=build,
+                       boot=None if build is None else 2)
+        assert OTA_NOTIFY not in [cmd for cmd, _ in health(proc, device, RING_HIGH | RING_MOVED)]
+        assert gated(proc, device) == NONE_SERVED
+    finally:
+        proc.stop()
+
+
+def test_a_factory_mcu_is_never_served_an_image_over_12_kb(stub_13k):
+    proc, device = start_with(stub_13k)
+    try:
+        answer_version(proc, device, 0x47)                           # stock 1.0.7
+        assert health(proc, device, RING_HIGH | RING_MOVED) == []    # not its DPs: ignored
+        assert gated(proc, device) == NONE_SERVED
+    finally:
+        proc.stop()
+
+
+def test_a_bootloader_without_an_app_is_served_past_the_gate(stub_13k):
+    """Mode 2 (no valid app, e.g. a power cut during the update, which restarted the module
+    too, so no report came since): the bootloader takes up to 14 KB there by its design
+    (recovery before settings); a refusal would leave the lamp dark."""
+    proc, device = start_with(stub_13k)
+    try:
+        assert answers(proc, device, block_request(0xC0, 16, MODE_NO_APP)) == [header_answer(IMAGE_13K)]
+        got = answers(proc, device, block_request(13 * 1024 - 64, 64, MODE_NO_APP))
+        assert got[0][13:] == IMAGE_13K[-64:]
+        assert gated(proc, device) == NONE_SERVED
+    finally:
+        proc.stop()
+
+
+def test_an_image_up_to_12_kb_needs_no_report():
+    proc, device = start()
+    try:
+        assert SIZE <= 12 * 1024, "the carried image is over 12 KB: see the tests above"
+        assert gated(proc, device) == ALL_SERVED
+    finally:
+        proc.stop()
 
 
 # -- the health report attribute (Basic 0xff48) -------------------------------------

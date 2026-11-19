@@ -31,7 +31,9 @@
  *     offset, size, CRC, version byte and up to min(max_len, 128) bytes of the
  *     image, without state, for any offset; the header sits at image offset
  *     0xC0. Serving is gated only by the image check and the failure pause,
- *     never by build, version or the request's mode.
+ *     never by build, version or the request's mode; an image over 12 KB also by
+ *     the ring gate below, which looks at the request's mode for one thing only:
+ *     an MCU without a valid app (mode 2) is served what it can take.
  *  2. Robust. No crash and no stall on any request a bootloader can send:
  *     offset 0..0xFFFFFFFF, max_len 0..0xFFFF, 6 to 16 bytes, at up to one
  *     request per 50 ms for days (a unit without an app asks every 500 ms).
@@ -138,7 +140,20 @@ uint16_t tuya_mcu_ota_own_build(void);
  * boost (168 / 169). Nothing of these goes to any other MCU. */
 #define OPEN_DIMMER_FEATURES_BUILD      500
 
-/* ---- health report (Open Dimmer, zdms16-py32 src/health.h) ------------------------------
+/* ---- ring gate and health report (Open Dimmer, zdms16-py32 src/health.h) ----------------
+ *
+ * An app before 2.1.14 keeps its settings ring at 0x08004000, right after a 12 KB app; 2.1.14
+ * (build 400, the ring mover) moves it up to 0x08004800 and says so in its health report: DP
+ * 137 bit 24 (its ring is the upper one) and bit 25 (its newest settings record is in it). An
+ * image over 12 KB (it needs RING_HIGH, see image_usable()) would overwrite the old ring, so
+ * it is offered, and its blocks are served (any request mode: asked, probe, rescue, button,
+ * link), only to an MCU whose last health report since this firmware's start said bit 25 and
+ * that identified itself with a build of at least OPEN_DIMMER_TRANSITION_BUILD. A report that
+ * opens the gate offers the update then. One exception: a bootloader with no valid app
+ * (request mode 2, e.g. after a power cut during an update, which also restarted this
+ * firmware, so it has heard no report) is served whatever the image: the bootloader itself
+ * takes up to 14 KB there ("recovery comes before settings", BOOTLOADER.md section 1); a
+ * refusal would leave the lamp dark. Images up to 12 KB are not gated.
  *
  * The health report (every 2 min, DPs 130..137 in one frame, 138 the die temperature in its
  * own from 2.2.0) of an identified Open Dimmer is kept in Basic 0xff48 (octet string,
