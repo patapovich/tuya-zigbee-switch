@@ -91,6 +91,8 @@
 
 #include <stdint.h>
 
+#include "hal/zigbee.h"
+
 #define TUYA_MCU_CMD_OTA_NOTIFY          0xA0 /* module -> MCU: version size crc build */
 #define TUYA_MCU_CMD_OTA_BLOCK           0xA1 /* MCU -> module: offset max_len [boot mode installed]; answer: block */
 #define TUYA_MCU_CMD_OTA_RESULT          0xA2 /* MCU -> module: status version [build] */
@@ -135,6 +137,33 @@ uint16_t tuya_mcu_ota_own_build(void);
  * (162 / 163), the level after a power cut (164 / 165), identify (166 / 167) and the start
  * boost (168 / 169). Nothing of these goes to any other MCU. */
 #define OPEN_DIMMER_FEATURES_BUILD      500
+
+/* ---- health report (Open Dimmer, zdms16-py32 src/health.h) ------------------------------
+ *
+ * The health report (every 2 min, DPs 130..137 in one frame, 138 the die temperature in its
+ * own from 2.2.0) of an identified Open Dimmer is kept in Basic 0xff48 (octet string,
+ * tuya_mcu_health_t without its length byte, little endian; empty until the first report)
+ * and, at the first report and every HEALTH_REPORT_EVERY-th after it, sent as an attribute
+ * report to the Basic cluster's bindings (the converter binds it to the coordinator). */
+#define HEALTH_REPORT_EVERY             5 /* health reports per one sent: ~10 min */
+
+typedef struct __attribute__((packed)) {
+    uint8_t  len;           /* octet string length: 0 until the first report */
+    uint8_t  format;        /* 1 */
+    uint32_t uptime_min;    /* DP 130 */
+    uint32_t zc_losses;     /* DP 132: zero-cross lock losses */
+    uint32_t uart_losses;   /* DP 135: UART receive losses */
+    uint8_t  reset_cause;   /* DP 131: RCC_CSR >> 24 at its start (bit 4 software, 3 power...) */
+    uint8_t  flags;         /* DP 137 >> 24: bit 0 ring high, bit 1 ring moved */
+    int16_t  temperature;   /* DP 138: degC, -32768 none (before 2.2.0: always) */
+} tuya_mcu_health_t;
+
+/** Start listening to the health report (DPs 130..138). */
+void tuya_mcu_ota_init(void);
+
+/** Append the health report attribute (Basic 0xff48) to a Basic cluster table; returns how
+ *  many (0 on boards without an image). */
+uint8_t tuya_mcu_ota_register_attrs(hal_zigbee_attribute *table, uint8_t start_index);
 
 /** The MCU's network query that is no first contact, with no version
  *  question out: an MCU whose identity questions all ran out is asked again

@@ -402,6 +402,7 @@ void tuya_mcu_app_init(void) {
     tuya_secondary_mcu_init(&mcu_uart_config);
     tuya_dp_relay_init();
     dp_attr_init();
+    tuya_mcu_ota_init();
     tuya_secondary_mcu_set_command_callback(on_mcu_command);
 
     g_version_timer.handler = version_timeout;

@@ -5,6 +5,7 @@
 #include "dp_attr.h"
 #include "tuya_mcu_app.h"
 #include "tuya_mcu_diag.h"
+#include "tuya_mcu_ota.h"
 #include "consts.h"
 #include "device_config/config_nv.h"
 #include "device_config/config_parser.h"
@@ -121,6 +122,7 @@ void basic_cluster_add_to_endpoint(zigbee_basic_cluster *cluster,
     if (tuya_mcu_app_in_use()) {
         attr_idx += tuya_mcu_app_register_attrs(cluster->attr_infos, attr_idx);
         attr_idx += tuya_mcu_diag_register(cluster->attr_infos, attr_idx);
+        attr_idx += tuya_mcu_ota_register_attrs(cluster->attr_infos, attr_idx);
     }
 
     endpoint->clusters[endpoint->cluster_count].cluster_id      = ZCL_CLUSTER_BASIC;

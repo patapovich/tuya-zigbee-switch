@@ -1097,8 +1097,9 @@ def seqs(raw: bytes) -> list[tuple[int, int]]:
 
 def test_the_health_dps_of_a_v2_app_only_reach_the_link_log():
     """DPs 130..137 (DP 136: boot sector CRC, 137: boot word; v2 app health
-    report) are logged and taken by nothing else: no frame to the MCU, no
-    attribute, and the link goes on."""
+    report) are logged and send nothing to the MCU (the carried image is not
+    over 12 KB: no offer waited for the ring gate), and the link goes on. The
+    health attribute they fill: test_the_health_report_* below."""
     from test_mcu_diag import log
     proc, device = start()
     try:
@@ -1112,5 +1113,84 @@ def test_the_health_dps_of_a_v2_app_only_reach_the_link_log():
         assert {dp: logged.get(dp) for dp in (136, 137)} == {136: 0xB2001001 + 136,
                                                              137: 0xB2001001 + 137}
         assert TUYA_CMD_QUERY_NETWORK in mcu_query(proc, device)       # still answered
+    finally:
+        proc.stop()
+
+
+RING_HIGH, RING_MOVED = 1 << 24, 1 << 25
+
+
+def health_frame(boot_word: int, uptime: int = 61) -> str:
+    """An Open Dimmer health report (DPs 130..137, active report)."""
+    values = [uptime, 0x08, 2, 0, 9, 1, 0xEAC45031, boot_word]
+    units = b"".join(bytes([130 + i, 2, 0, 4]) + v.to_bytes(4, "big") for i, v in enumerate(values))
+    return f"uart_rx {tuya_frame(0x06, units)}"
+
+
+# -- the health report attribute (Basic 0xff48) -------------------------------------
+
+ATTR_HEALTH = 0xFF48
+
+
+def health_attr(device) -> dict | None:
+    raw = device.read_zigbee_attr(1, 0x0000, ATTR_HEALTH)
+    if raw == "-":
+        return None
+    b = bytes.fromhex(raw)
+    assert b[0] == 1 and len(b) == 17                              # format 1
+    return {"uptime_min": int.from_bytes(b[1:5], "little"), "zc_losses": int.from_bytes(b[5:9], "little"),
+            "uart_losses": int.from_bytes(b[9:13], "little"), "reset_cause": b[13], "flags": b[14],
+            "temperature": int.from_bytes(b[15:17], "little", signed=True)}
+
+
+def temperature_frame(t: int) -> str:
+    return f"uart_rx {tuya_frame(0x06, bytes([138, 2, 0, 4]) + (t & 0xFFFFFFFF).to_bytes(4, 'big'))}"
+
+
+def reports_sent(device) -> int:
+    return sum(1 for e in device._events if e.kind == "zcl_report_send"
+               and int(e.payload["attr"], 16) == ATTR_HEALTH)
+
+
+@pytest.mark.parametrize("build, with_temperature", [(500, True), (400, False)])
+def test_the_health_report_of_open_dimmer_fills_its_attribute(build, with_temperature):
+    proc, device = start()
+    try:
+        contact_as_own(proc, device, VERSION, build=build, boot=2)
+        assert health_attr(device) is None                            # nothing yet
+        proc.exec(health_frame(RING_HIGH | RING_MOVED, uptime=125))
+        if with_temperature:
+            proc.exec(temperature_frame(-7))
+        cmds_after(proc, device, 100)
+        assert health_attr(device) == {"uptime_min": 125, "zc_losses": 2, "uart_losses": 1,
+                                       "reset_cause": 0x08, "flags": 0x03,
+                                       "temperature": -7 if with_temperature else -32768}
+    finally:
+        proc.stop()
+
+
+def test_the_health_report_goes_out_at_the_first_round_and_every_fifth():
+    proc, device = start()
+    try:
+        contact_as_own(proc, device, VERSION, build=500, boot=2)
+        sent = []
+        for k in range(11):
+            proc.exec(health_frame(RING_HIGH | RING_MOVED, uptime=61 + 2 * k))
+            proc.exec(temperature_frame(30))
+            cmds_after(proc, device, 100)
+            sent.append(reports_sent(device))
+        assert sent == [1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3]
+    finally:
+        proc.stop()
+
+
+def test_the_health_dps_of_a_factory_mcu_are_not_taken():
+    proc, device = start()
+    try:
+        answer_version(proc, device, 0x47)
+        proc.exec(health_frame(RING_HIGH | RING_MOVED))
+        proc.exec(temperature_frame(30))
+        cmds_after(proc, device, 100)
+        assert health_attr(device) is None and reports_sent(device) == 0
     finally:
         proc.stop()

@@ -1,7 +1,9 @@
 #include "zigbee/tuya_mcu_ota.h"
+#include "device_config/config_parser.h"
 #include "hal/printf_selector.h"
 #include "hal/tasks.h"
 #include "hal/timer.h"
+#include "zigbee/consts.h"
 #include "zigbee/secondary_mcu_image.h"
 #include "zigbee/tuya_mcu_app.h"
 #include "zigbee/tuya_mcu_diag.h"
@@ -418,6 +420,84 @@ static void answer_block(uint16_t seq, const uint8_t *data, uint16_t len) {
     }
 }
 
+/* ---- health report (tuya_mcu_ota.h) ----------------------------------------------------- */
+
+#define DP_HEALTH_FIRST          130
+#define DP_HEALTH_UPTIME         130
+#define DP_HEALTH_RESET          131
+#define DP_HEALTH_ZC_LOSSES      132
+#define DP_HEALTH_UART_LOSSES    135
+#define DP_HEALTH_BOOT_WORD      137
+#define DP_HEALTH_TEMPERATURE    138
+#define HEALTH_FORMAT            1
+
+static tuya_mcu_health_t g_health;
+static uint8_t           g_health_rounds;
+
+static void health_round_done(void) {
+    g_health.len    = (uint8_t)(sizeof(g_health) - 1);
+    g_health.format = HEALTH_FORMAT;
+    hal_zigbee_notify_attribute_changed(endpoints[0].endpoint, ZCL_CLUSTER_BASIC,
+                                        ZCL_ATTR_BASIC_MCU_HEALTH);
+    if (g_health_rounds++ % HEALTH_REPORT_EVERY == 0) {
+        hal_zigbee_send_report_attr(endpoints[0].endpoint, ZCL_CLUSTER_BASIC,
+                                    ZCL_ATTR_BASIC_MCU_HEALTH, ZCL_DATA_TYPE_OCTET_STR,
+                                    &g_health, (uint8_t)sizeof(g_health));
+    }
+}
+
+static void health_on_dp(uint8_t dpid, uint8_t dp_type, const uint8_t *value,
+                         uint16_t value_len) {
+    if (dpid < DP_HEALTH_FIRST || dpid > DP_HEALTH_TEMPERATURE || dp_type != TUYA_DP_TYPE_VALUE ||
+        value_len != 4 || !tuya_mcu_app_mcu_is_own()) {
+        return;
+    }
+    uint32_t v = be32(value);
+
+    switch (dpid) {
+    case DP_HEALTH_UPTIME:
+        g_health.uptime_min = v;
+        break;
+    case DP_HEALTH_RESET:
+        g_health.reset_cause = (uint8_t)v;
+        break;
+    case DP_HEALTH_ZC_LOSSES:
+        g_health.zc_losses = v;
+        break;
+    case DP_HEALTH_UART_LOSSES:
+        g_health.uart_losses = v;
+        break;
+    case DP_HEALTH_BOOT_WORD:
+        g_health.flags = (uint8_t)((v >> 24) & 0x03);
+        if (g_own_build < OPEN_DIMMER_FEATURES_BUILD) {
+            health_round_done();    /* no DP 138 follows */
+        }
+        break;
+    case DP_HEALTH_TEMPERATURE:
+        g_health.temperature = (int16_t)(int32_t)v;
+        health_round_done();
+        break;
+    default:
+        break;
+    }
+}
+
+void tuya_mcu_ota_init(void) {
+    g_health.temperature = -32768;
+    tuya_secondary_mcu_add_dp_listener(health_on_dp);
+}
+
+uint8_t tuya_mcu_ota_register_attrs(hal_zigbee_attribute *table, uint8_t start_index) {
+    hal_zigbee_attribute *attr = &table[start_index];
+
+    attr->attribute_id = ZCL_ATTR_BASIC_MCU_HEALTH;
+    attr->data_type_id = ZCL_DATA_TYPE_OCTET_STR;
+    attr->flag         = ATTR_READONLY;
+    attr->size         = (uint8_t)sizeof(g_health);
+    attr->value        = (uint8_t *)&g_health;
+    return 1;
+}
+
 uint8_t tuya_mcu_ota_on_command(uint8_t cmd, uint16_t seq, const uint8_t *data,
                                 uint16_t len) {
     switch (cmd) {
@@ -462,6 +542,15 @@ uint8_t tuya_mcu_ota_on_command(uint8_t cmd, uint16_t seq, const uint8_t *data,
 }
 
 #else /* boards that carry no MCU firmware: nothing of this */
+
+void tuya_mcu_ota_init(void) {
+}
+
+uint8_t tuya_mcu_ota_register_attrs(hal_zigbee_attribute *table, uint8_t start_index) {
+    (void)table;
+    (void)start_index;
+    return 0;
+}
 
 uint16_t tuya_mcu_ota_own_build(void) {
     return 0;

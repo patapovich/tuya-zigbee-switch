@@ -13,9 +13,10 @@ uint8_t   dp_attrs_cnt = 0;
 /* Every dp attribute gets a slot in the Basic cluster's attribute table
  * (basic_cluster_add_to_endpoint): 13 fixed, network LED, dp config, config
  * ext, the dp attributes, MCU version, MCU diag (counters, log pages,
- * control). Raise attr_infos together with MAX_DP_ATTRS. A negative array
- * size stops the build; the Telink gcc 4.5 has no _Static_assert. */
-#define BASIC_ATTRS_BESIDE_DP    (13 + 1 + 2 + 1 + 1 + TUYA_MCU_DIAG_LOG_PAGES + 1)
+ * control), the Open Dimmer health report. Raise attr_infos together with
+ * MAX_DP_ATTRS. A negative array size stops the build; the Telink gcc 4.5 has
+ * no _Static_assert. */
+#define BASIC_ATTRS_BESIDE_DP    (13 + 1 + 2 + 1 + 1 + TUYA_MCU_DIAG_LOG_PAGES + 1 + 1)
 typedef char dp_attrs_fit_the_basic_table[
         (sizeof(((zigbee_basic_cluster *) 0)->attr_infos) / sizeof(hal_zigbee_attribute) >=
          BASIC_ATTRS_BESIDE_DP + MAX_DP_ATTRS) ? 1 : -1];

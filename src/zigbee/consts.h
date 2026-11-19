@@ -58,6 +58,8 @@
 #define ZCL_ATTR_BASIC_MCU_DIAG_LOG_FIRST         0xff41
 #define TUYA_MCU_DIAG_LOG_PAGES                   5 // 0xff41..0xff45
 #define ZCL_ATTR_BASIC_MCU_DIAG_CONTROL           0xff4f
+// Open Dimmer health report (see zigbee/tuya_mcu_ota.h)
+#define ZCL_ATTR_BASIC_MCU_HEALTH                 0xff48
 #define ZCL_ATTR_BASIC_STATUS_LED_STATE           0xff01
 #define ZCL_ATTR_BASIC_MULTI_PRESS_RESET_COUNT    0xff02
 
