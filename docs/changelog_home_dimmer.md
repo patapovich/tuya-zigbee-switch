@@ -14,6 +14,10 @@ zdms16-py32 release notes.
 
 ## Next
 
+## 1.1.3-781f0ced (2026-11-19), carries Open Dimmer 2.2.3
+
+- Rebuilt, nothing new; carries Open Dimmer 2.2.3.
+
 ## 1.1.3-b8057066 (2026-11-19), carries Open Dimmer 2.2.3
 
 - Carries Open Dimmer 2.2.3.
