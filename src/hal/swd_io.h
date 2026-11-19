@@ -17,9 +17,11 @@
  * version feeds an edge-level target model (src/stub/hal/swd_target.c).
  *
  * Electrical rules the implementations keep:
- * - Both lines open-drain on the module (the wires have no series resistor):
- *   low = output enabled at level 0, high = released to the pull-up. The host
- *   never drives a line high, so it never fights an MCU pin driven low.
+ * - SWDIO open-drain on the module (the wires have no series resistor): low =
+ *   output enabled at level 0, high = released to the pull-up; the host never
+ *   drives it high, so it never fights an MCU pin driven low.
+ * - SWCLK push-pull (a pull-up does not lift it against the PY32's SWCLK
+ *   pull-down), driven only after hal_swd_clk_idle_level found it free.
  * - SWDIO is shared: the host pulls it low only in its turns (hal_swd_dio_drive);
  *   a missing wire reads 1s.
  * - The target samples SWDIO on the rising SWCLK edge and changes it after the

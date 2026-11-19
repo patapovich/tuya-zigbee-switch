@@ -11,22 +11,26 @@
  * (platform/chip_8258/gpio_default.h): GPIO, input and output disabled, output
  * level 0, no pull.
  *
- * Both lines are driven open-drain: the output level stays 0, low is the output
- * enabled, high is the output disabled and the 10 kOhm pull-up. The wires to the
- * MCU's SWD pads have no series resistor (INSTALL), and the MCU's firmware may
- * drive these pins (the stock firmware holds SWCLK low while it runs, and takes
- * the pins some ms after its start, maybe in the middle of an attach try): the
- * module never drives a line high, so it never fights a pin driven low. The MCU
- * drives SWDIO itself (push-pull) in its turns. Rise time: 10 kOhm against the
- * pins and a few cm of wire, some 100 ns; a half bit is 1 us (hal_swd_delay). */
+ * SWDIO is driven open-drain: the output level stays 0, low is the output
+ * enabled, high is the output disabled and the 10 kOhm pull-up (with the
+ * PY32's own SWDIO pull-up). The wires to the MCU's SWD pads have no series
+ * resistor, and the MCU's firmware may drive its pins: on SWDIO the module never
+ * drives high, so it never fights a pin driven low; the MCU drives SWDIO itself
+ * (push-pull) in its turns.
+ * SWCLK stays push-pull: released to a pull-up it does not reach a high level
+ * against the PY32's SWCLK pull-down (bench 2026-11-19: every transfer failed,
+ * SWD 2). It is driven only after hal_swd_clk_idle_level found it not held low,
+ * per session; a firmware that takes the pin within a session meets it for that
+ * session's few ms at most (the stock firmware takes it ~1.5 s after its start,
+ * the attach at power-up is done within ~0.2 s).  */
 
 static GPIO_PinTypeDef g_clk;
 static GPIO_PinTypeDef g_dio;
 static uint8_t         g_taken;
 
 /* Taken once per session, so a bit is a few loads and stores. */
-static volatile unsigned char *g_clk_oen; /* output enable, active low */
-static volatile unsigned char *g_dio_oen;
+static volatile unsigned char *g_clk_out;
+static volatile unsigned char *g_dio_oen; /* output enable, active low */
 static volatile unsigned char *g_dio_in;
 static unsigned char           g_clk_bit;
 static unsigned char           g_dio_bit;
@@ -72,13 +76,12 @@ void hal_swd_take(hal_gpio_pin_t clk, hal_gpio_pin_t dio) {
     gpio_set_func(g_clk, AS_GPIO);
     gpio_set_func(g_dio, AS_GPIO);
     gpio_write(g_clk, 0);
+    gpio_set_output_en(g_clk, 1);  // SWCLK: push-pull, starts low
     gpio_write(g_dio, 0);
-    gpio_setup_up_down_resistor(g_clk, PM_PIN_PULLUP_10K);
     gpio_setup_up_down_resistor(g_dio, PM_PIN_PULLUP_10K);
     gpio_set_input_en(g_dio, 1);
     gpio_set_output_en(g_dio, 0);
-    gpio_set_output_en(g_clk, 1);  // SWCLK starts low, as before
-    g_clk_oen = &reg_gpio_oen(g_clk);
+    g_clk_out = &reg_gpio_out(g_clk);
     g_dio_oen = &reg_gpio_oen(g_dio);
     g_dio_in  = &reg_gpio_in(g_dio);
     g_clk_bit = (unsigned char)(g_clk & 0xff);
@@ -107,7 +110,11 @@ static inline void line(volatile unsigned char *oen, unsigned char bit, uint8_t 
 }
 
 void hal_swd_clk(uint8_t high) {
-    line(g_clk_oen, g_clk_bit, !high);
+    if (high) {
+        *g_clk_out |= g_clk_bit;
+    } else {
+        *g_clk_out &= (unsigned char)~g_clk_bit;
+    }
 }
 
 void hal_swd_dio_drive(uint8_t on) {
