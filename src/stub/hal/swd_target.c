@@ -944,8 +944,9 @@ static void start_from_env(void) {
     if (pc && strcmp(pc, "1") == 0) {
         power_cycle();
     }
+
     /* SWD_TARGET_CONNECT=0 / 1: the wires to the SWD pads absent / there from
-     * the start (a power-up without them, the next one after the soldering) */
+    * the start (a power-up without them, the next one after the soldering) */
     const char *conn = env_str("SWD_TARGET_CONNECT");
     if (conn) {
         m.connect = strcmp(conn, "0") != 0;

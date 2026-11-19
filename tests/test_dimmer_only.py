@@ -6,6 +6,7 @@ endpoints and attributes, the same UART traffic to a stock and to an own MCU.
 The tokens it leaves out are ignored, and no dimmer_only board's config uses
 one."""
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -62,8 +63,12 @@ def attribute_listing(binary: str, config: str, dp_config: str, cwd: Path) -> st
     args = [binary, "--device-config", config, "--freeze-time"]
     if dp_config:
         args += ["--dp-config", dp_config]
+    # No SWD wires in the PY32 model: the board's default config has the SWD master's token, and
+    # with wires its automatic install would attach at start-up and fill the status attribute
+    # (0xff50) with timings that differ between two runs.
+    env = {**os.environ, "SWD_TARGET_CONNECT": "0"}
     out = subprocess.run(args, input="zcl_list_attrs\nq\n", capture_output=True, text=True,
-                         timeout=10, cwd=cwd, check=True).stdout
+                         timeout=10, cwd=cwd, check=True, env=env).stdout
     return out[out.index("=== Zigbee Attributes ==="):]
 
 

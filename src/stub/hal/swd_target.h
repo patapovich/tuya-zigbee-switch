@@ -192,6 +192,7 @@ void    swd_target_host_clk(uint8_t driven, uint8_t level);
 void    swd_target_host_dio(uint8_t driven, uint8_t level);
 uint8_t swd_target_dio_level(void);
 uint8_t swd_target_clk_idle_level(void);
+
 /* The wires are there (connect): what a weak pull-up on SWCLK sees as 0. */
 uint8_t swd_target_wired(void);
 

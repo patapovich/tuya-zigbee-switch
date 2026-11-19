@@ -161,9 +161,11 @@ enum {
 #define PHASE_ARMED         1u
 #define PHASE_OB_WRITTEN    2u
 #define ARMED_BOOTS         3u
+
 /* PHASE_OB_WRITTEN: the factory firmware may be gone (the protection change
  * erased the flash): the install goes on at every power-up until it is done. */
 #define RESUME_ALWAYS       0xFFu
+
 /* Start-ups that found the pins held at once (a restart of the module alone, the
  * MCU running on) do not count as power-ups; this many of them count as one, so
  * a pin held low at every real power-up (a short, a firmware that takes it at
@@ -199,10 +201,11 @@ static uint32_t       g_step_at;   /* when the current wait step began */
  * The SDK copies a written string without checking its length against the
  * attribute (zcl_setAttrVal: len + 1 bytes): the buffer takes the longest one a
  * char string can be (255), whatever a network node sends. */
-static struct __attribute__((packed)) {
+typedef struct __attribute__((packed)) {
     uint8_t len;
     char    text[255];
-} g_confirm;
+} confirm_str_t;
+static confirm_str_t g_confirm;
 typedef char mcu_flasher_confirm_takes_any_char_string[(sizeof(g_confirm) == 256) ? 1 : -1];
 
 #define CONFIRM_MS    60000u
@@ -537,6 +540,7 @@ static swd_err_t flash_unlock(uint8_t *unlocked) {
     }
     if (err == SWD_OK) err = swd_mem_write32(ADDR_FLASH_SR,
                                              FLASH_SR_EOP | FLASH_SR_WRPERR | FLASH_SR_OPTVERR);
+
     /* the key sequence only when locked: a key write to an unlocked
      * controller locks it until the next reset */
     if (err == SWD_OK) err = swd_mem_read32(ADDR_FLASH_CR, &cr);
@@ -697,7 +701,7 @@ static swd_err_t ob_program(uint8_t *started) {
  * tools/swd/ob_bor25.bin: aa f9 55 06 ff 00 00 ff ff ff ff ff ff ff 00 00). */
 static const uint32_t k_option_area[4] = { 0x0655F9AAu, 0xFF0000FFu, 0xFFFFFFFFu, 0x0000FFFFu };
 
-#define AUTO_MAGIC          0xA5u
+#define AUTO_MAGIC    0xA5u
 
 /* The automatic install (user decision 2026-11-19: soldering the two wires is
  * the consent, no Zigbee command, no opt-out): the first start-up that sees the
@@ -919,7 +923,7 @@ void mcu_flasher_task(void) {
              * until a power cycle) */
             uint32_t optr = 0;
 
-            err = read_optr(&optr);
+            err           = read_optr(&optr);
             g_status.optr = optr;   /* packed: assigned, never through a pointer */
             if (err == SWD_OK && (uint8_t)optr == 0xAAu) {
                 fail = MCU_FLASHER_ERR_WRONG_CLASS;
@@ -961,7 +965,7 @@ void mcu_flasher_task(void) {
             if (is_install() && (uint8_t)g_status.optr == 0xAA && g_resumed) {
                 /* a taken-up install at level 0: its option bytes again */
             } else if (is_install() &&
-                ((uint8_t)g_status.optr == 0xAA || (uint8_t)g_status.optr == 0xCC)) {
+                       ((uint8_t)g_status.optr == 0xAA || (uint8_t)g_status.optr == 0xCC)) {
                 fail = (uint8_t)g_status.optr ==
                        0xAA ? MCU_FLASHER_ERR_WRONG_CLASS : MCU_FLASHER_ERR_PROTECTED;
                 break;
@@ -1153,6 +1157,7 @@ void mcu_flasher_task(void) {
         if (started || err != SWD_OK) {
             g_past_ob = 1;   /* started, or a transfer failed on the way: maybe */
         }
+
         /* not started (the controller stayed locked): nothing changed, a
          * failure drops the job as before the option bytes */
         if (err == SWD_OK && !started) {
@@ -1228,7 +1233,8 @@ void mcu_flasher_task(void) {
             swd_mem_read32(ADDR_FLASH, &word[3]) == SWD_OK) {
             g_status.optr = word[1];
             g_status.wrpr = (uint16_t)word[2];
-            uint8_t ours = (word[1] & 0xFFFFu) == (OB_OPTR & 0xFFFFu) && (word[2] & 0xFFFFu) == OB_WRPR;
+            uint8_t ours = (word[1] & 0xFFFFu) == (OB_OPTR & 0xFFFFu) &&
+                           (word[2] & 0xFFFFu) == OB_WRPR;
             if (ours && (g_resumed || word[3] == 0xFFFFFFFFu)) {
                 /* right after the reload the flash must be blank (the mass
                  * erase); taken up later, a part of the bootloader may be there */

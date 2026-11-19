@@ -52,9 +52,9 @@
 #define NV_ITEM_DIMMER_BRIGHTNESS_FADE_TIME(dimmer_idx)    (54 + (dimmer_idx))
 
 // SWD master (src/zigbee/mcu_flasher.c): an install armed for the next power-up.
-#define NV_ITEM_MCU_FLASHER_JOB    58
+#define NV_ITEM_MCU_FLASHER_JOB     58
 // SWD master: the automatic install at power-up was used (once per module).
-#define NV_ITEM_MCU_FLASHER_AUTO   59
+#define NV_ITEM_MCU_FLASHER_AUTO    59
 
 /* The Scenes table of the dimmer endpoints (DIMMER_SCENES, src/zigbee/scene_cluster.c). */
 #define NV_ITEM_SCENE_TABLE        60
