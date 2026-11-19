@@ -182,6 +182,10 @@
           "type": "boolean",
           "description": "Carry the Open Dimmer firmware for the secondary MCU (src/zigbee/secondary_mcu_image.c) and update an MCU that runs an older Open Dimmer version (never the stock MCU); the Z2M converter adds mcu_firmware (dimmer boards)"
         },
+        "dimmer_only": {
+          "type": "boolean",
+          "description": "All endpoints are dimmers driven by the secondary MCU: the firmware leaves out the GPIO buttons, LEDs, relays and battery and the switch, relay and cover endpoints to save flash (-DDIMMER_ONLY, src/device_config/config_parser.c), their config tokens are ignored"
+        },
         "dp_attributes": {
           "oneOf": [
             {"type": "null"},

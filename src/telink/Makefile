@@ -90,6 +90,7 @@ DEVICE_DEFS := \
 	-DDEFAULT_CONFIG="$(CONFIG_STR)" \
 	-DDEFAULT_DP_CONFIG="$(DP_CONFIG_STR)" \
 	$(if $(SECONDARY_MCU_IMAGE),-DSECONDARY_MCU_IMAGE) \
+	$(if $(DIMMER_ONLY),-DDIMMER_ONLY) \
 	-DIMAGE_TYPE=$(IMAGE_TYPE) \
 	-DHAL_TELINK \
 	$(TEL_CHIP) 
@@ -252,8 +253,14 @@ check-open-dimmer: $(ELF_FILE)
 	@python3 $(PROJECT_ROOT)/helper_scripts/check_open_dimmer_symbols.py --nm $(NM) \
 	  $(if $(SECONDARY_MCU_IMAGE),--with-image) $(ELF_FILE)
 
+# The switch, relay, cover and battery endpoints left out exactly in a board
+# whose device_db entry has dimmer_only (src/device_config/config_parser.c).
+check-dimmer-only: $(ELF_FILE)
+	@python3 $(PROJECT_ROOT)/helper_scripts/check_dimmer_only_symbols.py --nm $(NM) \
+	  $(if $(DIMMER_ONLY),--dimmer-only) $(ELF_FILE)
+
 # Build with tools check
-build: all check-open-dimmer
+build: all check-open-dimmer check-dimmer-only
 
 ifdef OTA_VERSION
 OTA_VERSION_ARG := --file-version $(OTA_VERSION)
@@ -381,4 +388,4 @@ help:
 	@echo "  BIN: $(BIN_FILE)"
 	@echo "  LST: $(LST_FILE)"
 
-.PHONY: check-open-dimmer all build clean ota flash restart wipe flasher help
+.PHONY: check-open-dimmer check-dimmer-only all build clean ota flash restart wipe flasher help

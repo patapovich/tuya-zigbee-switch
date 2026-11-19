@@ -15,6 +15,14 @@ extern uint8_t         buttons_cnt;
 extern dp_init_entry_t dp_inits[];
 extern uint8_t         dp_init_cnt;
 
+/* A DIMMER_ONLY build has no relays or switches (config_parser.c): only the
+ * IT writes are left of this file there. */
+#ifdef DIMMER_ONLY
+#define DP_RELAYS    0
+#else
+#define DP_RELAYS    1
+#endif
+
 
 /* When we drive a relay ourselves the MCU echoes the new state back as a
  * normal report. Without this filter that echo would look like a key press,
@@ -70,7 +78,7 @@ static void tuya_dp_relay_send(uint8_t dp_id, uint8_t state) {
 }
 
 static void dp_relay_on_tx(uint8_t dpid) {
-    for (uint8_t i = 0; i < relays_cnt; i++) {
+    for (uint8_t i = 0; DP_RELAYS && i < relays_cnt; i++) {
         if (relays[i].dp_id != 0 && relays[i].dp_id == dpid) {
             dp_echo_arm(dpid);
             return;
@@ -83,7 +91,7 @@ static void tuya_dp_relay_on_report(uint8_t dpid, uint8_t dp_type,
     /* Reflect the reported state on the matching relay (also keeps the
      * coordinator in sync after a local key press). */
     if (dp_type == TUYA_DP_TYPE_BOOL && value != NULL && value_len >= 1) {
-        for (uint8_t i = 0; i < relays_cnt; i++) {
+        for (uint8_t i = 0; DP_RELAYS && i < relays_cnt; i++) {
             if (relays[i].dp_id != 0 && relays[i].dp_id == dpid) {
                 relay_set_state_from_dp(&relays[i], value[0]);
                 break;
@@ -99,7 +107,7 @@ static void tuya_dp_relay_on_report(uint8_t dpid, uint8_t dp_type,
      * bulk dump is the answer to our own query. Neither is a fresh touch:
      * synthesising one fires switch actions, drives binds, and feeds the
      * multi-press factory reset. */
-    if (!tuya_secondary_mcu_report_is_passive() &&
+    if (DP_RELAYS && !tuya_secondary_mcu_report_is_passive() &&
         !dp_attr_bulk_dump_active() && !dp_echo_consume(dpid)) {
         for (uint8_t i = 0; i < buttons_cnt; i++) {
             if (buttons[i].dp_id != 0 && buttons[i].dp_id == dpid) {
@@ -118,12 +126,12 @@ static void tuya_dp_relay_on_report(uint8_t dpid, uint8_t dp_type,
 uint8_t tuya_dp_relay_count(void) {
     uint8_t count = 0;
 
-    for (uint8_t i = 0; i < relays_cnt; i++) {
+    for (uint8_t i = 0; DP_RELAYS && i < relays_cnt; i++) {
         if (relays[i].dp_id != 0) {
             count++;
         }
     }
-    for (uint8_t i = 0; i < buttons_cnt; i++) {
+    for (uint8_t i = 0; DP_RELAYS && i < buttons_cnt; i++) {
         if (buttons[i].dp_id != 0) {
             count++;
         }
@@ -143,7 +151,9 @@ void tuya_dp_relay_init(void) {
         return;
     }
 
-    relay_dp_send_hook = tuya_dp_relay_send;
+    if (DP_RELAYS) {
+        relay_dp_send_hook = tuya_dp_relay_send;
+    }
     tuya_secondary_mcu_set_tx_callback(dp_relay_on_tx);
 
     tuya_secondary_mcu_add_dp_listener(tuya_dp_relay_on_report);

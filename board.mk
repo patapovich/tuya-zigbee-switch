@@ -68,6 +68,10 @@ DP_CONFIG_STR := $(shell yq -r '.$(BOARD).dp_attributes // [] | map(.dp + .type 
 # Firmware image of an own secondary MCU carried by this board's firmware
 # (src/zigbee/secondary_mcu_image.c): "true" (yq prints the YAML boolean), or empty.
 SECONDARY_MCU_IMAGE := $(shell yq -r '.$(BOARD).secondary_mcu_image // ""' $(DEVICE_DB_FILE))
+# A board whose endpoints are all dimmers driven by the secondary MCU: the
+# firmware leaves out the GPIO buttons, LEDs, relays and battery and the
+# switch, relay and cover endpoints (src/device_config/config_parser.c).
+DIMMER_ONLY := $(shell yq -r '.$(BOARD).dimmer_only // ""' $(DEVICE_DB_FILE))
 FROM_STOCK_MANUFACTURER_ID := $(shell yq -r .$(BOARD).stock_manufacturer_id $(DEVICE_DB_FILE))
 FROM_STOCK_IMAGE_TYPE := $(shell yq -r .$(BOARD).stock_image_type $(DEVICE_DB_FILE))
 FIRMWARE_IMAGE_TYPE := $(shell yq -r .$(BOARD).firmware_image_type $(DEVICE_DB_FILE))
@@ -127,6 +131,7 @@ endif
 		CONFIG_STR="$(CONFIG_STR)" \
 		DP_CONFIG_STR="$(DP_CONFIG_STR)" \
 		SECONDARY_MCU_IMAGE="$(SECONDARY_MCU_IMAGE)" \
+		DIMMER_ONLY="$(DIMMER_ONLY)" \
 		IMAGE_TYPE=$(FIRMWARE_IMAGE_TYPE) \
 		BIN_FILE=../../$(BIN_FILE) \
 		 -j32

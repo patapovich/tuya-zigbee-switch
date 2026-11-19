@@ -1,3 +1,4 @@
+import os
 import queue
 import re
 import subprocess
@@ -25,14 +26,15 @@ class Event:
 class StubProc:
     def __init__(
         self,
-        cmd: list[str] = ["./build/stub/stub_device"],
+        cmd: list[str] | None = None,
         joined: bool = True,
         freeze_time: bool = True,
         device_config: str | None = None,
         dp_config: str | None = None,
         device_config_ext: str | None = None,
     ) -> None:
-        self.cmd = [*cmd]
+        # STUB_DEVICE: run against another build of the stub (test_dimmer_only.py).
+        self.cmd = [*(cmd or [os.environ.get("STUB_DEVICE", "./build/stub/stub_device")])]
         if device_config:
             self.cmd += ["--device-config", device_config]
         if dp_config:

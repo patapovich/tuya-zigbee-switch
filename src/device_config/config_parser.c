@@ -32,6 +32,19 @@
 // Forward declarations
 void peripherals_init(void);
 
+/* A board whose endpoints are all dimmers driven by the secondary MCU
+ * (device_db dimmer_only, -DDIMMER_ONLY; the AVATTO ZDMS16-2) has no GPIO
+ * buttons, LEDs, relays or battery and no switch, relay or cover endpoints:
+ * their tokens (B, BT, C, D<n>, I<pin>, L, LP, M, PT, R<pin>, RT, S<pin>, SLP,
+ * ST, X) are ignored there, so the compiler leaves out their code, ~13 KB of
+ * flash its OTA image needs. Its own tokens (DM, DR, P, U, IT, W, Y, i) are
+ * parsed as everywhere. */
+#ifdef DIMMER_ONLY
+#define ALL_CONFIG_TOKENS    0
+#else
+#define ALL_CONFIG_TOKENS    1
+#endif
+
 // Max entries for the per-dimmer pending DPID lookup arrays in parse_config().
 // This is independent of (and >=) the 4-element dimmer_clusters[] capacity,
 // to allow Pxx tokens to use a full hex digit pair as the dimmer index.
@@ -166,24 +179,25 @@ void parse_config() {
     char *  entry;
     for (entry = extract_next_entry(&cursor); *entry != '\0';
          entry = extract_next_entry(&cursor)) {
-        if (entry[0] == 'S' && entry[1] == 'L' && entry[2] == 'P') {
+        if (ALL_CONFIG_TOKENS && entry[0] == 'S' && entry[1] == 'L' && entry[2] == 'P') {
             // Simultaneous Latching Pulses == SLP
             allow_simultaneous_latching_pulses = 1;
-        } else if (entry[0] == 'L' && entry[1] == 'P' && entry[2] >= '0' && entry[2] <= '9') {
+        } else if (ALL_CONFIG_TOKENS && entry[0] == 'L' && entry[1] == 'P' && entry[2] >= '0' &&
+                   entry[2] <= '9') {
             // LP<N> sets the relays latching pulse duration in milliseconds.
             relay_pulse_ms = (uint16_t)parse_int(entry + 2);
-        } else if (entry[0] == 'D' && entry[1] >= '0' && entry[1] <= '9') {
+        } else if (ALL_CONFIG_TOKENS && entry[0] == 'D' && entry[1] >= '0' && entry[1] <= '9') {
             // D<N> sets the global debounce duration in milliseconds.
             debounce_ms = (uint16_t)parse_int(entry + 1);
             for (int i = 0; i < buttons_cnt; i++) {
                 buttons[i].debounce_delay_ms = debounce_ms;
             }
-        } else if (entry[0] == 'B' && entry[1] == 'T') {
+        } else if (ALL_CONFIG_TOKENS && entry[0] == 'B' && entry[1] == 'T') {
             // Battery: BT<pin>, e.g. BTC5
             hal_gpio_pin_t pin = hal_gpio_parse_pin(entry + 2);
             battery.pin = pin;
             battery_init(&battery);
-        } else if (entry[0] == 'B') {
+        } else if (ALL_CONFIG_TOKENS && entry[0] == 'B') {
             hal_gpio_pin_t  pin  = hal_gpio_parse_pin(entry + 1);
             hal_gpio_pull_t pull = hal_gpio_parse_pull(entry + 3);
             hal_gpio_init(pin, 1, pull);
@@ -194,7 +208,7 @@ void parse_config() {
             buttons[buttons_cnt].debounce_delay_ms       = debounce_ms;
             buttons[buttons_cnt].on_long_press           = on_reset_clicked;
             buttons_cnt++;
-        } else if (entry[0] == 'L') {
+        } else if (ALL_CONFIG_TOKENS && entry[0] == 'L') {
             hal_gpio_pin_t pin = hal_gpio_parse_pin(entry + 1);
             hal_gpio_init(pin, 0, HAL_GPIO_PULL_NONE);
             leds[leds_cnt].pin     = pin;
@@ -208,7 +222,7 @@ void parse_config() {
 
             has_dedicated_status_led = true;
             leds_cnt++;
-        } else if (entry[0] == 'I' && entry[1] >= 'A' && entry[1] <= 'D') {
+        } else if (ALL_CONFIG_TOKENS && entry[0] == 'I' && entry[1] >= 'A' && entry[1] <= 'D') {
             hal_gpio_pin_t pin = hal_gpio_parse_pin(entry + 1);
             hal_gpio_init(pin, 0, HAL_GPIO_PULL_NONE);
             leds[leds_cnt].pin     = pin;
@@ -238,7 +252,7 @@ void parse_config() {
                 }
             }
             leds_cnt++;
-        } else if (entry[0] == 'S' && entry[1] >= 'A' && entry[1] <= 'D') {
+        } else if (ALL_CONFIG_TOKENS && entry[0] == 'S' && entry[1] >= 'A' && entry[1] <= 'D') {
             hal_gpio_pin_t  pin  = hal_gpio_parse_pin(entry + 1);
             hal_gpio_pull_t pull = hal_gpio_parse_pull(entry + 3);
             hal_gpio_init(pin, 1, pull);
@@ -265,7 +279,7 @@ void parse_config() {
             switch_clusters[switch_clusters_cnt].level_move_rate = 50;
             buttons_cnt++;
             switch_clusters_cnt++;
-        } else if (entry[0] == 'S' && entry[1] == 'T') {
+        } else if (ALL_CONFIG_TOKENS && entry[0] == 'S' && entry[1] == 'T') {
             // ST<hh> - touch/scene event arriving as a Tuya datapoint report.
             // Creates a normal switch endpoint, so binds/detached/action modes
             // all work exactly as they do for a GPIO button.
@@ -326,7 +340,7 @@ void parse_config() {
                     dp_init_cnt++;
                 }
             }
-        } else if (entry[0] == 'R' && entry[1] == 'T') {
+        } else if (ALL_CONFIG_TOKENS && entry[0] == 'R' && entry[1] == 'T') {
             // RT<hh> - relay driven through the Tuya secondary MCU.
             // <hh> = datapoint id in hex (RT18 -> DP 24).
             uint8_t dpid = 0;
@@ -353,7 +367,7 @@ void parse_config() {
                 relays_cnt++;
                 relay_clusters_cnt++;
             }
-        } else if (entry[0] == 'P' && entry[1] == 'T') {
+        } else if (ALL_CONFIG_TOKENS && entry[0] == 'P' && entry[1] == 'T') {
             // PT<hh> - device-wide power-on-behaviour datapoint
             uint8_t dp = 0;
             if (parse_hex_byte(entry + 2, &dp)) {
@@ -367,7 +381,7 @@ void parse_config() {
         } else if (entry[0] == 'Y') {
             // Y<n> - baudrate of that UART (default 115200)
             mcu_uart_config.baudrate = parse_int(entry + 1);
-        } else if (entry[0] == 'R' && entry[1] >= 'A' && entry[1] <= 'D') {
+        } else if (ALL_CONFIG_TOKENS && entry[0] == 'R' && entry[1] >= 'A' && entry[1] <= 'D') {
             if (relay_clusters_cnt >= MAX_RELAYS || relays_cnt >= MAX_RELAYS) {
                 printf("Too many relays, ignoring %s\r\n", entry);
                 continue;
@@ -478,7 +492,7 @@ void parse_config() {
                 }
                 cursor_p++;
             }
-        } else if (entry[0] == 'X') {
+        } else if (ALL_CONFIG_TOKENS && entry[0] == 'X') {
             hal_gpio_pin_t  open_pin  = hal_gpio_parse_pin(entry + 1);
             hal_gpio_pin_t  close_pin = hal_gpio_parse_pin(entry + 3);
             hal_gpio_pull_t pull      = hal_gpio_parse_pull(entry + 5);
@@ -507,7 +521,7 @@ void parse_config() {
             cover_switch_clusters[cover_switch_clusters_cnt].cover_switch_idx =
                 cover_switch_clusters_cnt;
             cover_switch_clusters_cnt++;
-        } else if (entry[0] == 'C') {
+        } else if (ALL_CONFIG_TOKENS && entry[0] == 'C') {
             hal_gpio_pin_t open_pin  = hal_gpio_parse_pin(entry + 1);
             hal_gpio_pin_t close_pin = hal_gpio_parse_pin(entry + 3);
 
@@ -531,7 +545,7 @@ void parse_config() {
         } else if (entry[0] == 'i') {
             uint32_t image_type = parse_int(entry + 1);
             hal_zigbee_set_image_type(image_type);
-        } else if (entry[0] == 'M') {
+        } else if (ALL_CONFIG_TOKENS && entry[0] == 'M') {
             for (int index = 0; index < switch_clusters_cnt; index++) {
                 switch_clusters[index].mode =
                     ZCL_ONOFF_CONFIGURATION_SWITCH_TYPE_MOMENTARY;
@@ -575,7 +589,7 @@ void parse_config() {
 
     hal_zigbee_cluster *cluster_ptr = clusters;
 
-    for (int index = 0; index < switch_clusters_cnt; index++) {
+    for (int index = 0; ALL_CONFIG_TOKENS && index < switch_clusters_cnt; index++) {
         if (switch_clusters[index].relay_index > relay_clusters_cnt) {
             // Detach switches that point past the available relay count.
             switch_clusters[index].relay_mode =
@@ -605,7 +619,7 @@ void parse_config() {
 
 
     // Add battery cluster for battery-powered devices
-    if (battery.pin != HAL_INVALID_PIN) {
+    if (ALL_CONFIG_TOKENS && battery.pin != HAL_INVALID_PIN) {
         static zigbee_battery_cluster battery_cluster;
         battery_cluster_add_to_endpoint(&battery_cluster, &endpoints[0]);
     }
@@ -617,14 +631,14 @@ void parse_config() {
                                          battery.pin != HAL_INVALID_PIN);
 #endif
 
-    for (int index = 0; index < switch_clusters_cnt; index++) {
+    for (int index = 0; ALL_CONFIG_TOKENS && index < switch_clusters_cnt; index++) {
         if (index != 0) {
             cluster_ptr += endpoints[index - 1].cluster_count;
             endpoints[index].clusters = cluster_ptr;
         }
         switch_cluster_add_to_endpoint(&switch_clusters[index], &endpoints[index]);
     }
-    for (int index = 0; index < relay_clusters_cnt; index++) {
+    for (int index = 0; ALL_CONFIG_TOKENS && index < relay_clusters_cnt; index++) {
         if (switch_clusters_cnt + index != 0) {
             cluster_ptr += endpoints[switch_clusters_cnt + index - 1].cluster_count;
             endpoints[switch_clusters_cnt + index].clusters = cluster_ptr;
@@ -653,7 +667,7 @@ void parse_config() {
     // Endpoint order: switches, relays, dimmers, cover switches, covers.
     int cover_switch_base =
         switch_clusters_cnt + relay_clusters_cnt + dimmer_clusters_cnt;
-    for (int index = 0; index < cover_switch_clusters_cnt; index++) {
+    for (int index = 0; ALL_CONFIG_TOKENS && index < cover_switch_clusters_cnt; index++) {
         if (cover_switch_base + index != 0) {
             cluster_ptr += endpoints[cover_switch_base + index - 1].cluster_count;
             endpoints[cover_switch_base + index].clusters = cluster_ptr;
@@ -664,7 +678,7 @@ void parse_config() {
 
     int cover_base = switch_clusters_cnt + relay_clusters_cnt +
                      dimmer_clusters_cnt + cover_switch_clusters_cnt;
-    for (int index = 0; index < cover_clusters_cnt; index++) {
+    for (int index = 0; ALL_CONFIG_TOKENS && index < cover_clusters_cnt; index++) {
         if (cover_base + index != 0) {
             cluster_ptr += endpoints[cover_base + index - 1].cluster_count;
             endpoints[cover_base + index].clusters = cluster_ptr;
@@ -692,27 +706,31 @@ void network_indicator_on_network_status_change(
             network_indicator.manual_state_when_connected = 0;
         }
         network_indicator_connected(&network_indicator);
-        update_switch_clusters();
-        update_relay_clusters();
+        if (ALL_CONFIG_TOKENS) {
+            update_switch_clusters();
+            update_relay_clusters();
+        }
     } else {
         network_indicator_not_connected(&network_indicator);
     }
 }
 
 void peripherals_init() {
-    for (int index = 0; index < buttons_cnt; index++) {
+    for (int index = 0; ALL_CONFIG_TOKENS && index < buttons_cnt; index++) {
         btn_init(&buttons[index]);
     }
-    for (int index = 0; index < leds_cnt; index++) {
+    for (int index = 0; ALL_CONFIG_TOKENS && index < leds_cnt; index++) {
         led_init(&leds[index]);
     }
-    for (int index = 0; index < relays_cnt; index++) {
+    for (int index = 0; ALL_CONFIG_TOKENS && index < relays_cnt; index++) {
         relay_init(&relays[index]);
     }
     if (hal_zigbee_get_network_status() == HAL_ZIGBEE_NETWORK_JOINED) {
         network_indicator_connected(&network_indicator);
-        update_switch_clusters();
-        update_relay_clusters();
+        if (ALL_CONFIG_TOKENS) {
+            update_switch_clusters();
+            update_relay_clusters();
+        }
     } else {
         network_indicator_not_connected(&network_indicator);
     }

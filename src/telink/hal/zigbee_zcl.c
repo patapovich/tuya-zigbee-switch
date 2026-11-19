@@ -33,10 +33,12 @@ static cluster_registerFunc_t get_register_func_by_cluster_id(u16 cluster_id) {
     if (cluster_id == ZCL_CLUSTER_GEN_BASIC) {
         return zcl_basic_register;
     }
+#ifndef DIMMER_ONLY /* no battery, switch or cover endpoints (config_parser.c) */
     if (cluster_id == ZCL_CLUSTER_GEN_POWER_CFG ||
         cluster_id == ZCL_CLUSTER_POWER_CFG) {
         return zcl_powerCfg_register;
     }
+#endif
     if (cluster_id == ZCL_CLUSTER_GEN_IDENTIFY) {
         return zcl_identify_register;
     }
@@ -52,18 +54,22 @@ static cluster_registerFunc_t get_register_func_by_cluster_id(u16 cluster_id) {
     if (cluster_id == ZCL_CLUSTER_GEN_ON_OFF) {
         return zcl_onOff_register;
     }
+#ifndef DIMMER_ONLY
     if (cluster_id == ZCL_CLUSTER_GEN_MULTISTATE_INPUT_BASIC) {
         return zcl_multistate_input_register;
     }
     if (cluster_id == ZCL_CLUSTER_CLOSURES_WINDOW_COVERING) {
         return zcl_windowCovering_custom_register;
     }
+#endif
     if (cluster_id == 0x0301) { // Lighting Ballast Config
         return zcl_ballast_config_register;
     }
+#ifndef DIMMER_ONLY
     if (cluster_id == ZCL_CLUSTER_COVER_SWITCH_CONFIG) {
         return zcl_cover_switch_config_register;
     }
+#endif
     if (cluster_id == ZCL_CLUSTER_GEN_POLL_CONTROL) {
         return zcl_pollCtrl_register;
     }
@@ -107,6 +113,7 @@ static status_t cmd_callback_on_off(zclIncomingAddrInfo_t *pAddrInfo, u8 cmdId,
                         pInMsg->pData, pInMsg->dataLen);
 }
 
+#ifndef DIMMER_ONLY
 static status_t cmd_callback_window_covering(zclIncomingAddrInfo_t *pAddrInfo,
                                              u8 cmdId, void *cmdPayload) {
     zclIncoming_t *pInMsg = cmd_incoming_from_addr_info(pAddrInfo);
@@ -114,6 +121,8 @@ static status_t cmd_callback_window_covering(zclIncomingAddrInfo_t *pAddrInfo,
     return cmd_callback(pAddrInfo->dstEp, ZCL_CLUSTER_CLOSURES_WINDOW_COVERING, cmdId,
                         pInMsg->pData, pInMsg->dataLen);
 }
+
+#endif
 
 static status_t cmd_callback_level_control(zclIncomingAddrInfo_t *pAddrInfo,
                                            u8 cmdId, void *cmdPayload) {
@@ -138,9 +147,11 @@ static cluster_forAppCb_t get_cmd_callback_by_cluster_id(u16 cluster_id) {
     if (cluster_id == ZCL_CLUSTER_GEN_ON_OFF) { // On/Off cluster
         return cmd_callback_on_off;
     }
+#ifndef DIMMER_ONLY
     if (cluster_id == ZCL_CLUSTER_CLOSURES_WINDOW_COVERING) {
         return cmd_callback_window_covering;
     }
+#endif
     if (cluster_id == ZCL_CLUSTER_GEN_POLL_CONTROL) {
         return cmd_callback_poll_control;
     }

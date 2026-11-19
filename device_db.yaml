@@ -512,6 +512,10 @@ MODULE_AVATTO_ZDMS16_2:
   # Open Dimmer version over the UART (tuya_mcu_ota.c); the stock MCU is never
   # touched.
   secondary_mcu_image: true
+  # Dimmer endpoints only: the firmware leaves out the GPIO buttons, LEDs,
+  # relays and battery and the switch, relay and cover endpoints, ~13 KB the
+  # OTA image needs below the SDK's limit; their tokens in a config are ignored.
+  dimmer_only: true
   # Dimming curve, fade and hold per channel: DPs of Open Dimmer (2.x), the stock
   # MCU has none. Shown in Z2M per the device option open_dimmer_settings.
   dp_attributes:
@@ -559,6 +563,10 @@ MODULE_AVATTO_ZDMS16_2_TZE204:
   # Open Dimmer version over the UART (tuya_mcu_ota.c); the stock MCU is never
   # touched.
   secondary_mcu_image: true
+  # Dimmer endpoints only: the firmware leaves out the GPIO buttons, LEDs,
+  # relays and battery and the switch, relay and cover endpoints, ~13 KB the
+  # OTA image needs below the SDK's limit; their tokens in a config are ignored.
+  dimmer_only: true
   # Dimming curve, fade and hold per channel: DPs of Open Dimmer (2.x), the stock
   # MCU has none. Shown in Z2M per the device option open_dimmer_settings.
   dp_attributes:
