@@ -179,3 +179,41 @@ console.log(JSON.stringify({
     assert out["stock"] == [stock, stock]
     assert out["od21"] == [["action", None, [f"{k}_{n}" for n in ("dimmer_left", "dimmer_right")
                                              for k in ("single", "double", "triple", "hold", "release")]]]
+
+
+# What configure does for a module with the stock MCU (the house units), as the deployed
+# converter of 4c3558a1 does it: the version read, then per dimmer bind, reporting, the reads.
+STOCK_CONFIGURE = [
+    ["read", 1, "genBasic", [0xFF12]],
+    *[call for ep in (1, 2) for call in (
+        ["bind", ep, ["genOnOff", "genLevelCtrl"]],
+        ["report", ep, "genOnOff", {"min": 0, "max": 65000, "change": 1}],
+        ["report", ep, "genLevelCtrl", [{"attribute": "currentLevel", "minimumReportInterval": 0,
+                                         "maximumReportInterval": 65000, "reportableChange": 1}]],
+        ["read", ep, "genOnOff", ["startUpOnOff"]],
+        ["read", ep, "genLevelCtrl", ["onLevel"]],
+        ["read", ep, "lightingBallastCfg", ["minLevel", "maxLevel"]],
+        ["read", ep, "genOnOffSwitchCfg", ["switchType"]],
+        ["bind", ep, ["genMultistateInput"]],
+        ["report", ep, "genMultistateInput", [{"attribute": {"ID": 0x55, "type": 0x21},
+                                               "minimumReportInterval": 0, "maximumReportInterval": 0,
+                                               "reportableChange": 1}]],
+    )],
+]
+
+
+def test_configure_of_a_stock_unit_stays():
+    """No genBasic bind, no Open Dimmer read: exactly the deployed converter's calls."""
+    import json
+
+    from generated_converter import run_node
+    out = json.loads(run_node("""
+const def = definitions.find((d) => d.model === "ZDMS16-2");
+(async () => {
+    const dev = h.device({versions: ["1.0.7"]});
+    h.log.length = 0;
+    await def.configure(dev, {ID: 1}, def);
+    console.log(JSON.stringify(h.log));
+})();
+"""))
+    assert out == STOCK_CONFIGURE

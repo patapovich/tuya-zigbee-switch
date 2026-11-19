@@ -1411,15 +1411,18 @@ const definitions = [
             }
             {% endif %}
             {% if device.secondary_mcu_image %}
-            // Open Dimmer 2.2.0: its health report goes to the Basic cluster's bindings (no
-            // reporting entry), and its settings per channel are read once.
+            // Open Dimmer (any version): the module sends the MCU version (Basic 0xff12, e.g.
+            // after an update of the MCU alone) and, from 2.2.0, the health report to the
+            // Basic cluster's bindings (no reporting entry): bound to the coordinator. A stock
+            // MCU: nothing of it. From 2.2.0 its settings per channel are read once too.
+            const openDimmer = ownVersionNumbers(mcuVersion) !== undefined;
             const openDimmer22 = ownVersionAtLeast(ownVersionNumbers(mcuVersion), OPEN_DIMMER_2_2);
-            if (openDimmer22) {
+            if (openDimmer) {
                 try {
                     await reporting.bind(mcuEndpoint, coordinatorEndpoint, ["genBasic"]);
-                    await mcuEndpoint.read("genBasic", [0xff48]); // health report
+                    if (openDimmer22) await mcuEndpoint.read("genBasic", [0xff48]); // health report
                 } catch (error) {
-                    // not answered now; sent by the module within 10 min
+                    // not answered now; bound at the next configure, the report comes within 10 min
                 }
             }
             {% endif %}

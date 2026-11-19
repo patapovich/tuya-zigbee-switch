@@ -234,7 +234,7 @@ console.log(JSON.stringify({{
     assert out["empty"] == out["otherEndpoint"] == out["stock"] == []
 
 
-def test_configure_binds_basic_and_reads_the_new_settings_of_2_2_only():
+def test_configure_binds_basic_for_open_dimmer_and_reads_the_new_settings_of_2_2_only():
     out = json.loads(run_node(CONFIGURE + """
 (async () => {
     const runs = {};
@@ -254,9 +254,11 @@ def test_configure_binds_basic_and_reads_the_new_settings_of_2_2_only():
                   "genLevelCtrl:startUpCurrentLevel+options+65297", "lightingBallastCfg:65296")]
     assert [r for r in own["dimmerReads"] if r in new_reads] == new_reads
     assert len(own["dimmerReads"]) == 8 + 8
+    assert "1:genBasic" in out["2.1.14 own"]["binds"]     # any Open Dimmer: its version reports
+    for v in ("1.0.7", "2.2.0"):                            # stock, not identified: no bind
+        assert "1:genBasic" not in out[v]["binds"], v
     for v in ("2.1.14 own", "1.0.7", "2.2.0"):
         run = out[v]
-        assert "1:genBasic" not in run["binds"], v
         assert "ff48" not in run["ownReads"], v
         assert len(run["dimmerReads"]) == 8, v
         assert run["reporting"] == own["reporting"]      # no reporting added for any of it
