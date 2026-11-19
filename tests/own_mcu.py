@@ -58,7 +58,8 @@ DP_PROFILE_BASE = 150
 DP_TRANSITION_BASE = 160   # transition time ms per channel, from build 400 (never in the dump)
 DP_EXTRA_BASE = 162        # + 2 * k + channel, from build 500: EXTRA_KEYS[k]
 EXTRA_KEYS = ("input", "power_level", "identify", "boost")
-DP_HEALTH_FIRST = 130      # 130..137 every 2 min, 138 (die temperature) in a frame of its own
+DP_HEALTH_FIRST = 130      # 130..137 every 2 min, 138 (die temperature) and 139 (its sensor's
+                           # calibration) in a frame of their own
 PROFILE_KEYS = ("fade_on", "fade_off", "soft_end", "hold", "hold_end")
 TRANSITION_BUILD = 400
 FEATURES_BUILD = 500
@@ -159,16 +160,20 @@ class OwnMcu:
 
     def health(self, uptime_min: int = 61, reset: int = 0x08, zc_losses: int = 0,
                noise: int = 0, saves: int = 0, uart_losses: int = 0, boot_crc: int = 0xEAC45031,
-               boot_word: int = 0, temperature: int | None = 31) -> list[str]:
+               boot_word: int = 0, temperature: int | None = 31,
+               temp_cal: int = 0x047203B5) -> list[str]:
         """health_poll(): DPs 130..137 in one active report, then (from 2.2.0) the die
-        temperature, DP 138 (signed; None: -32768, not measured yet), in a frame of its own."""
+        temperature, DP 138 (signed; None: -32768, not measured yet), and the factory
+        calibration of its sensor, DP 139 (raw at 85 degC << 16 | at 30 degC), in a frame of
+        their own."""
         values = (uptime_min, reset, zc_losses, noise, saves, uart_losses, boot_crc, boot_word)
         frames = [self._report([dp_payload(DP_HEALTH_FIRST + i, TUYA_TYPE_VALUE, v.to_bytes(4, "big"))
                                 for i, v in enumerate(values)], passive=False)]
         if self.has(FEATURES_BUILD):
             t = -32768 if temperature is None else temperature
-            frames.append(self._report([dp_payload(138, TUYA_TYPE_VALUE,
-                                                   (t & 0xFFFFFFFF).to_bytes(4, "big"))], passive=False))
+            frames.append(self._report([dp_payload(138, TUYA_TYPE_VALUE, (t & 0xFFFFFFFF).to_bytes(4, "big")),
+                                        dp_payload(139, TUYA_TYPE_VALUE, temp_cal.to_bytes(4, "big"))],
+                                       passive=False))
         return frames
 
     def take_write(self, dpid: int, data: bytes) -> bool:

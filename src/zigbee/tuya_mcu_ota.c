@@ -453,6 +453,7 @@ static void answer_block(uint16_t seq, const uint8_t *data, uint16_t len) {
 #define DP_HEALTH_UART_LOSSES    135
 #define DP_HEALTH_BOOT_WORD      137
 #define DP_HEALTH_TEMPERATURE    138
+#define DP_HEALTH_TEMP_CAL       139 /* right after 138, same frame: the round is done at 138 */
 #define HEALTH_FORMAT            1
 #define BOOT_WORD_RING_MOVED     (1u << 25)
 
@@ -473,7 +474,7 @@ static void health_round_done(void) {
 
 static void health_on_dp(uint8_t dpid, uint8_t dp_type, const uint8_t *value,
                          uint16_t value_len) {
-    if (dpid < DP_HEALTH_FIRST || dpid > DP_HEALTH_TEMPERATURE || dp_type != TUYA_DP_TYPE_VALUE ||
+    if (dpid < DP_HEALTH_FIRST || dpid > DP_HEALTH_TEMP_CAL || dp_type != TUYA_DP_TYPE_VALUE ||
         value_len != 4 || !tuya_mcu_app_mcu_is_own()) {
         return;
     }
@@ -508,6 +509,9 @@ static void health_on_dp(uint8_t dpid, uint8_t dp_type, const uint8_t *value,
     case DP_HEALTH_TEMPERATURE:
         g_health.temperature = (int16_t)(int32_t)v;
         health_round_done();
+        break;
+    case DP_HEALTH_TEMP_CAL:
+        g_health.temp_cal = v;      /* factory data: the same every round */
         break;
     default:
         break;

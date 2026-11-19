@@ -155,8 +155,9 @@ uint16_t tuya_mcu_ota_own_build(void);
  * takes up to 14 KB there ("recovery comes before settings", BOOTLOADER.md section 1); a
  * refusal would leave the lamp dark. Images up to 12 KB are not gated.
  *
- * The health report (every 2 min, DPs 130..137 in one frame, 138 the die temperature in its
- * own from 2.2.0) of an identified Open Dimmer is kept in Basic 0xff48 (octet string,
+ * The health report (every 2 min, DPs 130..137 in one frame, from 2.2.0 138 the die
+ * temperature and 139 its sensor's factory calibration in a frame of their own) of an
+ * identified Open Dimmer is kept in Basic 0xff48 (octet string,
  * tuya_mcu_health_t without its length byte, little endian; empty until the first report)
  * and, at the first report and every HEALTH_REPORT_EVERY-th after it, sent as an attribute
  * report to the Basic cluster's bindings (the converter binds it to the coordinator). */
@@ -171,6 +172,7 @@ typedef struct __attribute__((packed)) {
     uint8_t  reset_cause;   /* DP 131: RCC_CSR >> 24 at its start (bit 4 software, 3 power...) */
     uint8_t  flags;         /* DP 137 >> 24: bit 0 ring high, bit 1 ring moved */
     int16_t  temperature;   /* DP 138: degC, -32768 none (before 2.2.0: always) */
+    uint32_t temp_cal;      /* DP 139: raw value at 85 degC << 16 | at 30 degC (0: none) */
 } tuya_mcu_health_t;
 
 /** Start listening to the health report (DPs 130..138). */

@@ -14,7 +14,8 @@ from test_converter_own_mcu import CONFIGURE, ZDMS
 NEW_PER_CHANNEL = ["countdown", "switch_mode", "current_level_startup", "start_boost",
                    "execute_if_off", "on_level_local"]
 NEW_DEVICE = ["identify", "mcu_uptime", "mcu_reset_cause", "mcu_zero_cross_losses",
-              "mcu_uart_rx_losses", "mcu_temperature", "mcu_settings_ring_moved"]
+              "mcu_uart_rx_losses", "mcu_temperature", "mcu_temperature_calibration",
+              "mcu_settings_ring_moved"]
 NEW = [f"{n}_{ch}" for ch in ("dimmer_left", "dimmer_right") for n in NEW_PER_CHANNEL] + NEW_DEVICE
 
 # Every expose of the definition, the fake (static) extends' too, by name_endpoint.
@@ -198,16 +199,19 @@ def test_writes_of_the_new_settings():
 
 
 def health_report(fields: dict) -> str:
-    """The octet string of Basic 0xff48 (format 1) as a JS array."""
+    """The octet string of Basic 0xff48 (format 1) as a JS array; without "cal" as an older
+    build of this firmware made it (17 bytes)."""
     b = bytes([1]) + fields["uptime"].to_bytes(4, "little") + fields["zc"].to_bytes(4, "little") \
         + fields["uart"].to_bytes(4, "little") + bytes([fields["reset"], fields["flags"]]) \
         + fields["temperature"].to_bytes(2, "little", signed=True)
+    if "cal" in fields:
+        b += fields["cal"].to_bytes(4, "little")
     return json.dumps(list(b))
 
 
 def test_the_health_report_is_decoded():
     report = health_report({"uptime": 4242, "zc": 3, "uart": 17, "reset": 0x18, "flags": 0x03,
-                            "temperature": -5})
+                            "temperature": -5, "cal": 0x047203B5})
     none = health_report({"uptime": 1, "zc": 0, "uart": 0, "reset": 0x20, "flags": 0x01,
                           "temperature": -32768})
     out = json.loads(run_node(ALL + f"""
@@ -222,10 +226,11 @@ console.log(JSON.stringify({{
 """))
     assert out["own"] == [{"mcu_uptime": 4242, "mcu_zero_cross_losses": 3, "mcu_uart_rx_losses": 17,
                            "mcu_reset_cause": "software,power", "mcu_settings_ring_moved": True,
-                           "mcu_temperature": -5}]
+                           "mcu_temperature": -5,
+                           "mcu_temperature_calibration": "949 at 30 °C, 1138 at 85 °C"}]
     assert out["none"] == [{"mcu_uptime": 1, "mcu_zero_cross_losses": 0, "mcu_uart_rx_losses": 0,
                             "mcu_reset_cause": "watchdog", "mcu_settings_ring_moved": False,
-                            "mcu_temperature": None}]
+                            "mcu_temperature": None, "mcu_temperature_calibration": None}]
     assert out["empty"] == out["otherEndpoint"] == out["stock"] == []
 
 

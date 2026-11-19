@@ -1252,14 +1252,20 @@ def health_attr(device) -> dict | None:
     if raw == "-":
         return None
     b = bytes.fromhex(raw)
-    assert b[0] == 1 and len(b) == 17                              # format 1
+    assert b[0] == 1 and len(b) == 21                              # format 1
     return {"uptime_min": int.from_bytes(b[1:5], "little"), "zc_losses": int.from_bytes(b[5:9], "little"),
             "uart_losses": int.from_bytes(b[9:13], "little"), "reset_cause": b[13], "flags": b[14],
-            "temperature": int.from_bytes(b[15:17], "little", signed=True)}
+            "temperature": int.from_bytes(b[15:17], "little", signed=True),
+            "temp_cal": int.from_bytes(b[17:21], "little")}
 
 
-def temperature_frame(t: int) -> str:
-    return f"uart_rx {tuya_frame(0x06, bytes([138, 2, 0, 4]) + (t & 0xFFFFFFFF).to_bytes(4, 'big'))}"
+def temperature_frame(t: int, cal: int | None = 0x047203B5) -> str:
+    """DP 138 (and DP 139, the sensor's calibration: 1138 at 85 degC, 949 at 30 degC) in one
+    frame, as 2.2.0 sends them."""
+    units = bytes([138, 2, 0, 4]) + (t & 0xFFFFFFFF).to_bytes(4, "big")
+    if cal is not None:
+        units += bytes([139, 2, 0, 4]) + cal.to_bytes(4, "big")
+    return f"uart_rx {tuya_frame(0x06, units)}"
 
 
 def reports_sent(device) -> int:
@@ -1279,7 +1285,8 @@ def test_the_health_report_of_open_dimmer_fills_its_attribute(build, with_temper
         cmds_after(proc, device, 100)
         assert health_attr(device) == {"uptime_min": 125, "zc_losses": 2, "uart_losses": 1,
                                        "reset_cause": 0x08, "flags": 0x03,
-                                       "temperature": -7 if with_temperature else -32768}
+                                       "temperature": -7 if with_temperature else -32768,
+                                       "temp_cal": 0x047203B5 if with_temperature else 0}
     finally:
         proc.stop()
 
@@ -1307,5 +1314,29 @@ def test_the_health_dps_of_a_factory_mcu_are_not_taken():
         proc.exec(temperature_frame(30))
         cmds_after(proc, device, 100)
         assert health_attr(device) is None and reports_sent(device) == 0
+    finally:
+        proc.stop()
+
+
+def test_the_temperature_frame_with_and_without_dp_139_does_no_harm():
+    """DP 139 (the sensor's calibration) comes with 138 in one frame: kept, nothing else takes it
+    (no frame to the MCU, no dimmer attribute changes); a 2.2.0 without it is taken as well."""
+    proc, device = start()
+    try:
+        contact_as_own(proc, device, VERSION, build=500, boot=2)
+        take_tx(proc)
+        before = {(ep, c, a): device.read_zigbee_attr(ep, c, a) for ep in (1, 2)
+                  for c, a in ((0x0006, 0xFF10), (0x0007, 0xFF10), (0x0008, 0x4000), (0x0301, 0xFF10))}
+        proc.exec(health_frame(RING_HIGH | RING_MOVED))
+        proc.exec(temperature_frame(29, cal=None))
+        assert cmds_after(proc, device, 200) == []
+        assert health_attr(device)["temperature"] == 29 and health_attr(device)["temp_cal"] == 0
+        proc.exec(temperature_frame(30))
+        assert cmds_after(proc, device, 200) == []
+        assert health_attr(device)["temp_cal"] == 0x047203B5
+        after = {(ep, c, a): device.read_zigbee_attr(ep, c, a) for ep in (1, 2)
+                 for c, a in ((0x0006, 0xFF10), (0x0007, 0xFF10), (0x0008, 0x4000), (0x0301, 0xFF10))}
+        assert after == before
+        assert TUYA_CMD_QUERY_NETWORK in mcu_query(proc, device)       # the link goes on
     finally:
         proc.stop()

@@ -1083,6 +1083,8 @@ const romasku = {
                 .withDescription("Bytes from the Zigbee module the dimming MCU lost since its start (Open Dimmer firmware)"),
             e.numeric("mcu_temperature", ea.STATE_GET).withUnit("°C").withLabel("MCU temperature")
                 .withDescription("Die temperature of the dimming MCU (Open Dimmer firmware)"),
+            e.text("mcu_temperature_calibration", ea.STATE_GET).withLabel("MCU temperature calibration")
+                .withDescription("Factory calibration of the dimming MCU's temperature sensor: its raw values at 30 and 85 °C (Open Dimmer firmware)"),
             e.binary("mcu_settings_ring_moved", ea.STATE_GET, true, false).withLabel("MCU settings moved")
                 .withDescription("The dimming MCU keeps its settings in the flash area of 2.1.14 and later, so firmware over 12 KB can be installed (Open Dimmer firmware)"),
         ].map((x) => x.withCategory("diagnostic"));
@@ -1100,7 +1102,9 @@ const romasku = {
                     const flags = b[14];
                     const reset = b[13];
                     const t = b.readInt16LE(15);
+                    const cal = b.length >= 21 ? b.readUInt32LE(17) : 0;
                     return {
+                        mcu_temperature_calibration: cal ? `${cal & 0xffff} at 30 °C, ${cal >>> 16} at 85 °C` : null,
                         mcu_uptime: b.readUInt32LE(1),
                         mcu_zero_cross_losses: b.readUInt32LE(5),
                         mcu_uart_rx_losses: b.readUInt32LE(9),
