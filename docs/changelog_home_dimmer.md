@@ -14,6 +14,8 @@ zdms16-py32 release notes.
 
 ## Next
 
+## 1.1.3-f596756a (2026-11-19), carries Open Dimmer 2.2.0
+
 - Wall switch actions (single, double, hold, ...) reach Zigbee2MQTT again: the builds
   1.1.3-5bb263e7 and 1.1.3-522e1825 left the gesture cluster out.
 - After a restart of the dimming MCU an identify still running is reported as ended, like the
