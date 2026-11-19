@@ -141,6 +141,13 @@ drop-old-files:
 	rm -f $(BIN_PATH)/*.s37
 	rm -f $(BIN_PATH)/*.zigbee
 
+# The ota target of src/telink/Makefile links the ELF again (sdk-build is
+# phony). The objects are not compiled again, but which objects are linked
+# depends on these (a dimmer_only board leaves Green Power out, sdk.mk): the
+# same values as build-firmware, or the OTA files carry another link than the
+# checked one.
+OTA_LINK_VARS := SECONDARY_MCU_IMAGE="$(SECONDARY_MCU_IMAGE)" DIMMER_ONLY="$(DIMMER_ONLY)"
+
 # Generate all three types of OTA files. On Telink each must fit the SDK's OTA
 # limit (FLASH_OTA_IMAGE_MAX_SIZE, 0x34000): the ota target of
 # src/telink/Makefile fails the build otherwise.
@@ -149,6 +156,7 @@ generate-ota-files: generate-normal-ota generate-tuya-ota generate-force-ota
 generate-normal-ota:
 	$(MAKE) $(PLATFORM_PREFIX)/ota \
 		DEVICE_TYPE=$(DEVICE_TYPE) \
+		$(OTA_LINK_VARS) \
 		FILE_VERSION=$(FILE_VERSION) \
 		OTA_IMAGE_TYPE=$(FIRMWARE_IMAGE_TYPE) \
 		OTA_FILE=../../$(OTA_FILE)
@@ -158,6 +166,7 @@ ifneq ($(PLATFORM_PREFIX),silabs)  # Silabs platform does not support Tuya migra
 	$(MAKE) $(PLATFORM_PREFIX)/ota \
 		OTA_VERSION=0xFFFFFFFF \
 		DEVICE_TYPE=$(DEVICE_TYPE) \
+		$(OTA_LINK_VARS) \
 		OTA_IMAGE_TYPE=$(FROM_STOCK_IMAGE_TYPE) \
 		OTA_MANUFACTURER_ID=$(FROM_STOCK_MANUFACTURER_ID) \
 		OTA_FILE=../../$(FROM_TUYA_OTA_FILE)
@@ -167,6 +176,7 @@ generate-force-ota:
 	$(MAKE) $(PLATFORM_PREFIX)/ota \
 		OTA_VERSION=0xFFFFFFFF \
 		DEVICE_TYPE=$(DEVICE_TYPE) \
+		$(OTA_LINK_VARS) \
 		OTA_IMAGE_TYPE=$(FIRMWARE_IMAGE_TYPE) \
 		OTA_FILE=../../$(FORCE_OTA_FILE)
 

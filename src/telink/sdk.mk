@@ -46,6 +46,18 @@ PROJ_SOURCES := \
 	$(SDK_PATH)/proj/os/ev_timer.c \
 	$(SDK_PATH)/proj/os/ev_rtc.c
 
+# Green Power (proxy basic). This firmware never calls gp_init(), so no GP
+# cluster is registered and nothing is ever sent; what is linked is the
+# stack's receive path for GP frames (cGp_mcpsDataInd, ~6 KB with the library
+# members it pulls). A dimmer_only board leaves all of it out:
+# patch_sdk/gp_stub.c drops a received GP frame instead (gp_stub.c says why
+# that is safe).
+GP_SOURCES := \
+	$(SDK_PATH)/zigbee/gp/gp.c \
+	$(SDK_PATH)/zigbee/gp/gpEpCfg.c \
+	$(SDK_PATH)/zigbee/gp/gp_proxy.c \
+	$(SDK_PATH)/zigbee/gp/gp_proxyTab.c
+
 ZIGBEE_SOURCES := \
 	$(SDK_PATH)/zigbee/bdb/bdb.c \
 	$(SDK_PATH)/zigbee/aps/aps_group.c \
@@ -126,10 +138,7 @@ ZIGBEE_SOURCES := \
 	$(SDK_PATH)/zigbee/af/zb_af.c \
 	$(SDK_PATH)/zigbee/wwah/wwah.c \
 	$(SDK_PATH)/zigbee/wwah/wwahEpCfg.c \
-	$(SDK_PATH)/zigbee/gp/gp.c \
-	$(SDK_PATH)/zigbee/gp/gpEpCfg.c \
-	${SDK_PATH}/zigbee/gp/gp_proxy.c \
-	$(SDK_PATH)/zigbee/gp/gp_proxyTab.c \
+	$(if $(DIMMER_ONLY),,$(GP_SOURCES)) \
 	$(SDK_PATH)/zigbee/ss/ss_nv.c \
 	$(SDK_PATH)/zigbee/ota/ota.c \
 	$(SDK_PATH)/zigbee/ota/otaEpCfg.c
