@@ -79,4 +79,10 @@ swd_err_t swd_mem_read32(uint32_t addr, uint32_t *value);
  * 1 KB boundary (AHB-AP auto-increment is only guaranteed inside one). */
 swd_err_t swd_mem_read_block(uint32_t addr, uint32_t *words, uint16_t count);
 
+swd_err_t swd_mem_write32(uint32_t addr, uint32_t value);
+
+/* Consecutive words to addr (word-aligned), TAR written again at every 1 KB
+ * boundary. */
+swd_err_t swd_mem_write_block(uint32_t addr, const uint32_t *words, uint16_t count);
+
 #endif

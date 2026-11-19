@@ -3,6 +3,7 @@ against the stub's edge-level PY32F002A model (src/stub/hal/swd_target.c): dorma
 SW config token, the read-only surveys, and the ways they end."""
 import struct
 import zlib
+from pathlib import Path
 
 import pytest
 
@@ -22,11 +23,12 @@ TOKEN = "SWD3D7;"
 WITH_TOKEN = ZDMS16_2 + TOKEN
 
 FIELDS = ("format state job step error swd_err boot_version app_version dpidr ap_idr cpuid idcode "
-          "optr wrpr app_build option_crc rom_crc sector0_crc duration_ms reserved").split()
+          "optr wrpr app_build option_crc rom_crc sector0_crc duration_ms page").split()
 STATUS_FORMAT = "<8B5IHH3IHB"   # mcu_flasher_status_t without its length byte
 
 OPTION_BYTES = bytes.fromhex("aaf95506ff0000ffffffffffffff0000")
-ROM = bytes((i * 37 + 11) & 0xFF for i in range(0xE00))
+# the model's synthetic ROM: its last 4 bytes make the CRC the real chip's (0xA52232EA)
+ROM = bytes((i * 37 + 11) & 0xFF for i in range(0xE00 - 4)) + bytes.fromhex("e775a5e6")
 
 
 def crc(data: bytes) -> int:
@@ -217,3 +219,162 @@ def test_an_unknown_job_is_refused():
         start_job(device, 7)
         st = status(device)
         assert st["state"] == STATE_IDLE and st["error"] == 6
+
+
+# ---- update_bootloader (phase 2) ------------------------------------------------------------
+
+import re  # noqa: E402
+
+ATTR_CONFIRM = 0xFF52
+JOB_UPDATE, JOB_UPDATE_FORCE = 3, 4
+ERR_NOT_CONFIRMED, ERR_PROTECTED, ERR_HALT, ERR_FLASH, ERR_VERIFY = 7, 8, 9, 10, 11
+STEP_PROGRAM = 11
+BOOT_SRC = Path(__file__).resolve().parent.parent / "src" / "zigbee" / "secondary_mcu_boot.c"
+
+
+def carried_boot() -> bytes:
+    """The bootloader the module carries (secondary_mcu_boot.c), as bytes."""
+    text = BOOT_SRC.read_text()
+    body = text[text.index("secondary_mcu_boot[] = {"):text.index("};")]
+    return bytes(int(h, 16) for h in re.findall(r"0x([0-9a-fA-F]{2})", body))
+
+
+def sector(image: bytes) -> bytes:
+    return image + b"\xFF" * (0x1000 - len(image))
+
+
+def load_flash(proc: StubProc, tmp_path, image: bytes) -> None:
+    path = tmp_path / "sector0.bin"
+    path.write_bytes(sector(image))
+    target(proc, "load", "0x08000000", path)
+
+
+def confirm(device: Device, text: str) -> None:
+    device.write_zigbee_attr(1, BASIC, ATTR_CONFIRM, text)
+
+
+def flash_read(proc: StubProc, addr: int, words: int) -> bytes:
+    out = b""
+    for i in range(words):
+        out += struct.pack("<I", int(target(proc, "peek32", f"0x{addr + 4 * i:08X}")["value"], 16))
+    return out
+
+
+def test_the_carried_bootloader_is_v2():
+    boot = carried_boot()
+    assert boot[0x10:0x14] == b"ODBL" and boot[0x14] >= 2
+    assert crc(sector(boot)) == 0x7D215316  # what the test unit reports as DP 136
+
+
+def test_a_writing_job_needs_its_name_first(flasher, tmp_path):
+    proc, device = flasher
+    load_flash(proc, tmp_path, carried_boot()[:-1] + b"\x00")
+    start_job(device, JOB_UPDATE)
+    st = status(device)
+    assert (st["state"], st["error"]) == (STATE_IDLE, ERR_NOT_CONFIRMED)
+    confirm(device, "update_bootloader_force")      # another job's name
+    start_job(device, JOB_UPDATE)
+    assert status(device)["error"] == ERR_NOT_CONFIRMED
+    confirm(device, "update_bootloader")
+    proc.exec("freeze_time 1")
+    proc.exec("step_time 61000")                     # too old
+    start_job(device, JOB_UPDATE)
+    assert status(device)["error"] == ERR_NOT_CONFIRMED
+    proc.exec("freeze_time 0")
+    assert int(target(proc, "stats")["mem_writes"]) == 0
+
+
+def test_an_equal_bootloader_is_not_written(flasher, tmp_path):
+    proc, device = flasher
+    load_flash(proc, tmp_path, carried_boot())
+    confirm(device, "update_bootloader")
+    start_job(device, JOB_UPDATE)
+    st = run_until_settled(proc, device)
+    assert (st["state"], st["error"]) == (STATE_DONE, ERR_NONE)
+    assert st["sector0_crc"] == crc(sector(carried_boot()))
+    stats = target(proc, "stats")
+    assert int(stats["mem_writes"]) == 0 and int(stats["erases"]) == 0
+
+
+def run_update(proc, device, job=JOB_UPDATE, name="update_bootloader") -> dict:
+    confirm(device, name)
+    start_job(device, job)
+    return run_until_settled(proc, device, passes=2000)
+
+
+def check_written(proc, st):
+    boot = carried_boot()
+    assert (st["state"], st["error"]) == (STATE_DONE, ERR_NONE), st
+    assert st["sector0_crc"] == crc(sector(boot)) and st["boot_version"] == boot[0x14]
+    assert flash_read(proc, 0x08000000, 0x400) == sector(boot)
+    stats = target(proc, "stats")
+    # page 0 (the vectors) erased first and programmed last
+    log = target(proc, "flash_log")["list"].split(",")
+    assert log[0] == "erase_page:0x08000000"
+    programs = [e for e in log if e.startswith("program:")]
+    assert programs[-1] == "program:0x08000000"
+    assert int(stats["contention"]) == 0 and int(stats["wrperr"]) == 0
+    # running the new bootloader: its reset vector, the watchdog freeze and the gates as left
+    assert stats["core"] == "running"
+    assert int(stats["pc"], 16) == struct.unpack_from("<I", boot, 4)[0] & ~1
+    assert stats["iwdg_frozen"] == "1" and stats["gates_low"] == "1"
+    assert int(target(proc, "peek32", "0x20000BF8")["value"], 16) == 0  # the boot word
+    return log
+
+
+def test_force_rewrites_an_equal_bootloader_vectors_last(flasher, tmp_path):
+    proc, device = flasher
+    load_flash(proc, tmp_path, carried_boot())
+    st = run_update(proc, device, JOB_UPDATE_FORCE, "update_bootloader_force")
+    log = check_written(proc, st)
+    erased = [e for e in log if e.startswith("erase_page:")]
+    assert len(erased) == 33           # page 0 first, then 1..31, then page 0 again for its program
+    assert int(target(proc, "stats")["programs"]) == -(-len(carried_boot()) // 128)
+
+
+def test_a_different_bootloader_is_replaced(flasher, tmp_path):
+    proc, device = flasher
+    old = bytearray(carried_boot())
+    old[0x200] ^= 0xFF                 # an older build: another byte inside
+    old += b"\x11" * 300               # and longer: its tail must go too
+    load_flash(proc, tmp_path, bytes(old))
+    check_written(proc, run_update(proc, device))
+
+
+@pytest.mark.parametrize("setup", [("rdp", 1), ("poke32", "0x4002202C", "0x0000FFFE"),
+                                   ("poke32", "0x40022020", "0x000000AA")])
+def test_protection_or_unknown_option_bytes_refuse_the_write(flasher, tmp_path, setup):
+    proc, device = flasher
+    load_flash(proc, tmp_path, carried_boot()[:-1] + b"\x00")
+    target(proc, *setup)
+    st = run_update(proc, device)
+    assert (st["state"], st["error"]) == (STATE_FAILED, ERR_PROTECTED)
+    stats = target(proc, "stats")
+    assert int(stats["erases"]) == 0 and int(stats["programs"]) == 0
+
+
+def test_another_rom_refuses_the_write(flasher, tmp_path):
+    proc, device = flasher
+    load_flash(proc, tmp_path, carried_boot()[:-1] + b"\x00")
+    target(proc, "poke32", "0x1FFF0100", "0x12345678")
+    st = run_update(proc, device)
+    assert (st["state"], st["error"]) == (STATE_FAILED, ERR_WRONG_TARGET)
+    assert int(target(proc, "stats")["erases"]) == 0
+
+
+def test_a_power_cut_while_writing_is_repaired_by_running_it_again(flasher, tmp_path):
+    proc, device = flasher
+    load_flash(proc, tmp_path, carried_boot()[:-1] + b"\x00")
+    confirm(device, "update_bootloader")
+    start_job(device, JOB_UPDATE)
+    for _ in range(4000):
+        proc.exec("s")
+        st = status(device)
+        if st["step"] == STEP_PROGRAM and st["page"] >= 6:
+            break
+    target(proc, "cut_after", 40)       # in the middle of a page
+    st = run_until_settled(proc, device, passes=2000)
+    assert st["state"] == STATE_FAILED
+    target(proc, "power_cycle")          # the mains comes back: page 0 is blank
+    assert target(proc, "stats")["core"] == "lockup"
+    check_written(proc, run_update(proc, device))

@@ -51,6 +51,7 @@ SOURCES := \
 	$(SRC_DIR)/stub/hal/swd_target.c \
 	$(SRC_DIR)/base_components/swd.c \
 	$(SRC_DIR)/zigbee/mcu_flasher.c \
+	$(SRC_DIR)/zigbee/secondary_mcu_boot.c \
 	$(SRC_DIR)/stub/simple_repl.c \
 	$(SRC_DIR)/stub/stub_app.c \
 	$(SRC_DIR)/stub/commands.c \

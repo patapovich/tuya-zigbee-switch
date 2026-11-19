@@ -5,10 +5,10 @@
 
 #include <stddef.h>
 
-/* The SWD master's status + control (mcu_flasher.h MCU_FLASHER_ATTRS), only in
+/* The SWD master's status, control and confirm (mcu_flasher.h MCU_FLASHER_ATTRS), only in
  * builds that carry an MCU image: the table of every other board stays as it was. */
 #ifdef SECONDARY_MCU_IMAGE
-#define BASIC_MCU_FLASHER_ATTRS    2
+#define BASIC_MCU_FLASHER_ATTRS    3
 #else
 #define BASIC_MCU_FLASHER_ATTRS    0
 #endif

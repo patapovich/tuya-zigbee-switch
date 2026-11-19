@@ -56,6 +56,28 @@ CSW_ADDRINC_SINGLE = 0x1 << 4
 JTAG_TO_SWD = 0xE79E
 LINE_RESET_ONES = 50
 
+# ARMv6-M debug registers (SCS)
+AIRCR = 0xE000ED0C
+DHCSR = 0xE000EDF0
+DCRSR = 0xE000EDF4
+DCRDR = 0xE000EDF8
+DEMCR = 0xE000EDFC
+DHCSR_KEY = 0xA05F << 16
+C_DEBUGEN = 1 << 0
+C_HALT = 1 << 1
+S_REGRDY = 1 << 16
+S_HALT = 1 << 17
+S_LOCKUP = 1 << 19
+S_RESET_ST = 1 << 25
+DCRSR_REGWNR = 1 << 16
+DEMCR_VC_CORERESET = 1 << 0
+AIRCR_SYSRESETREQ = 0x05FA0004
+REG_SP = 13
+REG_PC = 15
+REG_XPSR = 16
+REG_MSP = 17
+XPSR_T = 1 << 24
+
 
 def parity(value: int) -> int:
     return bin(value).count("1") & 1
@@ -273,3 +295,66 @@ class SwdRefHost:
         self.power_up()
         self.mem_setup()
         return dpidr
+
+    # ---- blocks (MEM-AP with AddrInc single; TAR only wraps in 1 KB) ----
+
+    def mem_write_block(self, addr: int, words: list[int]) -> None:
+        for i, word in enumerate(words):
+            a = addr + 4 * i
+            if i == 0 or a % 0x400 == 0:
+                self.write_ap(AP_TAR, a)
+            self.write_ap(AP_DRW, word)
+
+    def mem_read_block(self, addr: int, count: int) -> list[int]:
+        out: list[int] = []
+        for i in range(count):
+            a = addr + 4 * i
+            if i == 0 or a % 0x400 == 0:
+                if i:
+                    out.append(self.read_dp(DP_RDBUFF))
+                self.write_ap(AP_TAR, a)
+                self.read_ap(AP_DRW)  # the result comes with the next read
+            else:
+                out.append(self.read_ap(AP_DRW))
+        out.append(self.read_dp(DP_RDBUFF))
+        return out
+
+    # ---- ARMv6-M core debug ----
+
+    def dhcsr(self) -> int:
+        return self.mem_read32(DHCSR)
+
+    def halt(self) -> int:
+        self.mem_write32(DHCSR, DHCSR_KEY | C_DEBUGEN | C_HALT)
+        return self.dhcsr()
+
+    def resume(self) -> int:
+        self.mem_write32(DHCSR, DHCSR_KEY | C_DEBUGEN)
+        return self.dhcsr()
+
+    def _regrdy(self) -> None:
+        for _ in range(10):
+            if self.dhcsr() & S_REGRDY:
+                return
+        raise AssertionError("S_REGRDY stays 0")
+
+    def write_core_reg(self, sel: int, value: int) -> None:
+        self.mem_write32(DCRDR, value)
+        self.mem_write32(DCRSR, DCRSR_REGWNR | sel)
+        self._regrdy()
+
+    def read_core_reg(self, sel: int) -> int:
+        self.mem_write32(DCRSR, sel)
+        self._regrdy()
+        return self.mem_read32(DCRDR)
+
+    def system_reset(self) -> None:
+        """SYSRESETREQ. The AP stays usable: the debug domain is not reset."""
+        self.mem_write32(AIRCR, AIRCR_SYSRESETREQ)
+
+    def reset_halt(self) -> int:
+        """Halt at the reset vector: vector catch, then a system reset."""
+        self.mem_write32(DHCSR, DHCSR_KEY | C_DEBUGEN)
+        self.mem_write32(DEMCR, DEMCR_VC_CORERESET)
+        self.system_reset()
+        return self.dhcsr()

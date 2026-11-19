@@ -34,7 +34,7 @@ def status(**fields) -> list[int]:
                       *(fields.get(k, 0) for k in ("dpidr", "ap_idr", "cpuid", "idcode", "optr")),
                       fields.get("wrpr", 0), fields.get("app_build", 0),
                       *(fields.get(k, 0) for k in ("option_crc", "rom_crc", "sector0_crc")),
-                      fields.get("duration_ms", 1234), 0)
+                      fields.get("duration_ms", 1234), fields.get("page", 0))
     assert len(raw) == 47
     return list(raw)
 
@@ -52,7 +52,7 @@ console.log(JSON.stringify({
 """))
     assert out["stock"] == out["own"] == out["hidden"] == []
     # the stock MCU is the one a probe-free install is for: shown whatever the MCU is
-    assert out["shownStock"] == out["shownOwn"] == ["mcu_flasher", "mcu_flasher_status"]
+    assert out["shownStock"] == out["shownOwn"] == ["mcu_flasher", "mcu_flasher_confirm", "mcu_flasher_status"]
 
 
 def test_a_job_is_one_write_of_the_control_attribute():
@@ -102,3 +102,46 @@ def test_running_failed_and_hidden():
     assert decode(status(), endpoint=2) == []
     assert decode(status()[:40]) == []  # too short: not this layout
     assert decode([1] + status()[1:]) == []  # format 1 (80 bytes, never sent again)
+
+
+SET_ANY = FLASHER + """
+const setKey = async (dev, key, value, options) => {
+    h.log.length = 0;
+    try {
+        await tz(key).convertSet(dev.getEndpoint(1), key, value, {device: dev, mapped: model, options});
+        return h.log.filter((l) => l[0] === "write");
+    } catch (error) {
+        return error.message;
+    }
+};
+"""
+
+
+def test_update_jobs_and_the_confirm_text():
+    out = json.loads(run_node(SET_ANY + """
+(async () => {
+    const dev = h.device(); const show = {mcu_flasher: "show"};
+    console.log(JSON.stringify({
+        confirm: await setKey(dev, "mcu_flasher_confirm", "update_bootloader", show),
+        confirmHidden: await setKey(dev, "mcu_flasher_confirm", "update_bootloader", {}),
+        tooLong: await setKey(dev, "mcu_flasher_confirm", "x".repeat(24), show),
+        update: await setKey(dev, "mcu_flasher", "update_bootloader", show),
+        force: await setKey(dev, "mcu_flasher", "update_bootloader_force", show),
+    }));
+})();
+"""))
+    assert out["confirm"] == [["write", 1, "genBasic", {"65362": {"value": "update_bootloader", "type": 0x42}}]]
+    assert "show" in out["confirmHidden"] and "23" in out["tooLong"]
+    assert out["update"] == [["write", 1, "genBasic", {"65361": {"value": 3, "type": 0x20}}]]
+    assert out["force"] == [["write", 1, "genBasic", {"65361": {"value": 4, "type": 0x20}}]]
+
+
+def test_an_update_shows_its_page_and_its_errors():
+    writing = decode(status(state=1, job=3, step=11, page=12))
+    page0 = decode(status(state=1, job=4, step=11, page=0))
+    refused = decode(status(state=0, job=3, step=0, error=7))
+    verify = decode(status(state=3, job=3, step=12, error=11))
+    assert writing == [{"mcu_flasher_status": "running update_bootloader; writing page 12/32"}]
+    assert page0 == [{"mcu_flasher_status": "running update_bootloader_force; writing page 32/32"}]
+    assert "write the job's name to mcu_flasher_confirm" in refused[0]["mcu_flasher_status"]
+    assert "stays stopped" in verify[0]["mcu_flasher_status"]

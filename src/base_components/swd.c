@@ -288,4 +288,33 @@ swd_err_t swd_mem_read_block(uint32_t addr, uint32_t *words, uint16_t count) {
     return SWD_OK;
 }
 
+swd_err_t swd_mem_write32(uint32_t addr, uint32_t value) {
+    swd_err_t err = mem_setup(addr);
+
+    if (err == SWD_OK) {
+        err = swd_ap_write(SWD_AP_DRW, value);
+    }
+    return err;
+}
+
+swd_err_t swd_mem_write_block(uint32_t addr, const uint32_t *words, uint16_t count) {
+    while (count > 0) {
+        uint16_t  room = (uint16_t)((0x400u - (addr & 0x3FFu)) / 4u);
+        uint16_t  n    = count < room ? count : room;
+        swd_err_t err  = mem_setup(addr);
+
+        for (uint16_t i = 0; err == SWD_OK && i < n; i++) {
+            uint32_t w = words[i];
+            err = transfer(1, 0, SWD_AP_DRW, &w);
+        }
+        if (err != SWD_OK) {
+            return err;
+        }
+        addr  += 4u * n;
+        words += n;
+        count  = (uint16_t)(count - n);
+    }
+    return SWD_OK;
+}
+
 #endif /* SECONDARY_MCU_IMAGE */

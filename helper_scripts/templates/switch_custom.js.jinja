@@ -1213,17 +1213,25 @@ const romasku = {
     // SWD master of the dimming MCU (src/zigbee/mcu_flasher.c): only on a module whose config
     // names its two wires (SW<clk><dio> token), and only shown with the device option
     // mcu_flasher: show (default hide: no expose, no state). One write of mcu_flasher starts a
-    // job (phase 1: the read-only surveys); mcu_flasher_status shows its result (Basic 0xff50
-    // on endpoint 1, format 2: 47 bytes, mcu_flasher_status_t; reported at every change and
-    // about once a second while it runs).
+    // job (the read-only surveys; update_bootloader also needs mcu_flasher_confirm = its name,
+    // Basic 0xff52); mcu_flasher_status shows its result (Basic 0xff50 on endpoint 1, format 2:
+    // 47 bytes, mcu_flasher_status_t; reported at every change and about once a second while
+    // it runs).
     mcuFlasher: () => {
-        const jobs = {survey_dp: 1, survey_full: 2, abort: 0xff};
+        const jobs = {survey_dp: 1, survey_full: 2, update_bootloader: 3, update_bootloader_force: 4, abort: 0xff};
         const states = ["idle", "running", "done", "failed", "aborted"];
         const errors = ["", "SWCLK held low (power-cycle the module, then try again)", "no answer (wires? power?)",
-                        "not the expected PY32F002A", "SWD transfer failed", "busy", "unknown job"];
+                        "not the expected PY32F002A", "SWD transfer failed", "busy", "unknown job",
+                        "not confirmed: write the job's name to mcu_flasher_confirm first (valid 60 s)",
+                        "read-protected, unexpected option bytes or the bootloader write-protected",
+                        "the MCU did not stop", "flash error (unlock, write protection or timeout)",
+                        "the bootloader's checksum was wrong after writing it twice: the MCU stays stopped, its outputs off"];
         const exposes = [
             e.enum("mcu_flasher", ea.SET, Object.keys(jobs)).withLabel("MCU flasher")
-                .withDescription("Start a job of the module's SWD link to the dimming MCU: survey_dp reads the debug port's id, survey_full the MCU's identity, option bytes and firmware checksums (both only read). Needs the SW token in device_config")
+                .withDescription("Start a job of the module's SWD link to the dimming MCU: survey_dp reads the debug port's id, survey_full the MCU's identity, option bytes and firmware checksums (both only read); update_bootloader writes the module's bootloader into the MCU if it differs (_force: always; both need mcu_flasher_confirm first). Needs the SW token in device_config")
+                .withCategory("config"),
+            e.text("mcu_flasher_confirm", ea.SET).withLabel("MCU flasher confirm")
+                .withDescription("A writing job runs only if its name was written here within the last 60 s (e.g. update_bootloader); used once")
                 .withCategory("config"),
             e.text("mcu_flasher_status", ea.STATE_GET).withLabel("MCU flasher status")
                 .withDescription("State and result of the last MCU flasher job")
@@ -1235,7 +1243,7 @@ const romasku = {
             const state = states[b[1]] ?? `state ${b[1]}`;
             const job = Object.keys(jobs).find((k) => jobs[k] === b[2]) ?? `job ${b[2]}`;
             const parts = [`${state} ${job}`];
-            if (b[1] === 1) parts.push(`step ${b[3]}`);
+            if (b[1] === 1) parts.push(b[3] === 11 ? `writing page ${b[46] || 32}/32` : `step ${b[3]}`);
             if (b[4]) parts.push(`error: ${errors[b[4]] ?? b[4]}` + (b[5] ? ` (SWD ${b[5]})` : ""));
             const w = (i) => b.readUInt32LE(i);
             if (w(8)) parts.push(`DPIDR ${hex(w(8))}`);
@@ -1267,9 +1275,15 @@ const romasku = {
                 },
             }],
             toZigbee: [{
-                key: ["mcu_flasher", "mcu_flasher_status"],
+                key: ["mcu_flasher", "mcu_flasher_status", "mcu_flasher_confirm"],
                 convertSet: async (entity, key, value, meta) => {
-                    if (!shown(meta.options)) throw new Error("mcu_flasher: set the device option mcu_flasher to show first");
+                    if (!shown(meta.options)) throw new Error(`${key}: set the device option mcu_flasher to show first`);
+                    if (key === "mcu_flasher_confirm") {
+                        const text = String(value);
+                        if (text.length > 23) throw new Error("mcu_flasher_confirm: at most 23 characters");
+                        await meta.device.getEndpoint(1).write("genBasic", {0xff52: {value: text, type: 0x42}});
+                        return;
+                    }
                     if (jobs[value] === undefined) throw new Error(`mcu_flasher: unknown job ${value}`);
                     await meta.device.getEndpoint(1).write("genBasic", {0xff51: {value: jobs[value], type: 0x20}});
                 },

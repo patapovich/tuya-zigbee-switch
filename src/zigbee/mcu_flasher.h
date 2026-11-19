@@ -11,15 +11,20 @@
  * with the SW<clk><dio> token (e.g. SWD3D7): without it no pin is touched, no
  * attribute is added, and nothing else changes.
  *
- * Phase 1: read-only jobs (survey_dp, survey_full), started by one write of the
- * control attribute; the result is the status attribute. */
+ * Jobs: the read-only surveys (survey_dp, survey_full) start with one write of
+ * the control attribute; update_bootloader (and _force) writes the carried
+ * bootloader (secondary_mcu_boot.c) into sector 0, and needs the confirm
+ * attribute set to the job's name first (one use, 60 s). The result is the
+ * status attribute. */
 
-#define MCU_FLASHER_ATTRS              2 /* status + control, with the token */
+#define MCU_FLASHER_ATTRS               3 /* status, control, confirm: with the token */
 
-#define MCU_FLASHER_JOB_NONE           0
-#define MCU_FLASHER_JOB_SURVEY_DP      1
-#define MCU_FLASHER_JOB_SURVEY_FULL    2
-#define MCU_FLASHER_JOB_ABORT          0xFF
+#define MCU_FLASHER_JOB_NONE            0
+#define MCU_FLASHER_JOB_SURVEY_DP       1
+#define MCU_FLASHER_JOB_SURVEY_FULL     2
+#define MCU_FLASHER_JOB_UPDATE_BOOT     3
+#define MCU_FLASHER_JOB_UPDATE_FORCE    4
+#define MCU_FLASHER_JOB_ABORT           0xFF
 
 enum {
     MCU_FLASHER_STATE_IDLE = 0,
@@ -37,6 +42,11 @@ enum {
     MCU_FLASHER_ERR_SWD,           /* a transfer failed: see swd_err */
     MCU_FLASHER_ERR_BUSY,          /* a job is running */
     MCU_FLASHER_ERR_BAD_JOB,       /* unknown job */
+    MCU_FLASHER_ERR_NOT_CONFIRMED, /* a writing job without its confirm text */
+    MCU_FLASHER_ERR_PROTECTED,     /* RDP not 0, unexpected option bytes or sector 0 write-protected */
+    MCU_FLASHER_ERR_HALT,          /* the core did not halt */
+    MCU_FLASHER_ERR_FLASH,         /* unlock failed, write protection error or flash timeout */
+    MCU_FLASHER_ERR_VERIFY,        /* sector 0 CRC wrong after writing it twice */
 };
 
 /* Status attribute (Basic 0xff50, octet string), little-endian. At most 48
@@ -65,7 +75,7 @@ typedef struct __attribute__((packed)) {
     uint32_t rom_crc;      /* CRC-32 of the system ROM 0x1FFF0000..0x1FFF0DFF */
     uint32_t sector0_crc;  /* CRC-32 of 0x08000000..0x08000FFF (RDP 0 only) */
     uint16_t duration_ms;  /* how long it ran (saturated) */
-    uint8_t  reserved;
+    uint8_t  page;         /* update_bootloader: the page being written (1..31, then 0) */
 } mcu_flasher_status_t;
 
 #define MCU_FLASHER_STATUS_MAX    48 /* bytes after the length byte */

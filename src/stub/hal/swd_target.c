@@ -5,7 +5,7 @@
 
 /* See swd_target.h for what is modelled. Bit numbers below are ADIv5 (DP,
  * AHB-AP), ARMv6-M (SCS) and the PY32F002A reference manual (DBGMCU, FLASH,
- * RCC). */
+ * RCC, GPIO). */
 
 #define LINE_RESET_ONES        50
 #define JTAG_TO_SWD            0xE79Eu
@@ -60,6 +60,9 @@
 /* Memory areas */
 #define FLASH_BASE             0x08000000u
 #define FLASH_SIZE             0x5000u
+#define FLASH_PAGE             128u
+#define FLASH_PAGE_WORDS       (FLASH_PAGE / 4u)
+#define FLASH_SECTOR           4096u
 #define SRAM_BASE              0x20000000u
 #define SRAM_SIZE              0x0C00u
 #define SYSROM_BASE            0x1FFF0000u
@@ -76,42 +79,102 @@
 #define REG_CPUID              0xE000ED00u
 #define REG_AIRCR              0xE000ED0Cu
 #define REG_DHCSR              0xE000EDF0u
+#define REG_DCRSR              0xE000EDF4u
+#define REG_DCRDR              0xE000EDF8u
 #define REG_DEMCR              0xE000EDFCu
 #define REG_DBGMCU_IDCODE      0x40015800u
 #define REG_DBGMCU_CR          0x40015804u
 #define REG_DBGMCU_APB_FZ1     0x40015808u
 #define REG_DBGMCU_APB_FZ2     0x4001580Cu
+#define REG_RCC_ICSCR          0x40021004u
+#define REG_RCC_IOPENR         0x40021034u
+#define REG_RCC_APBENR1        0x4002103Cu
+#define REG_FLASH_KEYR         0x40022008u
 #define REG_FLASH_SR           0x40022010u
 #define REG_FLASH_CR           0x40022014u
 #define REG_FLASH_OPTR         0x40022020u
 #define REG_FLASH_SDKR         0x40022024u
 #define REG_FLASH_WRPR         0x4002202Cu
-#define REG_RCC_ICSCR          0x40021004u
+#define REG_FLASH_TIMING       0x40022100u /* TS0 .. PRETPE */
+#define FLASH_TIMING_COUNT     9u
+#define FLASH_TIMING_ALL       0x1FFu
+#define REG_GPIOA_MODER        0x50000000u
+#define REG_GPIOA_ODR          0x50000014u
+#define REG_GPIOA_BSRR         0x50000018u
+#define REG_GPIOA_BRR          0x50000028u
 
 #define CPUID_VALUE            0x410CC601u
 #define DBGMCU_IDCODE_VALUE    0x60001000u
-#define FLASH_SR_RESET         0x00000000u
-#define FLASH_CR_RESET         0xC0000000u
-#define OPTR_RESET             0x0000F9AAu
-#define SDKR_RESET             0x0000001Fu
-#define WRPR_RESET             0x0000FFFFu
+#define DBGMCU_FZ1_IWDG        (1u << 12)
 #define ICSCR_RESET            0x0159950Cu
+#define IOPENR_MASK            0x00000023u
+#define IOPENR_GPIOAEN         (1u << 0)
+#define APBENR1_DBGEN          (1u << 27)
 #define RDP_LEVEL0             0xAAu
 #define RDP_LEVEL1             0x55u
+#define SDKR_MASK              0x1F1Fu
+
+#define FLASH_KEY1             0x45670123u
+#define FLASH_KEY2             0xCDEF89ABu
+#define FSR_EOP                (1u << 0)
+#define FSR_WRPERR             (1u << 4)
+#define FSR_OPTVERR            (1u << 15)
+#define FSR_BSY                (1u << 16)
+#define FSR_W1C                (FSR_EOP | FSR_WRPERR | FSR_OPTVERR)
+#define FCR_PG                 (1u << 0)
+#define FCR_PER                (1u << 1)
+#define FCR_SER                (1u << 11)
+#define FCR_OPTSTRT            (1u << 17)
+#define FCR_PGSTRT             (1u << 19)
+#define FCR_EOPIE              (1u << 24)
+#define FCR_OBL_LAUNCH         (1u << 27)
+#define FCR_OPTLOCK            (1u << 30)
+#define FCR_LOCK               (1u << 31)
+#define FCR_OPS                (FCR_PG | FCR_PER | FCR_SER)
+#define FCR_WRITE_MASK         (FCR_OPS | FCR_OPTSTRT | FCR_PGSTRT | FCR_EOPIE | \
+                                FCR_OBL_LAUNCH | FCR_OPTLOCK | FCR_LOCK)
+#define FCR_RESET              (FCR_LOCK | FCR_OPTLOCK)
+#define BUSY_READS_DEFAULT     2u
+#define CUT_GARBAGE            0xA5A5A5A5u
+
+#define GPIOA_MODER_RESET      0xEBFFFFFFu
+#define MODER_SWD_MASK         (0xFu << 26) /* PA13 SWDIO, PA14 SWCLK */
+#define MODER_SWD_AF           (0xAu << 26)
+#define MODER_GATES_MASK       0xFu         /* PA0, PA1 */
+#define MODER_GATES_OUT        0x5u
 
 #define DHCSR_KEY              0xA05Fu
 #define DHCSR_C_DEBUGEN        (1u << 0)
 #define DHCSR_C_HALT           (1u << 1)
 #define DHCSR_S_REGRDY         (1u << 16)
 #define DHCSR_S_HALT           (1u << 17)
+#define DHCSR_S_LOCKUP         (1u << 19)
 #define DHCSR_S_RESET_ST       (1u << 25)
+#define DCRSR_REGWNR           (1u << 16)
+#define DCRSR_REGSEL_MASK      0x1Fu
 #define DEMCR_VC_CORERESET     (1u << 0)
 #define DEMCR_MASK             0x01000401u /* VC_CORERESET, VC_HARDERR, DWTENA */
 #define AIRCR_READ             0xFA050000u
 #define AIRCR_VECTKEY          0x05FAu
 #define AIRCR_SYSRESETREQ      (1u << 2)
+#define XPSR_T                 (1u << 24)
+
+/* Core registers by DCRSR.REGSEL */
+#define CORE_SP                13u
+#define CORE_PC                15u
+#define CORE_XPSR              16u
+#define CORE_MSP               17u
+#define CORE_PSP               18u
+#define CORE_CONTROL           20u
+#define CORE_REGS              21u
+
+/* The unmodelled Open Dimmer app at the stub start */
+#define DEFAULT_PC             0x08001000u
+#define DEFAULT_MSP            (SRAM_BASE + SRAM_SIZE)
+#define SRAM_PATTERN           0xDEADBEEFu
 
 #define WRITE_LOG_DEPTH        16384u
+#define FLASH_LOG_DEPTH        4096u
 
 typedef enum {
     ST_LOCKOUT,     /* power-on or protocol error: only a line reset is heard */
@@ -139,21 +202,65 @@ typedef struct {
     area_kind_t kind;
 } area_t;
 
+typedef enum {
+    CORE_RUNNING,
+    CORE_HALTED,
+    CORE_LOCKUP,
+} core_state_t;
+
+typedef enum {
+    FOP_ERASE_PAGE,
+    FOP_ERASE_SECTOR,
+    FOP_PROGRAM,
+    FOP_WRPERR,
+    FOP_GARBAGE,
+} flash_op_t;
+
+typedef enum {
+    KEY_WAIT1,   /* locked, waiting for KEY1 */
+    KEY_WAIT2,   /* KEY1 taken */
+    KEY_LOCKOUT, /* a wrong key: locked until a reset */
+} key_state_t;
+
 typedef struct {
-    uint32_t cpuid;
-    uint32_t dhcsr_c;  /* C_DEBUGEN, C_HALT */
-    uint8_t  reset_st; /* S_RESET_ST: a reset since the last DHCSR read */
-    uint32_t demcr;
-    uint32_t dbgmcu_idcode;
-    uint32_t dbgmcu_cr;
-    uint32_t dbgmcu_apb_fz1;
-    uint32_t dbgmcu_apb_fz2;
-    uint32_t flash_sr;
-    uint32_t flash_cr;
-    uint32_t optr;
-    uint32_t sdkr;
-    uint32_t wrpr;
-    uint32_t icscr;
+    /* Core debug */
+    uint32_t     cpuid;
+    uint32_t     dhcsr_c;  /* C_DEBUGEN, C_HALT */
+    uint8_t      reset_st; /* S_RESET_ST: a reset since the last DHCSR read */
+    uint32_t     demcr;
+    uint32_t     dcrdr;
+    uint32_t     core[CORE_REGS];
+    core_state_t core_state;
+
+    /* DBGMCU */
+    uint32_t     dbgmcu_idcode;
+    uint32_t     dbgmcu_cr;
+    uint32_t     dbgmcu_apb_fz1;
+    uint32_t     dbgmcu_apb_fz2;
+
+    /* FLASH controller */
+    uint32_t     flash_sr;
+    uint32_t     flash_cr;
+    uint32_t     optr;
+    uint32_t     sdkr;
+    uint32_t     wrpr;
+    uint32_t     timing[FLASH_TIMING_COUNT];
+    uint16_t     timing_written;
+    key_state_t  key_state;
+    uint8_t      busy;      /* an operation runs (SR.BSY) */
+    flash_op_t   busy_op;
+    uint32_t     busy_addr;
+    uint32_t     busy_left; /* SR reads until it ends */
+    uint32_t     pg_buf[FLASH_PAGE_WORDS];
+    uint32_t     pg_base;
+    uint8_t      pg_n;
+
+    /* RCC, GPIOA */
+    uint32_t     icscr;
+    uint32_t     iopenr;
+    uint32_t     apbenr1;
+    uint32_t     gpioa_moder;
+    uint32_t     gpioa_odr;
 } regs_t;
 
 typedef struct {
@@ -162,15 +269,18 @@ typedef struct {
     uint8_t            clk_held_low;
     uint8_t            rdp;
     uint32_t           wait_ap;
+    uint32_t           busy_reads;
+    uint32_t           cut_left; /* transfers until the power goes, 0 = never */
 
     /* The wire: the host side as swd_io.c last set it, the target side */
     uint8_t            host_clk_driven;
     uint8_t            host_clk_level;
     uint8_t            host_dio_driven;
     uint8_t            host_dio_level;
-    uint8_t            clk_line;  /* SWCLK as the target sees it */
+    uint8_t            clk_line; /* SWCLK as the target sees it */
     uint8_t            tgt_drive;
     uint8_t            tgt_level;
+    uint8_t            swd_lost; /* PA13 / PA14 no longer SWD */
 
     /* SW-DP protocol */
     dp_state_t         st;
@@ -210,6 +320,11 @@ typedef struct {
     uint32_t value;
 } write_rec_t;
 
+typedef struct {
+    flash_op_t op;
+    uint32_t   addr;
+} flash_rec_t;
+
 static uint8_t s_flash[FLASH_SIZE];
 static uint8_t s_sram[SRAM_SIZE];
 static uint8_t s_sysrom[SYSROM_SIZE];
@@ -231,9 +346,16 @@ static const uint8_t k_optb_default[OPTB_SIZE] = {
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00,
 };
 
+/* The last ROM word: with it the ROM's CRC-32 is the real chip's 0xA52232EA */
+static const uint8_t k_sysrom_tail[4] = { 0xe7, 0x75, 0xa5, 0xe6 };
+
 /* HSI_FS = 4 (24 MHz) flash timing table */
 static const uint32_t k_hsi_fs4[] = {
     0x01B0B4B4u, 0x06C000B4u, 0x00014820u, 0x00014820u, 0x12C05DC0u,
+};
+
+static const char *const k_flash_op_names[] = {
+    "erase_page", "erase_sector", "program", "wrperr", "garbage",
 };
 
 static model_t     m;
@@ -241,6 +363,9 @@ static uint8_t     s_ready;
 static write_rec_t s_log[WRITE_LOG_DEPTH];
 static uint32_t    s_log_count;
 static uint32_t    s_log_dropped;
+static flash_rec_t s_flog[FLASH_LOG_DEPTH];
+static uint32_t    s_flog_count;
+static uint32_t    s_flog_dropped;
 
 static uint32_t get32(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
@@ -274,6 +399,42 @@ static const area_t *area_find(uint32_t addr, uint32_t len) {
     return NULL;
 }
 
+static uint8_t in_flash(uint32_t addr) {
+    return addr >= FLASH_BASE && addr - FLASH_BASE < FLASH_SIZE;
+}
+
+/* An initial / current MSP: the stack may start at the end of the SRAM. */
+static uint8_t in_stack(uint32_t addr) {
+    return addr >= SRAM_BASE && addr - SRAM_BASE <= SRAM_SIZE;
+}
+
+static void log_write(uint32_t addr, uint32_t value) {
+    m.stats.mem_writes++;
+    if (s_log_count < WRITE_LOG_DEPTH) {
+        s_log[s_log_count].addr  = addr;
+        s_log[s_log_count].value = value;
+        s_log_count++;
+    } else {
+        s_log_dropped++;
+    }
+}
+
+static void log_flash(flash_op_t op, uint32_t addr) {
+    if (s_flog_count < FLASH_LOG_DEPTH) {
+        s_flog[s_flog_count].op   = op;
+        s_flog[s_flog_count].addr = addr;
+        s_flog_count++;
+    } else {
+        s_flog_dropped++;
+    }
+}
+
+/* ---- option bytes, resets ---- */
+
+static uint32_t optb16(uint32_t offset) {
+    return (uint32_t)s_optb[offset] | ((uint32_t)s_optb[offset + 1] << 8);
+}
+
 static void apply_rdp(void) {
     uint8_t rdp = m.rdp ? RDP_LEVEL1 : RDP_LEVEL0;
 
@@ -282,12 +443,135 @@ static void apply_rdp(void) {
     s_optb[2]   = (uint8_t) ~rdp;
 }
 
+/* The option byte load of a power-on reset. */
+static void options_load(void) {
+    m.regs.optr = optb16(0);
+    m.regs.sdkr = optb16(4) & SDKR_MASK;
+    m.regs.wrpr = optb16(12);
+    m.rdp       = s_optb[0] != RDP_LEVEL0;
+}
+
+/* What a system reset puts back (a busy flash operation is handled before). */
+static void periph_reset(void) {
+    m.regs.flash_sr  = 0;
+    m.regs.flash_cr  = FCR_RESET;
+    m.regs.key_state = KEY_WAIT1;
+    m.regs.busy      = 0;
+    m.regs.busy_left = 0;
+    m.regs.pg_n      = 0;
+    memset(m.regs.timing, 0, sizeof(m.regs.timing));
+    m.regs.timing_written = 0;
+    m.regs.icscr          = ICSCR_RESET;
+    m.regs.iopenr         = 0;
+    m.regs.apbenr1        = 0;
+    m.regs.gpioa_moder    = GPIOA_MODER_RESET;
+    m.regs.gpioa_odr      = 0;
+    m.swd_lost            = 0;
+}
+
+/* What only a power-on reset clears. */
+static void debug_regs_clear(void) {
+    m.regs.dhcsr_c = 0;
+    m.regs.demcr   = 0;
+    m.regs.dcrdr   = 0;
+    memset(m.regs.core, 0, sizeof(m.regs.core));
+    m.regs.dbgmcu_cr      = 0;
+    m.regs.dbgmcu_apb_fz1 = 0;
+    m.regs.dbgmcu_apb_fz2 = 0;
+}
+
+/* The core takes its vectors: halted there for a debugger, else it runs the
+ * firmware, or locks up on vectors it cannot run. */
+static void core_take_vectors(uint8_t halt) {
+    uint32_t sp = get32(s_flash);
+    uint32_t rv = get32(s_flash + 4);
+    uint32_t pc = rv & ~1u;
+    uint8_t  ok;
+
+    m.regs.core[CORE_MSP]  = sp & ~3u;
+    m.regs.core[CORE_PC]   = pc;
+    m.regs.core[CORE_XPSR] = (rv & 1u) ? XPSR_T : 0;
+    if (halt) {
+        m.regs.dhcsr_c   |= DHCSR_C_HALT;
+        m.regs.core_state = CORE_HALTED;
+        return;
+    }
+    ok = (sp & 3u) == 0 && in_stack(sp) && (rv & 1u) && in_flash(pc) &&
+         (s_flash[pc - FLASH_BASE] != 0xFF || s_flash[pc - FLASH_BASE + 1] != 0xFF);
+    m.regs.dhcsr_c   &= ~DHCSR_C_HALT;
+    m.regs.core_state = ok ? CORE_RUNNING : CORE_LOCKUP;
+}
+
+static void core_resume(void) {
+    uint8_t ok = (m.regs.core[CORE_XPSR] & XPSR_T) &&
+                 in_flash(m.regs.core[CORE_PC] & ~1u) &&
+                 in_stack(m.regs.core[CORE_MSP]);
+
+    m.regs.core_state = ok ? CORE_RUNNING : CORE_LOCKUP;
+}
+
+static void flash_apply(flash_op_t op, uint32_t addr, uint8_t cut);
+
+static void flash_finish(void) {
+    if (m.regs.busy) {
+        flash_apply(m.regs.busy_op, m.regs.busy_addr, 0);
+        m.regs.busy      = 0;
+        m.regs.busy_left = 0;
+        m.regs.flash_sr |= FSR_EOP;
+    }
+}
+
+static void system_reset(void) {
+    m.stats.sys_resets++;
+    flash_finish();
+    periph_reset();
+    m.regs.reset_st = 1;
+    core_take_vectors((m.regs.demcr & DEMCR_VC_CORERESET) &&
+                      (m.regs.dhcsr_c & DHCSR_C_DEBUGEN));
+}
+
+static void dp_power_on(void) {
+    m.st              = ST_LOCKOUT;
+    m.need_dpidr      = 1;
+    m.tgt_drive       = 0;
+    m.ones_run        = 0;
+    m.run_ones_errors = 0;
+    m.win_active      = 0;
+    m.ctrl_stat       = 0;
+    m.select          = 0;
+    m.wcr             = WCR_RESET;
+    m.rdbuff          = 0;
+    m.resend          = 0;
+    m.csw             = CSW_RESET;
+    m.tar             = 0;
+    m.wait_ap         = 0;
+    m.cut_left        = 0;
+}
+
+static void power_cycle(void) {
+    if (m.regs.busy) {
+        flash_apply(m.regs.busy_op, m.regs.busy_addr, 1);
+        m.regs.busy = 0;
+    }
+    m.stats.power_cycles++;
+    dp_power_on();
+    for (uint32_t o = 0; o < SRAM_SIZE; o += 4) {
+        put32(&s_sram[o], SRAM_PATTERN ^ o);
+    }
+    debug_regs_clear();
+    periph_reset();
+    options_load();
+    m.regs.reset_st = 1;
+    core_take_vectors(0);
+}
+
 static void memory_defaults(void) {
     memset(s_flash, 0xFF, sizeof(s_flash));
     memset(s_sram, 0x00, sizeof(s_sram));
     for (uint32_t i = 0; i < SYSROM_SIZE; i++) {
         s_sysrom[i] = (uint8_t)((i * 37u + 11u) & 0xFFu);
     }
+    memcpy(&s_sysrom[SYSROM_SIZE - 4u], k_sysrom_tail, sizeof(k_sysrom_tail));
     for (uint32_t i = 0; i < UID_SIZE; i++) {
         s_uid[i] = (uint8_t)(0x10u + i);
     }
@@ -300,14 +584,14 @@ static void memory_defaults(void) {
     memset(&m.regs, 0, sizeof(m.regs));
     m.regs.cpuid         = CPUID_VALUE;
     m.regs.dbgmcu_idcode = DBGMCU_IDCODE_VALUE;
-    m.regs.flash_sr      = FLASH_SR_RESET;
-    m.regs.flash_cr      = FLASH_CR_RESET;
-    m.regs.optr          = OPTR_RESET;
-    m.regs.sdkr          = SDKR_RESET;
-    m.regs.wrpr          = WRPR_RESET;
-    m.regs.icscr         = ICSCR_RESET;
-    m.regs.reset_st      = 1; /* power-on is a reset too */
-    apply_rdp();
+    debug_regs_clear();
+    periph_reset();
+    options_load();
+    m.regs.reset_st        = 1; /* power-on is a reset too */
+    m.regs.core_state      = CORE_RUNNING;
+    m.regs.core[CORE_PC]   = DEFAULT_PC;
+    m.regs.core[CORE_MSP]  = DEFAULT_MSP;
+    m.regs.core[CORE_XPSR] = XPSR_T;
 }
 
 static void power_on(void) {
@@ -323,13 +607,13 @@ static void power_on(void) {
     m.host_dio_level  = host_dio_level;
 
     m.connect    = 1;
-    m.st         = ST_LOCKOUT;
-    m.need_dpidr = 1;
-    m.wcr        = WCR_RESET;
-    m.csw        = CSW_RESET;
+    m.busy_reads = BUSY_READS_DEFAULT;
+    dp_power_on();
     memory_defaults();
-    s_log_count   = 0;
-    s_log_dropped = 0;
+    s_log_count    = 0;
+    s_log_dropped  = 0;
+    s_flog_count   = 0;
+    s_flog_dropped = 0;
 }
 
 static void ensure_ready(void) {
@@ -339,8 +623,14 @@ static void ensure_ready(void) {
     }
 }
 
+/* ---- the wire ---- */
+
+static uint8_t wired(void) {
+    return m.connect && !m.swd_lost;
+}
+
 static uint8_t clk_line_now(void) {
-    if (!m.connect || m.clk_held_low || !m.host_clk_driven) {
+    if (!wired() || m.clk_held_low || !m.host_clk_driven) {
         return 0;
     }
     return m.host_clk_level;
@@ -350,7 +640,7 @@ static uint8_t dio_line_now(void) {
     if (m.host_dio_driven) {
         return m.host_dio_level;
     }
-    if (m.connect && m.tgt_drive) {
+    if (wired() && m.tgt_drive) {
         return m.tgt_level;
     }
     return 1;
@@ -368,24 +658,180 @@ static void tgt_release(void) {
     m.tgt_drive = 0;
 }
 
-static void log_write(uint32_t addr, uint32_t value) {
-    m.stats.mem_writes++;
-    if (s_log_count < WRITE_LOG_DEPTH) {
-        s_log[s_log_count].addr  = addr;
-        s_log[s_log_count].value = value;
-        s_log_count++;
+/* ---- flash controller ---- */
+
+static uint8_t sector_protected(uint32_t addr) {
+    uint32_t sector = (addr - FLASH_BASE) / FLASH_SECTOR;
+
+    return !((m.regs.wrpr >> sector) & 1u);
+}
+
+static void flash_apply(flash_op_t op, uint32_t addr, uint8_t cut) {
+    uint32_t size;
+    uint8_t *p = &s_flash[addr - FLASH_BASE];
+
+    switch (op) {
+    case FOP_ERASE_PAGE:
+        size = FLASH_PAGE;
+        break;
+    case FOP_ERASE_SECTOR:
+        size = FLASH_SECTOR;
+        break;
+    case FOP_PROGRAM:
+        size = FLASH_PAGE;
+        break;
+    default:
+        return;
+    }
+    if (cut) {
+        log_flash(FOP_GARBAGE, addr);
+        for (uint32_t o = 0; o < size; o += 4) {
+            put32(p + o, get32(p + o) & CUT_GARBAGE);
+        }
+    } else if (op == FOP_PROGRAM) {
+        for (uint32_t i = 0; i < FLASH_PAGE_WORDS; i++) {
+            put32(p + 4u * i, get32(p + 4u * i) & m.regs.pg_buf[i]);
+        }
     } else {
-        s_log_dropped++;
+        memset(p, 0xFF, size);
     }
 }
 
-/* ---- memory map ---- */
+static void flash_wrperr(uint32_t addr) {
+    m.regs.flash_sr |= FSR_WRPERR;
+    m.stats.wrperr++;
+    log_flash(FOP_WRPERR, addr);
+}
+
+static void flash_start(flash_op_t op, uint32_t addr) {
+    if (sector_protected(addr)) {
+        flash_wrperr(addr);
+        return;
+    }
+    log_flash(op, addr);
+    if (op == FOP_PROGRAM) {
+        m.stats.programs++;
+    } else {
+        m.stats.erases++;
+    }
+    m.regs.busy      = 1;
+    m.regs.busy_op   = op;
+    m.regs.busy_addr = addr;
+    m.regs.busy_left = m.busy_reads;
+    if (!m.regs.busy_left) {
+        flash_finish();
+    }
+}
+
+static void flash_program_word(uint32_t addr, uint32_t value) {
+    uint32_t base  = addr & ~(FLASH_PAGE - 1u);
+    uint32_t index = (addr - base) / 4u;
+
+    if (m.regs.pg_n == 0) {
+        if (index != 0) {
+            flash_wrperr(addr);
+            return;
+        }
+        m.regs.pg_base = base;
+    } else if (base != m.regs.pg_base || index != m.regs.pg_n) {
+        m.regs.pg_n = 0;
+        flash_wrperr(addr);
+        return;
+    }
+    m.regs.pg_buf[m.regs.pg_n++] = value;
+    if (m.regs.pg_n < FLASH_PAGE_WORDS) {
+        return;
+    }
+    m.regs.pg_n = 0;
+    if (!(m.regs.flash_cr & FCR_PGSTRT)) {
+        flash_wrperr(base);
+        return;
+    }
+    m.regs.flash_cr &= ~FCR_PGSTRT;
+    flash_start(FOP_PROGRAM, base);
+}
+
+/* A word write into the flash through the AP (RDP and BSY checked before).
+ * 0 = taken (done or refused with WRPERR), -1 = bus error. */
+static int flash_mem_write(uint32_t addr, uint32_t value) {
+    uint32_t ops = m.regs.flash_cr & FCR_OPS;
+
+    if ((m.regs.flash_cr & FCR_LOCK) || !ops) {
+        return -1;
+    }
+    switch (ops) {
+    case FCR_PER:
+        flash_start(FOP_ERASE_PAGE, addr & ~(FLASH_PAGE - 1u));
+        break;
+    case FCR_SER:
+        flash_start(FOP_ERASE_SECTOR, addr & ~(FLASH_SECTOR - 1u));
+        break;
+    case FCR_PG:
+        flash_program_word(addr, value);
+        break;
+    default:
+        flash_wrperr(addr); /* more than one operation */
+        break;
+    }
+    return 0;
+}
+
+static uint32_t flash_sr_read(uint8_t backdoor) {
+    uint32_t v = m.regs.flash_sr;
+
+    if (m.regs.busy) {
+        v |= FSR_BSY;
+        if (!backdoor && --m.regs.busy_left == 0) {
+            flash_finish();
+        }
+    }
+    return v;
+}
+
+static void flash_keyr_write(uint32_t value) {
+    if (!(m.regs.flash_cr & FCR_LOCK) || m.regs.key_state == KEY_LOCKOUT) {
+        return;
+    }
+    if (m.regs.key_state == KEY_WAIT1 && value == FLASH_KEY1) {
+        m.regs.key_state = KEY_WAIT2;
+    } else if (m.regs.key_state == KEY_WAIT2 && value == FLASH_KEY2) {
+        m.regs.key_state = KEY_WAIT1;
+        m.regs.flash_cr &= ~FCR_LOCK;
+    } else {
+        m.regs.key_state = KEY_LOCKOUT;
+    }
+}
+
+static void flash_cr_write(uint32_t value) {
+    if (m.regs.flash_cr & FCR_LOCK) {
+        return;
+    }
+    /* OPTLOCK only clears through OPTKEYR, which is not modelled. */
+    m.regs.flash_cr = (value & FCR_WRITE_MASK) | (m.regs.flash_cr & FCR_OPTLOCK);
+    if (!(m.regs.flash_cr & FCR_PG)) {
+        m.regs.pg_n = 0;
+    }
+}
+
+/* ---- GPIOA ---- */
+
+static void gpioa_moder_write(uint32_t value) {
+    m.regs.gpioa_moder = value;
+    if ((value & MODER_SWD_MASK) != MODER_SWD_AF) {
+        m.swd_lost  = 1;
+        m.tgt_drive = 0;
+    }
+}
+
+/* ---- core debug ---- */
 
 static uint32_t dhcsr_value(void) {
     uint32_t v = m.regs.dhcsr_c | DHCSR_S_REGRDY;
 
-    if (m.regs.dhcsr_c & DHCSR_C_HALT) {
+    if (m.regs.core_state == CORE_HALTED) {
         v |= DHCSR_S_HALT;
+    } else if (m.regs.core_state == CORE_LOCKUP) {
+        v |= DHCSR_S_LOCKUP;
     }
     if (m.regs.reset_st) {
         v |= DHCSR_S_RESET_ST;
@@ -393,28 +839,87 @@ static uint32_t dhcsr_value(void) {
     return v;
 }
 
-static void system_reset(void) {
-    m.stats.sys_resets++;
-    m.regs.reset_st = 1;
-    m.regs.flash_sr = FLASH_SR_RESET;
-    m.regs.flash_cr = FLASH_CR_RESET;
-    m.regs.icscr    = ICSCR_RESET;
-    /* Debug registers keep their values; a reset vector catch halts. */
-    if ((m.regs.demcr & DEMCR_VC_CORERESET) &&
-        (m.regs.dhcsr_c & DHCSR_C_DEBUGEN)) {
-        m.regs.dhcsr_c |= DHCSR_C_HALT;
+static void dhcsr_write(uint32_t value) {
+    if ((value >> 16) != DHCSR_KEY) {
+        return;
+    }
+    if (!(value & DHCSR_C_DEBUGEN)) {
+        /* With C_DEBUGEN 0 the other control bits are ignored. */
+        m.regs.dhcsr_c = 0;
+    } else {
+        m.regs.dhcsr_c = value & (DHCSR_C_DEBUGEN | DHCSR_C_HALT);
+    }
+    if (m.regs.dhcsr_c & DHCSR_C_HALT) {
+        m.regs.core_state = CORE_HALTED; /* from running or lockup */
+    } else if (m.regs.core_state == CORE_HALTED) {
+        core_resume();
     }
 }
 
-/* 0 = done, -1 = bus error. The backdoor ignores RDP and side effects. */
+static uint8_t core_reg_valid(uint32_t sel) {
+    return sel <= CORE_PSP || sel == CORE_CONTROL;
+}
+
+static void dcrsr_write(uint32_t value) {
+    uint32_t sel = value & DCRSR_REGSEL_MASK;
+
+    if (m.regs.core_state != CORE_HALTED || !core_reg_valid(sel)) {
+        return;
+    }
+    if (sel == CORE_SP) {
+        sel = CORE_MSP; /* CONTROL.SPSEL 0 in the debug state */
+    }
+    if (value & DCRSR_REGWNR) {
+        uint32_t v = m.regs.dcrdr;
+        if (sel == CORE_MSP || sel == CORE_PSP) {
+            v &= ~3u;
+        }
+        m.regs.core[sel] = v;
+    } else {
+        m.regs.dcrdr = m.regs.core[sel];
+    }
+}
+
+/* ---- memory map ---- */
+
+static uint8_t timing_index(uint32_t addr, uint32_t *index) {
+    if (addr >= REG_FLASH_TIMING && (addr & 3u) == 0 &&
+        (addr - REG_FLASH_TIMING) / 4u < FLASH_TIMING_COUNT) {
+        *index = (addr - REG_FLASH_TIMING) / 4u;
+        return 1;
+    }
+    return 0;
+}
+
+static uint8_t gpioa_reg(uint32_t addr) {
+    return addr == REG_GPIOA_MODER || addr == REG_GPIOA_ODR ||
+           addr == REG_GPIOA_BSRR || addr == REG_GPIOA_BRR;
+}
+
+/* 0 = done, -1 = bus error. The backdoor ignores RDP, clocks and side
+ * effects. */
 static int mem_read32(uint32_t addr, uint32_t *value, uint8_t backdoor) {
     const area_t *a = area_find(addr, 4);
+    uint32_t      index;
 
     if (a) {
         if (a->kind == AREA_FLASH && m.rdp && !backdoor) {
             return -1;
         }
         *value = get32(a->mem + (addr - a->base));
+        return 0;
+    }
+    if (timing_index(addr, &index)) {
+        *value = m.regs.timing[index];
+        return 0;
+    }
+    if (gpioa_reg(addr)) {
+        if (!(m.regs.iopenr & IOPENR_GPIOAEN) && !backdoor) {
+            return -1;
+        }
+        *value = addr == REG_GPIOA_MODER ? m.regs.gpioa_moder
+               : addr == REG_GPIOA_ODR   ? m.regs.gpioa_odr
+                                         : 0;
         return 0;
     }
     switch (addr) {
@@ -429,6 +934,12 @@ static int mem_read32(uint32_t addr, uint32_t *value, uint8_t backdoor) {
         if (!backdoor) {
             m.regs.reset_st = 0;
         }
+        break;
+    case REG_DCRSR:
+        *value = 0; /* write only */
+        break;
+    case REG_DCRDR:
+        *value = m.regs.dcrdr;
         break;
     case REG_DEMCR:
         *value = m.regs.demcr;
@@ -445,8 +956,20 @@ static int mem_read32(uint32_t addr, uint32_t *value, uint8_t backdoor) {
     case REG_DBGMCU_APB_FZ2:
         *value = m.regs.dbgmcu_apb_fz2;
         break;
+    case REG_RCC_ICSCR:
+        *value = m.regs.icscr;
+        break;
+    case REG_RCC_IOPENR:
+        *value = m.regs.iopenr;
+        break;
+    case REG_RCC_APBENR1:
+        *value = m.regs.apbenr1;
+        break;
+    case REG_FLASH_KEYR:
+        *value = 0; /* write only */
+        break;
     case REG_FLASH_SR:
-        *value = m.regs.flash_sr;
+        *value = flash_sr_read(backdoor);
         break;
     case REG_FLASH_CR:
         *value = m.regs.flash_cr;
@@ -460,36 +983,62 @@ static int mem_read32(uint32_t addr, uint32_t *value, uint8_t backdoor) {
     case REG_FLASH_WRPR:
         *value = m.regs.wrpr;
         break;
-    case REG_RCC_ICSCR:
-        *value = m.regs.icscr;
-        break;
     default:
         return -1;
     }
     return 0;
 }
 
+static void dbgmcu_write(uint32_t *reg, uint32_t value) {
+    if (m.regs.apbenr1 & APBENR1_DBGEN) {
+        *reg = value;
+    }
+}
+
 /* A write through the AP. 0 = done (or ignored), -1 = bus error. */
 static int mem_write32(uint32_t addr, uint32_t value) {
     const area_t *a = area_find(addr, 4);
+    uint32_t      index;
 
     if (a) {
         if (a->kind == AREA_RAM) {
             put32(a->mem + (addr - a->base), value);
-        } else if (a->kind == AREA_FLASH && m.rdp) {
+        } else if (a->kind == AREA_FLASH) {
+            return m.rdp ? -1 : flash_mem_write(addr, value);
+        }
+        return 0; /* ROM-like areas ignore writes */
+    }
+    if (timing_index(addr, &index)) {
+        m.regs.timing[index]   = value;
+        m.regs.timing_written |= (uint16_t)(1u << index);
+        return 0;
+    }
+    if (gpioa_reg(addr)) {
+        if (!(m.regs.iopenr & IOPENR_GPIOAEN)) {
             return -1;
         }
-        /* Flash: programming not modelled. ROM-like areas ignore writes. */
+        if (addr == REG_GPIOA_MODER) {
+            gpioa_moder_write(value);
+        } else if (addr == REG_GPIOA_ODR) {
+            m.regs.gpioa_odr = value & 0xFFFFu;
+        } else if (addr == REG_GPIOA_BSRR) {
+            /* Set wins over reset. */
+            m.regs.gpioa_odr = ((m.regs.gpioa_odr & ~(value >> 16)) | value) &
+                               0xFFFFu;
+        } else {
+            m.regs.gpioa_odr &= ~(value & 0xFFFFu);
+        }
         return 0;
     }
     switch (addr) {
     case REG_DHCSR:
-        if ((value >> 16) == DHCSR_KEY) {
-            /* With C_DEBUGEN 0 the other control bits are ignored. */
-            m.regs.dhcsr_c = (value & DHCSR_C_DEBUGEN)
-                             ? (value & (DHCSR_C_DEBUGEN | DHCSR_C_HALT))
-                             : 0;
-        }
+        dhcsr_write(value);
+        break;
+    case REG_DCRSR:
+        dcrsr_write(value);
+        break;
+    case REG_DCRDR:
+        m.regs.dcrdr = value;
         break;
     case REG_DEMCR:
         m.regs.demcr = value & DEMCR_MASK;
@@ -500,22 +1049,35 @@ static int mem_write32(uint32_t addr, uint32_t value) {
         }
         break;
     case REG_DBGMCU_CR:
-        m.regs.dbgmcu_cr = value;
+        dbgmcu_write(&m.regs.dbgmcu_cr, value);
         break;
     case REG_DBGMCU_APB_FZ1:
-        m.regs.dbgmcu_apb_fz1 = value;
+        dbgmcu_write(&m.regs.dbgmcu_apb_fz1, value);
         break;
     case REG_DBGMCU_APB_FZ2:
-        m.regs.dbgmcu_apb_fz2 = value;
+        dbgmcu_write(&m.regs.dbgmcu_apb_fz2, value);
         break;
     case REG_RCC_ICSCR:
         m.regs.icscr = value;
         break;
+    case REG_RCC_IOPENR:
+        m.regs.iopenr = value & IOPENR_MASK;
+        break;
+    case REG_RCC_APBENR1:
+        m.regs.apbenr1 = value;
+        break;
+    case REG_FLASH_KEYR:
+        flash_keyr_write(value);
+        break;
+    case REG_FLASH_SR:
+        m.regs.flash_sr &= ~(value & FSR_W1C);
+        break;
+    case REG_FLASH_CR:
+        flash_cr_write(value);
+        break;
     case REG_CPUID:
     case REG_DBGMCU_IDCODE:
-    /* FLASH: CR stays locked (no KEYR model), so these keep their values. */
-    case REG_FLASH_SR:
-    case REG_FLASH_CR:
+    /* Option registers: OPTLOCK stays set, so writes change nothing. */
     case REG_FLASH_OPTR:
     case REG_FLASH_SDKR:
     case REG_FLASH_WRPR:
@@ -692,6 +1254,9 @@ static uint8_t ap_request(void) {
         m.wait_ap--;
         return ACK_WAIT;
     }
+    if (m.regs.busy && ap_selected() && ap_reg() == AP_DRW && in_flash(m.tar)) {
+        return ACK_WAIT; /* the flash stalls the AHB while busy */
+    }
     if (!m.rnw) {
         return ACK_OK;
     }
@@ -755,6 +1320,13 @@ static void write_done(uint8_t parity_bit) {
         ap_write(ap_reg(), m.data);
     } else {
         dp_write(m.addr, m.data);
+    }
+}
+
+/* The end of a transfer that got an ACK: the place of a power cut. */
+static void transfer_end(void) {
+    if (m.cut_left && --m.cut_left == 0) {
+        power_cycle();
     }
 }
 
@@ -845,6 +1417,7 @@ static void dp_step(uint8_t bit) {
         } else {
             tgt_release();
             m.st = ST_TRN_READ;
+            transfer_end();
         }
         break;
     case ST_TRN_READ:
@@ -857,6 +1430,7 @@ static void dp_step(uint8_t bit) {
             m.st    = ST_WDATA;
         } else {
             m.st = ST_IDLE;
+            transfer_end();
         }
         break;
     case ST_WDATA:
@@ -866,6 +1440,7 @@ static void dp_step(uint8_t bit) {
         } else {
             write_done(bit);
             m.st = ST_IDLE;
+            transfer_end();
         }
         break;
     }
@@ -892,8 +1467,6 @@ static void rising_edge(void) {
     dp_step(bit);
 }
 
-/* ---- the wire ---- */
-
 void swd_target_host_clk(uint8_t driven, uint8_t level) {
     uint8_t line;
 
@@ -915,7 +1488,7 @@ void swd_target_host_clk(uint8_t driven, uint8_t level) {
 void swd_target_host_dio(uint8_t driven, uint8_t level) {
     ensure_ready();
     driven = driven ? 1 : 0;
-    if (driven && !m.host_dio_driven && m.connect && m.tgt_drive) {
+    if (driven && !m.host_dio_driven && wired() && m.tgt_drive) {
         m.stats.contention++;
     }
     m.host_dio_driven = driven;
@@ -954,6 +1527,14 @@ void swd_target_clear(void) {
     m.win_parity_errors   = 0;
     s_log_count           = 0;
     s_log_dropped         = 0;
+    s_flog_count          = 0;
+    s_flog_dropped        = 0;
+}
+
+void swd_target_power_cycle(void) {
+    ensure_ready();
+    power_cycle();
+    m.clk_line = clk_line_now();
 }
 
 void swd_target_set_connect(uint8_t on) {
@@ -979,6 +1560,16 @@ void swd_target_set_wait_ap(uint32_t count) {
     m.wait_ap = count;
 }
 
+void swd_target_set_busy_reads(uint32_t reads) {
+    ensure_ready();
+    m.busy_reads = reads;
+}
+
+void swd_target_set_cut_after(uint32_t transfers) {
+    ensure_ready();
+    m.cut_left = transfers;
+}
+
 int swd_target_peek32(uint32_t addr, uint32_t *value) {
     ensure_ready();
     return mem_read32(addr, value, 1);
@@ -986,6 +1577,7 @@ int swd_target_peek32(uint32_t addr, uint32_t *value) {
 
 int swd_target_poke32(uint32_t addr, uint32_t value) {
     const area_t *a;
+    uint32_t      index;
 
     ensure_ready();
     a = area_find(addr, 4);
@@ -993,14 +1585,30 @@ int swd_target_poke32(uint32_t addr, uint32_t value) {
         put32(a->mem + (addr - a->base), value);
         return 0;
     }
+    if (timing_index(addr, &index)) {
+        m.regs.timing[index] = value;
+        return 0;
+    }
     switch (addr) {
     case REG_CPUID:
         m.regs.cpuid = value;
         break;
     case REG_AIRCR:
-        break; /* reads are fixed */
+    case REG_DCRSR:
+    case REG_FLASH_KEYR:
+    case REG_GPIOA_BSRR:
+    case REG_GPIOA_BRR:
+        break; /* no state to set */
     case REG_DHCSR:
         m.regs.dhcsr_c = value & (DHCSR_C_DEBUGEN | DHCSR_C_HALT);
+        if (m.regs.dhcsr_c & DHCSR_C_HALT) {
+            m.regs.core_state = CORE_HALTED;
+        } else if (m.regs.core_state == CORE_HALTED) {
+            m.regs.core_state = CORE_RUNNING;
+        }
+        break;
+    case REG_DCRDR:
+        m.regs.dcrdr = value;
         break;
     case REG_DEMCR:
         m.regs.demcr = value & DEMCR_MASK;
@@ -1017,8 +1625,17 @@ int swd_target_poke32(uint32_t addr, uint32_t value) {
     case REG_DBGMCU_APB_FZ2:
         m.regs.dbgmcu_apb_fz2 = value;
         break;
+    case REG_RCC_ICSCR:
+        m.regs.icscr = value;
+        break;
+    case REG_RCC_IOPENR:
+        m.regs.iopenr = value & IOPENR_MASK;
+        break;
+    case REG_RCC_APBENR1:
+        m.regs.apbenr1 = value;
+        break;
     case REG_FLASH_SR:
-        m.regs.flash_sr = value;
+        m.regs.flash_sr = value & ~FSR_BSY;
         break;
     case REG_FLASH_CR:
         m.regs.flash_cr = value;
@@ -1032,8 +1649,11 @@ int swd_target_poke32(uint32_t addr, uint32_t value) {
     case REG_FLASH_WRPR:
         m.regs.wrpr = value;
         break;
-    case REG_RCC_ICSCR:
-        m.regs.icscr = value;
+    case REG_GPIOA_MODER:
+        m.regs.gpioa_moder = value;
+        break;
+    case REG_GPIOA_ODR:
+        m.regs.gpioa_odr = value & 0xFFFFu;
         break;
     default:
         return -1;
@@ -1056,6 +1676,24 @@ int swd_target_load(uint32_t addr, const uint8_t *data, uint32_t len) {
 void swd_target_get_stats(swd_target_stats_t *out) {
     ensure_ready();
     *out = m.stats;
+}
+
+void swd_target_get_state(swd_target_state_t *out) {
+    static const char *const names[] = { "running", "halted", "lockup" };
+
+    ensure_ready();
+    out->core      = names[m.regs.core_state];
+    out->pc        = m.regs.core[CORE_PC];
+    out->msp       = m.regs.core[CORE_MSP];
+    out->xpsr      = m.regs.core[CORE_XPSR];
+    out->gates_low = (m.regs.gpioa_moder & MODER_GATES_MASK) == MODER_GATES_OUT &&
+                     !(m.regs.gpioa_odr & 0x3u);
+    out->iwdg_frozen  = (m.regs.dbgmcu_apb_fz1 & DBGMCU_FZ1_IWDG) ? 1 : 0;
+    out->timing_set   = m.regs.timing_written == FLASH_TIMING_ALL;
+    out->flash_locked = (m.regs.flash_cr & FCR_LOCK) ? 1 : 0;
+    out->key_lockout  = m.regs.key_state == KEY_LOCKOUT;
+    out->flash_busy   = m.regs.busy;
+    out->swd_lost     = m.swd_lost;
 }
 
 uint8_t swd_target_powered(void) {
@@ -1092,4 +1730,25 @@ void swd_target_write_at(uint32_t index, uint32_t *addr, uint32_t *value) {
     }
     *addr  = s_log[index].addr;
     *value = s_log[index].value;
+}
+
+uint32_t swd_target_flash_log_count(void) {
+    ensure_ready();
+    return s_flog_count;
+}
+
+uint32_t swd_target_flash_log_dropped(void) {
+    ensure_ready();
+    return s_flog_dropped;
+}
+
+void swd_target_flash_log_at(uint32_t index, const char **op, uint32_t *addr) {
+    ensure_ready();
+    if (index >= s_flog_count) {
+        *op   = "";
+        *addr = 0;
+        return;
+    }
+    *op   = k_flash_op_names[s_flog[index].op];
+    *addr = s_flog[index].addr;
 }

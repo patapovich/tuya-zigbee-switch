@@ -193,7 +193,8 @@ COMMON_SOURCES := \
 ifneq ($(SECONDARY_MCU_IMAGE),)
 COMMON_SOURCES += \
 	$(SRC_DIR)/base_components/swd.c \
-	$(SRC_DIR)/zigbee/mcu_flasher.c
+	$(SRC_DIR)/zigbee/mcu_flasher.c \
+	$(SRC_DIR)/zigbee/secondary_mcu_boot.c
 endif
 
 # All application sources

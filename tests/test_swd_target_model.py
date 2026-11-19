@@ -2,6 +2,8 @@
 an independent reference host (swd_ref_host.py) that drives the stub pin layer
 by hand. Values the real PY32F002A gives are noted where they were measured."""
 
+import zlib
+
 import pytest
 from client import Event, StubProc
 from swd_ref_host import (
@@ -69,7 +71,14 @@ def target(p: StubProc, cmd: str) -> dict[str, str]:
 
 
 def stats(p: StubProc) -> dict[str, int]:
-    return {k: int(v, 0) for k, v in target(p, "stats").items()}
+    """Numbers (decimal or 0x hex) as int; `core` (a word) as it is."""
+    out = {}
+    for k, v in target(p, "stats").items():
+        try:
+            out[k] = int(v, 0)
+        except ValueError:
+            out[k] = v
+    return out
 
 
 def writes(p: StubProc) -> list[tuple[int, int]]:
@@ -302,11 +311,23 @@ def test_mem_read32(host: SwdRefHost, stub_proc: StubProc, addr: int, value: int
 
 def test_system_rom_pattern(host: SwdRefHost, stub_proc: StubProc):
     host.start_session()
-    for offset in (0x0, 0x4, 0xDFC):
+    for offset in (0x0, 0x4, 0xDF8):
         expect = int.from_bytes(
             bytes(((offset + i) * 37 + 11) & 0xFF for i in range(4)), "little"
         )
         assert host.mem_read32(SYSROM + offset) == expect
+    # The last word makes the CRC the real chip's.
+    assert host.mem_read32(SYSROM + 0xDFC) == int.from_bytes(
+        bytes.fromhex("e775a5e6"), "little"
+    )
+
+
+def test_system_rom_crc_is_the_real_chips(stub_proc: StubProc):
+    rom = b"".join(
+        int(target(stub_proc, f"peek32 {SYSROM + o:X}")["value"], 16).to_bytes(4, "little")
+        for o in range(0, 0xE00, 4)
+    )
+    assert zlib.crc32(rom) == 0xA52232EA
 
 
 def test_posted_reads_and_rdbuff(host: SwdRefHost, stub_proc: StubProc):

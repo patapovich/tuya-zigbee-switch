@@ -527,17 +527,52 @@ static int swd_target_load_file(uint32_t addr, const char *path, uint32_t *len) 
 
 static void swd_target_print_stats(void) {
     swd_target_stats_t st;
+    swd_target_state_t cs;
+    char dp[512];
 
     swd_target_get_stats(&st);
-    io_res_ok("line_resets=%u dpidr_reads=%u transfers_ok=%u waits=%u faults=%u "
-              "protocol_errors=%u parity_errors=%u contention=%u mem_writes=%u "
-              "powered=%u bus_errors=%u jtag_to_swd=%u sys_resets=%u "
-              "untaken_ops=%u edges=%u lockout=%u ctrl_stat=0x%08X",
-              st.line_resets, st.dpidr_reads, st.transfers_ok, st.waits,
-              st.faults, st.protocol_errors, st.parity_errors, st.contention,
-              st.mem_writes, swd_target_powered(), st.bus_errors,
-              st.jtag_to_swd, st.sys_resets, st.untaken_ops, st.edges,
-              swd_target_lockout(), swd_target_ctrl_stat());
+    swd_target_get_state(&cs);
+    snprintf(dp, sizeof(dp),
+             "line_resets=%u dpidr_reads=%u transfers_ok=%u waits=%u faults=%u "
+             "protocol_errors=%u parity_errors=%u contention=%u mem_writes=%u "
+             "powered=%u bus_errors=%u jtag_to_swd=%u sys_resets=%u "
+             "untaken_ops=%u edges=%u lockout=%u ctrl_stat=0x%08X",
+             st.line_resets, st.dpidr_reads, st.transfers_ok, st.waits,
+             st.faults, st.protocol_errors, st.parity_errors, st.contention,
+             st.mem_writes, swd_target_powered(), st.bus_errors,
+             st.jtag_to_swd, st.sys_resets, st.untaken_ops, st.edges,
+             swd_target_lockout(), swd_target_ctrl_stat());
+    io_res_ok("%s erases=%u programs=%u wrperr=%u power_cycles=%u core=%s "
+              "pc=0x%08X msp=0x%08X xpsr=0x%08X gates_low=%u iwdg_frozen=%u "
+              "timing_set=%u flash_locked=%u key_lockout=%u flash_busy=%u "
+              "swd_lost=%u",
+              dp, st.erases, st.programs, st.wrperr, st.power_cycles, cs.core,
+              cs.pc, cs.msp, cs.xpsr, cs.gates_low, cs.iwdg_frozen,
+              cs.timing_set, cs.flash_locked, cs.key_lockout, cs.flash_busy,
+              cs.swd_lost);
+}
+
+/* count=<n> dropped=<n> list=<op>:<addr>,... (oldest first) */
+static void swd_target_print_flash_log(void) {
+    uint32_t n   = swd_target_flash_log_count();
+    char *   buf = malloc((size_t)n * 26u + 1u);
+    size_t   pos = 0;
+
+    if (!buf) {
+        io_res_err("no_memory");
+        return;
+    }
+    buf[0] = '\0';
+    for (uint32_t i = 0; i < n; i++) {
+        const char *op;
+        uint32_t    addr;
+        swd_target_flash_log_at(i, &op, &addr);
+        pos += (size_t)snprintf(buf + pos, 27, "%s%s:0x%08X", i ? "," : "", op,
+                                addr);
+    }
+    io_res_ok("count=%u dropped=%u list=%s", n, swd_target_flash_log_dropped(),
+              buf);
+    free(buf);
 }
 
 /* count=<n> dropped=<n> list=<addr>=<value>,... (oldest first, hex) */
@@ -576,6 +611,19 @@ static int cmd_swd_target(int argc, char **argv) {
         swd_target_print_stats();
     } else if (strcmp(sub, "writes") == 0 && argc == 2) {
         swd_target_print_writes();
+    } else if (strcmp(sub, "flash_log") == 0 && argc == 2) {
+        swd_target_print_flash_log();
+    } else if (strcmp(sub, "power_cycle") == 0 && argc == 2) {
+        swd_target_power_cycle();
+        io_res_ok(NULL);
+    } else if (strcmp(sub, "cut_after") == 0 && argc == 3 &&
+               parse_u32(argv[2], 10, &v) == 0) {
+        swd_target_set_cut_after(v);
+        io_res_ok("cut_after=%u", v);
+    } else if (strcmp(sub, "busy_reads") == 0 && argc == 3 &&
+               parse_u32(argv[2], 10, &v) == 0) {
+        swd_target_set_busy_reads(v);
+        io_res_ok("busy_reads=%u", v);
     } else if (strcmp(sub, "connect") == 0 && argc == 3 &&
                parse_bit(argv[2], &bit) == 0) {
         swd_target_set_connect(bit);
@@ -614,9 +662,10 @@ static int cmd_swd_target(int argc, char **argv) {
         }
         io_res_ok("addr=0x%08X len=%u", a, v);
     } else {
-        fprintf(stderr, "Usage: swd_target reset|clear|stats|writes | connect "
-                "<0|1> | clk_held_low <0|1> | rdp <0|1> | wait_ap <n> | "
-                "poke32 <addr> <val> | peek32 <addr> | load <addr> <path>\n");
+        fprintf(stderr, "Usage: swd_target reset|clear|stats|writes|flash_log|"
+                "power_cycle | connect <0|1> | clk_held_low <0|1> | rdp <0|1> | "
+                "wait_ap <n> | busy_reads <n> | cut_after <n> | poke32 <addr> "
+                "<val> | peek32 <addr> | load <addr> <path>\n");
         io_res_err("usage");
         return -1;
     }
