@@ -98,6 +98,13 @@ static uint32_t crc32_update(uint32_t crc, const uint8_t *p, uint32_t n) {
     return ~crc;
 }
 
+#ifdef SECONDARY_MCU_IMAGE
+uint32_t tuya_mcu_crc32_update(uint32_t crc, const uint8_t *p, uint32_t n) {
+    return crc32_update(crc, p, n);
+}
+
+#endif
+
 /* The carried image, checked once: what the MCU's v2 bootloader checks
  * before it runs an app (app_valid) and before it takes one, and a little
  * more. Header, size and CRC (with the CRC field read as 0, as

@@ -54,6 +54,7 @@ def fake_nm(tmp_path: Path, listing: str) -> str:
 ZDMS16 = """\
 00843db0 0000000c b g_ident_timer
 00006708 00000058 t ident_ask
+00007120 00000180 T mcu_flasher_task
 0002f988 00002cd0 R secondary_mcu_image
 00032658 00000004 R secondary_mcu_image_size
 000067ac 00000018 T tuya_mcu_ota_may_be_own
@@ -75,6 +76,9 @@ TOUCH_SWITCH = """\
     # Open Dimmer code without an image, and an image without the code
     (TOUCH_SWITCH + "00843db0 0000000c b g_ident_timer\n", False, False),
     (ZDMS16.replace("00006708 00000058 t ident_ask\n", ""), True, False),
+    # the SWD master in a board without an image, or missing in one with it
+    (TOUCH_SWITCH + "00007120 00000180 T mcu_flasher_task\n", False, False),
+    (ZDMS16.replace("00007120 00000180 T mcu_flasher_task\n", ""), True, False),
     (ZDMS16.replace("00002cd0 R secondary_mcu_image\n", "00000010 R secondary_mcu_image\n"),
      True, False),
 ])

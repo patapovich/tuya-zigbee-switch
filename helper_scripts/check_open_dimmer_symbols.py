@@ -20,11 +20,12 @@ import argparse
 import subprocess
 import sys
 
-# Statics of the Open Dimmer branch of tuya_mcu_ota.c (none in the stubs).
-# Both are kept by any optimisation: the timer's address is taken, and
-# ident_ask has several callers. A rename must update this list: the boards
-# with an image fail the check until it is.
-OPEN_DIMMER_SYMBOLS = ("g_ident_timer", "ident_ask")
+# Statics of the Open Dimmer branch of tuya_mcu_ota.c (none in the stubs),
+# and the SWD master's main-loop entry (src/zigbee/mcu_flasher.c). All are
+# kept by any optimisation: the timer's address is taken, ident_ask has
+# several callers, app_task calls mcu_flasher_task. A rename must update this
+# list: the boards with an image fail the check until it is.
+OPEN_DIMMER_SYMBOLS = ("g_ident_timer", "ident_ask", "mcu_flasher_task")
 IMAGE_SYMBOL = "secondary_mcu_image"
 IMAGE_MIN = 0xD0            # the image header ends at 0xD0
 STUB_IMAGE_MAX = 1          # the stubs' secondary_mcu_image[1]

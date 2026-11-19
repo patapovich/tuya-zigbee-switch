@@ -11,6 +11,9 @@
 #include "zigbee/battery_cluster.h"
 #include "zigbee/general_commands.h"
 #include "zigbee/tuya_mcu_app.h"
+#ifdef SECONDARY_MCU_IMAGE
+#include "zigbee/mcu_flasher.h"
+#endif
 #ifdef END_DEVICE
 #include "zigbee/poll_control_cluster.h"
 #endif
@@ -63,6 +66,9 @@ void app_task() {
     poll_control_cluster_update();
 #endif
     tuya_mcu_app_task();
+#ifdef SECONDARY_MCU_IMAGE
+    mcu_flasher_task();
+#endif
 
     // TODO: add jitter to avoid all devices trying to join at once
     if (hal_zigbee_get_network_status() != HAL_ZIGBEE_NETWORK_JOINED &&

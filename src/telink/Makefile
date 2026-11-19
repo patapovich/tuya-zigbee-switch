@@ -153,6 +153,12 @@ ifneq ($(DIMMER_ONLY),)
 TELINK_SOURCES += patch_sdk/gp_stub.c
 endif
 
+# The SWD master of the secondary MCU (src/zigbee/mcu_flasher.c): only boards
+# that carry an MCU image; dormant there without the SW config token.
+ifneq ($(SECONDARY_MCU_IMAGE),)
+TELINK_SOURCES += hal/swd_io.c
+endif
+
 # Common source files (shared with Silicon Labs build)
 COMMON_SOURCES := \
 	$(SRC_DIR)/app.c \
@@ -183,6 +189,12 @@ COMMON_SOURCES := \
 	$(SRC_DIR)/zigbee/cover_switch_cluster.c \
 	$(SRC_DIR)/zigbee/cover_cluster.c \
 	$(SRC_DIR)/zigbee/battery_cluster.c 
+
+ifneq ($(SECONDARY_MCU_IMAGE),)
+COMMON_SOURCES += \
+	$(SRC_DIR)/base_components/swd.c \
+	$(SRC_DIR)/zigbee/mcu_flasher.c
+endif
 
 # All application sources
 ALL_TELINK_SOURCES := $(TELINK_SOURCES) $(COMMON_SOURCES)

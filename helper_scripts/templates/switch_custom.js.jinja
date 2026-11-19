@@ -529,6 +529,13 @@ const romasku = {
                         if (!/^ST[0-9A-Fa-f]{2}$/.test(part)) {
                             throw new Error(`Datapoint ${part} is invalid. Use ST<hh>, e.g. ST01`);
                         }
+                    } else if (part.startsWith('SW')) {
+                        // SWD pins towards the secondary MCU: SW<clk><dio>, e.g. SWD3D7
+                        if (part.length != 6) {
+                            throw new Error(`SWD pins ${part} are invalid. Use SW<clk><dio>, e.g. SWD3D7`);
+                        }
+                        validatePin(part.slice(2,4));
+                        validatePin(part.slice(4,6));
                     } else if (part.startsWith('IT')) {
                         if (!/^IT[0-9A-Fa-f]{2}[124]([0-9A-Fa-f]{2}|[0-9A-Fa-f]{8})$/.test(part)) {
                             throw new Error(`Datapoint init ${part} is invalid. Use IT<hh><t><v>, e.g. IT67101`);
@@ -585,7 +592,7 @@ const romasku = {
                             throw new Error(`Dimmer DPID map ${part} is invalid. Use P<idx>O<oo>L<ll>S<ss>M<mm>X<xx> (hex), e.g. P08O01L08`);
                         }
                     } else {
-                        throw new Error(`Invalid entry ${part}. Should start with one of B, BT, C, D, DM, I, IT, L, M, P, PT, R, RT, S, SLP, ST, W, X, Y, Z, i`);
+                        throw new Error(`Invalid entry ${part}. Should start with one of B, BT, C, D, DM, I, IT, L, M, P, PT, R, RT, S, SLP, ST, SW, W, X, Y, Z, i`);
                     }
                 }
             },
@@ -1203,6 +1210,77 @@ const romasku = {
             }],
         };
     },
+    // SWD master of the dimming MCU (src/zigbee/mcu_flasher.c): only on a module whose config
+    // names its two wires (SW<clk><dio> token), and only shown with the device option
+    // mcu_flasher: show (default hide: no expose, no state). One write of mcu_flasher starts a
+    // job (phase 1: the read-only surveys); mcu_flasher_status shows its result (Basic 0xff50
+    // on endpoint 1, format 1, reported at every change and about once a second while it runs).
+    mcuFlasher: () => {
+        const jobs = {survey_dp: 1, survey_full: 2, abort: 0xff};
+        const states = ["idle", "running", "done", "failed", "aborted"];
+        const errors = ["", "SWCLK held low (power-cycle the module, then try again)", "no answer (wires? power?)",
+                        "not the expected PY32F002A", "SWD transfer failed", "busy", "unknown job"];
+        const exposes = [
+            e.enum("mcu_flasher", ea.SET, Object.keys(jobs)).withLabel("MCU flasher")
+                .withDescription("Start a job of the module's SWD link to the dimming MCU: survey_dp reads the debug port's id, survey_full the MCU's identity, option bytes and firmware checksums (both only read). Needs the SW token in device_config")
+                .withCategory("config"),
+            e.text("mcu_flasher_status", ea.STATE_GET).withLabel("MCU flasher status")
+                .withDescription("State and result of the last MCU flasher job")
+                .withCategory("diagnostic"),
+        ];
+        const shown = (options) => options?.mcu_flasher === "show";
+        const hex = (v) => "0x" + (v >>> 0).toString(16).toUpperCase().padStart(8, "0");
+        const describe = (b) => {
+            const state = states[b[1]] ?? `state ${b[1]}`;
+            const job = Object.keys(jobs).find((k) => jobs[k] === b[2]) ?? `job ${b[2]}`;
+            const parts = [`${state} ${job}`];
+            if (b[1] === 1) parts.push(`step ${b[3]}, ${b[4]} %`);
+            if (b[5]) parts.push(`error: ${errors[b[5]] ?? b[5]}` + (b[6] ? ` (SWD ${b[6]})` : ""));
+            const w = (i) => b.readUInt32LE(i);
+            if (w(8)) parts.push(`DPIDR ${hex(w(8))}`);
+            if (w(16)) parts.push(`CPUID ${hex(w(16))}, IDCODE ${hex(w(20))}, AP ${hex(w(12))}`);
+            if (w(24)) parts.push(`OPTR ${hex(w(24))} (RDP ${b[7] === 0xaa ? 0 : b[7] === 0xcc ? 2 : 1}), WRPR ${hex(w(32))}, option bytes CRC ${hex(w(36))}`);
+            if (w(44)) parts.push(`ROM CRC ${hex(w(44))}`);
+            if (w(48)) parts.push(`sector 0 CRC ${hex(w(48))}`);
+            if (w(52) === 0x4c42444f) parts.push(`bootloader v${b[56]}`);
+            if (w(60) === 0x5a445041) {
+                const v = b[72];
+                parts.push(`app ${v >> 6}.${(v >> 4) & 3}.${v & 15} build ${b.readUInt16LE(74)} (${w(64)} B)`);
+            }
+            if (b[1] >= 2) parts.push(`${(b.readUInt16LE(78) / 1000).toFixed(1)} s`);
+            return parts.join("; ");
+        };
+        return {
+            isModernExtend: true,
+            options: [
+                e.enum("mcu_flasher", ea.SET, ["hide", "show"]).withLabel("MCU flasher")
+                    .withDescription("The module's SWD link to the dimming MCU (two extra wires and the SW token in device_config): show its controls. hide (default): nothing shown"),
+            ],
+            exposes: [(device, options) => (shown(options) ? exposes : [])],
+            fromZigbee: [{
+                cluster: "genBasic",
+                type: ["attributeReport", "readResponse"],
+                convert: (model, msg, publish, options) => {
+                    const raw = msg.data?.[0xff50];
+                    if (msg.endpoint?.ID !== 1 || raw === undefined || !shown(options)) return;
+                    const b = Buffer.from(raw);
+                    if (b.length < 80 || b[0] !== 1) return;
+                    return {mcu_flasher_status: describe(b)};
+                },
+            }],
+            toZigbee: [{
+                key: ["mcu_flasher", "mcu_flasher_status"],
+                convertSet: async (entity, key, value, meta) => {
+                    if (!shown(meta.options)) throw new Error("mcu_flasher: set the device option mcu_flasher to show first");
+                    if (jobs[value] === undefined) throw new Error(`mcu_flasher: unknown job ${value}`);
+                    await meta.device.getEndpoint(1).write("genBasic", {0xff51: {value: jobs[value], type: 0x20}});
+                },
+                convertGet: async (entity, key, meta) => {
+                    await meta.device.getEndpoint(1).read("genBasic", [0xff50]);
+                },
+            }],
+        };
+    },
     // Transitions of the dimmer channels. zigbee-herdsman-converters sends a level change
     // without a transition (neither the message's nor the device option transition) with time
     // 0, which Open Dimmer takes for "at once": those go out with 0xFFFF ("none": the module's
@@ -1475,6 +1553,7 @@ const definitions = [
             {% if device.secondary_mcu_image %}
             romasku.mcuFirmware(),
             romasku.mcuHealth(),
+            romasku.mcuFlasher(),
             {% endif %}
             {% endif %}
             romasku.multiPressResetCount("multi_press_reset_count"),

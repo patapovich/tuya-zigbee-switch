@@ -28,6 +28,9 @@
 #include "hal/system.h"
 #include "hal/zigbee.h"
 #include "hal/zigbee_ota.h"
+#ifdef SECONDARY_MCU_IMAGE
+#include "zigbee/mcu_flasher.h"
+#endif
 
 // Forward declarations
 void peripherals_init(void);
@@ -373,6 +376,12 @@ void parse_config() {
             if (parse_hex_byte(entry + 2, &dp)) {
                 g_power_on_dp_id = dp;
             }
+#ifdef SECONDARY_MCU_IMAGE
+        } else if (entry[0] == 'S' && entry[1] == 'W') {
+            // SW<clk><dio> - SWD pins towards the secondary MCU (mcu_flasher.c),
+            // e.g. SWD3D7. Without it the feature stays dormant.
+            mcu_flasher_parse_token(entry);
+#endif
         } else if (entry[0] == 'W') {
             // W<tx><rx> - UART pins towards the secondary MCU.
             // TLSR8258 pinmux: TX = A2 B1 C2 D0 D3 D7 / RX = A0 B0 B7 C3 C5 D6

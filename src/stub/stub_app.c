@@ -120,6 +120,10 @@ void stub_app_print_help(void) {
          "bytes)");
     puts("  freeze_time <0|1>                     - Freeze/unfreeze time");
     puts("  step_time <ms>                        - Advance time by ms");
+    puts("  swd_target <sub> ...                  - Dimmer MCU SWD model (see "
+         "src/stub/hal/swd_target.h)");
+    puts("  swd_pin <sub> ...                     - Drive the SWD pin layer by "
+         "hand");
     puts("  q, quit                               - Exit");
 }
 

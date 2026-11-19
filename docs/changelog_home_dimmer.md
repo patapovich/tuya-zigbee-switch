@@ -25,6 +25,13 @@ zdms16-py32 release notes.
   level (wall switch), Power-on level); `on_level` has a preset previous (255);
   `mcu_temperature_calibration` is no longer shown.
 
+- SWD master for the dimming MCU, dormant: with two extra wires from free module pads to the
+  MCU's SWD pads and the config token `SW<clk><dio>` (e.g. `SWD3D7`), the module can read the
+  MCU over SWD: `survey_dp` (the debug port's id) and `survey_full` (identity, option bytes,
+  ROM / bootloader checksums, app header), read only. Started with the device option
+  `mcu_flasher: show` and one write of `mcu_flasher`; the result is `mcu_flasher_status`.
+  Without the token no pin is touched and no attribute is added; the option's default (`hide`)
+  shows nothing.
 - Green Power is left out of the ZDMS16-2 build (`src/telink/patch_sdk/gp_stub.c`): this
   firmware never starts it, so a GP frame never got past the stack; now the frame is dropped at
   once. The OTA image is 6.2 KB smaller (room for the SWD master and Scenes). The OTA files are
