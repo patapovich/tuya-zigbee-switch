@@ -240,22 +240,74 @@ static uint8_t dimmer_od_from(const zigbee_dimmer_cluster *cluster, uint16_t bui
  * The write queue keeps one frame in flight and sends a lost one again before the next, so the
  * time always reaches the MCU before its change; a time lost for good leaves that change at the
  * fade settings. */
-#define DIMMER_TRANSITION_VALID_MS    1500 /* the MCU's window is 1 s from its receipt */
+#define DIMMER_TRANSITION_VALID_MS    1500        /* the MCU's window is 1 s from its receipt */
 
-static void dimmer_send_transition(zigbee_dimmer_cluster *cluster, const uint8_t *tt) {
+#define DIMMER_TIME_NONE              0xFFFFFFFFu /* no time given: the fade settings */
+
+/* The time of the change written next, in ms (at most the DP's 65535), or DIMMER_TIME_NONE. */
+static void dimmer_send_time(zigbee_dimmer_cluster *cluster, uint32_t ms) {
     if (!dimmer_od_from(cluster, OPEN_DIMMER_TRANSITION_BUILD))
         return;
 
-    uint16_t t   = (uint16_t)(tt[0] | (tt[1] << 8));
     uint32_t now = hal_millis();
 
-    if (t == 0xFFFF && (cluster->transition_at == 0 ||
-                        now - cluster->transition_at >= DIMMER_TRANSITION_VALID_MS))
-        return;
+    if (ms == DIMMER_TIME_NONE) {
+        if (cluster->transition_at == 0 ||
+            now - cluster->transition_at >= DIMMER_TRANSITION_VALID_MS)
+            return;
 
-    uint32_t ms = t == 0xFFFF ? 0 : t == 0 ? 1u : (uint32_t)t * 100u;
+        ms = 0;                        /* take an earlier time back */
+    }
     dimmer_write_tuya_value(cluster->own_transition_dpid, ms > 0xFFFFu ? 0xFFFFu : ms);
     cluster->transition_at = ms ? (now | 1u) : 0;
+}
+
+/* A ZCL time (1/10 s, little endian at tt): 0xFFFF none, 0 at once (1 ms), else tenths. */
+static uint32_t dimmer_zcl_time_ms(const uint8_t *tt) {
+    uint16_t t = (uint16_t)(tt[0] | (tt[1] << 8));
+
+    return t == 0xFFFF ? DIMMER_TIME_NONE : t == 0 ? 1u : (uint32_t)t * 100u;
+}
+
+static void dimmer_send_transition(zigbee_dimmer_cluster *cluster, const uint8_t *tt) {
+    dimmer_send_time(cluster, dimmer_zcl_time_ms(tt));
+}
+
+/* A lit-to-lit level change without a time with a brightness fade time set: that time for the
+ * whole range, so a part of it for this change (ms = time * |to - from| / range in MCU values,
+ * from the value the module knows; the range is the channel's min..max as the levels map to it,
+ * 10..1000 without scaling); at least 1 ms for any change, none for no change. No overflow:
+ * the time is at most 6553.4 s, and (time / range) * d + (time % range) * d / range stays
+ * below 2^32 with d <= range <= 990. */
+static uint32_t dimmer_fade_time_ms(const zigbee_dimmer_cluster *cluster, uint8_t level) {
+    uint32_t full = (uint32_t)cluster->brightness_fade_time * 100u;
+    uint32_t to   = dimmer_level_to_value(cluster, level);
+    uint32_t from = cluster->level_value ? cluster->level_value
+                                         : dimmer_level_to_value(cluster, cluster->current_level);
+    uint32_t span = dimmer_scaling_active(cluster) ? (uint32_t)(cluster->mcu_max - cluster->mcu_min)
+                                                   : TUYA_BRIGHTNESS_MAX - TUYA_BRIGHTNESS_MIN;
+    uint32_t d = to > from ? to - from : from - to;
+
+    if (d == 0)
+        return DIMMER_TIME_NONE;
+
+    if (d > span)
+        d = span;
+    uint32_t ms = full / span * d + full % span * d / span;
+    return ms ? ms : 1u;
+}
+
+/* A level command's time (tt: its ZCL time, NULL: none given) for a change to level (0: off).
+ * None while the channel is lit and stays lit takes the channel's brightness fade time when one
+ * is set (the MCU's own rate otherwise); from dark (on with a level) and to off the fade
+ * settings; a given time wins. */
+static void dimmer_send_level_transition(zigbee_dimmer_cluster *cluster, const uint8_t *tt,
+                                         uint8_t level) {
+    uint32_t ms = tt ? dimmer_zcl_time_ms(tt) : DIMMER_TIME_NONE;
+
+    if (ms == DIMMER_TIME_NONE && cluster->on && level && cluster->brightness_fade_time != 0xFFFF)
+        ms = dimmer_fade_time_ms(cluster, level);
+    dimmer_send_time(cluster, ms);
 }
 
 /* ---- Open Dimmer settings (from OPEN_DIMMER_FEATURES_BUILD) -----------------
@@ -418,6 +470,25 @@ static void dimmer_nv_store(const zigbee_dimmer_cluster *cluster, uint8_t item, 
     }
 }
 
+/* Two bytes kept for a dimmer: 0xFFFF when there are none. */
+static uint16_t dimmer_nv_load16(const zigbee_dimmer_cluster *cluster, uint8_t item) {
+    uint16_t value = 0xFFFF;
+
+    if (cluster->dimmer_idx >= NV_LAYOUT_DIMMERS ||
+        hal_nvm_read(item, sizeof(value), (uint8_t *)&value) != HAL_NVM_SUCCESS) {
+        value = 0xFFFF;
+    }
+    return value;
+}
+
+static void dimmer_nv_store16(const zigbee_dimmer_cluster *cluster, uint8_t item, uint16_t *value,
+                              uint16_t *saved) {
+    if (*value != *saved && cluster->dimmer_idx < NV_LAYOUT_DIMMERS &&
+        hal_nvm_write(item, sizeof(*value), (uint8_t *)value) == HAL_NVM_SUCCESS) {
+        *saved = *value;
+    }
+}
+
 static void dimmer_load_on_level(zigbee_dimmer_cluster *cluster) {
     uint8_t value = dimmer_nv_load(cluster, NV_ITEM_DIMMER_CLUSTER_DATA(cluster->dimmer_idx));
 
@@ -434,6 +505,10 @@ static void dimmer_load_on_level(zigbee_dimmer_cluster *cluster) {
         value = DIMMER_ON_LEVEL_UNDEFINED;
     cluster->on_level_local       = value;
     cluster->on_level_local_saved = value;
+
+    cluster->brightness_fade_time =
+        dimmer_nv_load16(cluster, NV_ITEM_DIMMER_BRIGHTNESS_FADE_TIME(cluster->dimmer_idx));
+    cluster->brightness_fade_time_saved = cluster->brightness_fade_time;
 
     /* Options: any value is one (0xFF too); none stored is 0, so a 0 needs no write. */
     if (!dimmer_nv_read(cluster, NV_ITEM_DIMMER_LEVEL_OPTIONS(cluster->dimmer_idx), &value))
@@ -675,8 +750,10 @@ static hal_zigbee_cmd_result_t dimmer_cluster_level_callback(zigbee_dimmer_clust
 
         uint8_t with_onoff = command_id == ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF;
         dimmer_stop_move(cluster);
-        if (cmd_payload_len >= 3 && (with_onoff || cluster->on))
-            dimmer_send_transition(cluster, payload + 1);
+        if (with_onoff || cluster->on)
+            dimmer_send_level_transition(cluster, cmd_payload_len >= 3 ? payload + 1 : NULL,
+                                         with_onoff && payload[0] == 0 ? 0
+                                         : dimmer_clamp_level(payload[0]));
 
         if (!with_onoff) {
             dimmer_change_level(cluster, dimmer_clamp_level(payload[0]),
@@ -745,15 +822,16 @@ static hal_zigbee_cmd_result_t dimmer_cluster_level_callback(zigbee_dimmer_clust
                 break;
             base = 0; /* stepping up from off starts at the bottom */
         }
-        if (cmd_payload_len >= 4)
-            dimmer_send_transition(cluster, payload + 2);
+        int     next  = up ? base + payload[1] : base - payload[1];
+        uint8_t off   = !up && next < ZCL_LEVEL_MIN && with_onoff;
+        uint8_t level = dimmer_clamp_level(next);
 
-        int next = up ? base + payload[1] : base - payload[1];
-        if (!up && next < ZCL_LEVEL_MIN && with_onoff) {
+        dimmer_send_level_transition(cluster, cmd_payload_len >= 4 ? payload + 2 : NULL,
+                                     off ? 0 : level);
+        if (off) {
             dimmer_turn_off(cluster);
             break;
         }
-        uint8_t level = dimmer_clamp_level(next);
         if (!cluster->on) {
             dimmer_turn_on_at(cluster, level);
         } else {
@@ -992,7 +1070,7 @@ static hal_zigbee_cmd_result_t dimmer_cluster_identify_callback_trampoline(
 #define DIMMER_OD_ATTRS       0
 #endif
 #define DIMMER_ONOFF_ATTRS    (2 + DIMMER_OD_ATTRS)
-#define DIMMER_LEVEL_ATTRS    (5 + DIMMER_OD_ATTRS)
+#define DIMMER_LEVEL_ATTRS    (6 + DIMMER_OD_ATTRS)
 
 static void dimmer_add_cluster(hal_zigbee_endpoint *endpoint, uint16_t cluster_id,
                                uint8_t attribute_count, hal_zigbee_attribute *attributes,
@@ -1059,6 +1137,8 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
                          ATTR_WRITABLE, cluster->level_options);
     SETUP_ATTR_FOR_TABLE(level_attrs, 4, ZCL_ATTR_LEVEL_ON_LEVEL_LOCAL, ZCL_DATA_TYPE_UINT8,
                          ATTR_WRITABLE, cluster->on_level_local);
+    SETUP_ATTR_FOR_TABLE(level_attrs, 5, ZCL_ATTR_LEVEL_BRIGHTNESS_FADE_TIME, ZCL_DATA_TYPE_UINT16,
+                         ATTR_WRITABLE, cluster->brightness_fade_time);
 
     // Min/max brightness on the standard lightingBallastCfg cluster (0x0301),
     // so Zigbee2MQTT can render sliders bound to these without a custom cluster.
@@ -1076,7 +1156,7 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
     /* Open Dimmer's settings (from OPEN_DIMMER_FEATURES_BUILD), next to the standard ones. */
     SETUP_ATTR(2, ZCL_ATTR_ONOFF_COUNTDOWN, ZCL_DATA_TYPE_UINT32, ATTR_WRITABLE,
                cluster->countdown);
-    SETUP_ATTR_FOR_TABLE(level_attrs, 5, ZCL_ATTR_LEVEL_START_UP_CURRENT_LEVEL,
+    SETUP_ATTR_FOR_TABLE(level_attrs, 6, ZCL_ATTR_LEVEL_START_UP_CURRENT_LEVEL,
                          ZCL_DATA_TYPE_UINT8, ATTR_WRITABLE, cluster->startup_level);
     SETUP_ATTR_FOR_TABLE(cluster->ballast_attr_infos, 2, ZCL_ATTR_BALLAST_START_BOOST,
                          ZCL_DATA_TYPE_UINT16, ATTR_WRITABLE, cluster->start_boost);
@@ -1181,6 +1261,12 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
         } else if (attribute_id == ZCL_ATTR_LEVEL_ON_LEVEL_LOCAL) {
             dimmer_nv_store(cluster, NV_ITEM_DIMMER_ON_LEVEL_LOCAL(cluster->dimmer_idx),
                             &cluster->on_level_local, &cluster->on_level_local_saved);
+        } else if (attribute_id == ZCL_ATTR_LEVEL_BRIGHTNESS_FADE_TIME) {
+            dimmer_nv_store16(cluster, NV_ITEM_DIMMER_BRIGHTNESS_FADE_TIME(cluster->dimmer_idx),
+                              &cluster->brightness_fade_time,
+                              &cluster->brightness_fade_time_saved);
+            hal_zigbee_notify_attribute_changed(cluster->endpoint, ZCL_CLUSTER_LEVEL_CONTROL,
+                                                ZCL_ATTR_LEVEL_BRIGHTNESS_FADE_TIME);
         }
 #ifdef SECONDARY_MCU_IMAGE
         else if (attribute_id == ZCL_ATTR_LEVEL_START_UP_CURRENT_LEVEL) {

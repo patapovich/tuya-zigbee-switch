@@ -32,9 +32,9 @@ typedef struct {
     uint16_t             action_state;
 
     /* genOnOff: onoff, startup, [countdown]; genLevelCtrl after them: current level, on
-     * level, default move rate, options, on level local, [start-up level] ([]: boards with an
-     * image only). */
-    hal_zigbee_attribute attr_infos[9];
+     * level, default move rate, options, on level local, brightness transition, [start-up
+     * level] ([]: boards with an image only). */
+    hal_zigbee_attribute attr_infos[10];
     hal_zigbee_attribute multistate_attr_infos[4];  // wall switch gestures (own MCU)
     hal_zigbee_attribute ballast_attr_infos[3];     // min/max level, [start boost] (lightingBallastCfg)
     hal_zigbee_attribute switch_type_attr_infos[3]; // switch type, [wall switch mode, fast press] (genOnOffSwitchCfg)
@@ -82,6 +82,12 @@ typedef struct {
      * Used with Open Dimmer from OPEN_DIMMER_FEATURES_BUILD only (kept for any MCU). */
     uint8_t              on_level_local;
     uint8_t              on_level_local_saved;
+
+    /* The fade of a level change without a time while lit, as the time for the whole range
+     * (Level Control 0xff12, 1/10 s, NV-kept; 0xFFFF: none, the MCU's own rate, 2 s for the
+     * whole range), for Open Dimmer from OPEN_DIMMER_TRANSITION_BUILD. */
+    uint16_t             brightness_fade_time;
+    uint16_t             brightness_fade_time_saved;
 
     /* Level Control Options (bit 0 ExecuteIfOff), NV-kept. A level command without OnOff
      * while off, with ExecuteIfOff in effect, sets the level the light comes on at: Open

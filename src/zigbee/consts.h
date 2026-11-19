@@ -116,6 +116,7 @@
 #define ZCL_ATTR_LEVEL_OPTIONS                                       0x000F
 #define ZCL_ATTR_LEVEL_DEFAULT_MOVE_RATE                             0x0014
 #define ZCL_ATTR_LEVEL_ON_LEVEL_LOCAL                                0xff11 /* dimmer: OnLevel of the wall switch */
+#define ZCL_ATTR_LEVEL_BRIGHTNESS_FADE_TIME                          0xff12 /* dimmer: whole-range fade, 1/10 s */
 #define ZCL_ATTR_LEVEL_START_UP_CURRENT_LEVEL                        0x4000
 
 // Identify cluster
