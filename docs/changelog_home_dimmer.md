@@ -14,6 +14,19 @@ zdms16-py32 release notes.
 
 ## Next
 
+- SWD master for the dimming MCU, dormant: with two extra wires from free module pads to the
+  MCU's SWD pads and the config token `SW<clk><dio>` (e.g. `SWD3D7`), the module can read the
+  MCU over SWD: `survey_dp` (the debug port's id) and `survey_full` (identity, option bytes,
+  ROM / bootloader checksums, app header), read only. Started with the device option
+  `mcu_flasher: show` and one write of `mcu_flasher`; the result is `mcu_flasher_status`.
+  Without the token no pin is touched and no attribute is added; the option's default (`hide`)
+  shows nothing.
+- Green Power is left out of the ZDMS16-2 build (`src/telink/patch_sdk/gp_stub.c`): this
+  firmware never starts it, so a GP frame never got past the stack; now the frame is dropped at
+  once. The OTA image is 6.2 KB smaller (room for the SWD master and Scenes). The OTA files are
+  now linked with the board's own flags (they were linked again without `DIMMER_ONLY`), and the
+  OTA step runs the symbol checks on that link.
+
 ## 1.1.3-ab06b9a0 (2026-11-19), carries Open Dimmer 2.2.3
 
 - Conversion from the stock firmware: the outgoing NWK frame counter starts at 0x10000000 once
@@ -49,19 +62,6 @@ zdms16-py32 release notes.
   later) gets the image without waiting for the app's health report. So such a unit also gets
   a newer image at the power-on check, without the ~60 s wait. Offers to the app still wait
   for the report.
-
-- SWD master for the dimming MCU, dormant: with two extra wires from free module pads to the
-  MCU's SWD pads and the config token `SW<clk><dio>` (e.g. `SWD3D7`), the module can read the
-  MCU over SWD: `survey_dp` (the debug port's id) and `survey_full` (identity, option bytes,
-  ROM / bootloader checksums, app header), read only. Started with the device option
-  `mcu_flasher: show` and one write of `mcu_flasher`; the result is `mcu_flasher_status`.
-  Without the token no pin is touched and no attribute is added; the option's default (`hide`)
-  shows nothing.
-- Green Power is left out of the ZDMS16-2 build (`src/telink/patch_sdk/gp_stub.c`): this
-  firmware never starts it, so a GP frame never got past the stack; now the frame is dropped at
-  once. The OTA image is 6.2 KB smaller (room for the SWD master and Scenes). The OTA files are
-  now linked with the board's own flags (they were linked again without `DIMMER_ONLY`), and the
-  OTA step runs the symbol checks on that link.
 
 ## 1.1.3-6598b921 (2026-11-19), carries Open Dimmer 2.2.2
 
