@@ -33,6 +33,13 @@ uint8_t hal_swd_clk_idle_level(hal_gpio_pin_t clk) {
     return level;
 }
 
+uint8_t hal_swd_wired(hal_gpio_pin_t clk) {
+    uint8_t wired = swd_target_wired();
+
+    io_evt("swd wired_check clk=%d wired=%d", clk, wired);
+    return wired;
+}
+
 void hal_swd_take(hal_gpio_pin_t clk, hal_gpio_pin_t dio) {
     g_swd_io.taken     = 1;
     g_swd_io.clk       = clk;

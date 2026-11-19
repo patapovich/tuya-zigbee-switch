@@ -31,6 +31,21 @@ OPTION_BYTES = bytes.fromhex("aaf95506ff0000ffffffffffffff0000")
 ROM = bytes((i * 37 + 11) & 0xFF for i in range(0xE00 - 4)) + bytes.fromhex("e775a5e6")
 
 
+# NV item 59 (NV_ITEM_MCU_FLASHER_AUTO) in the stub's NV directory: the automatic install of
+# a start-up with the wires (mcu_flasher.c auto_arm) was used.
+AUTO_USED = Path("./stub_nvm_data/item_3b.bin")
+
+
+@pytest.fixture(autouse=True)
+def auto_install_used(request, cleanup_nvm):
+    """Every test but the test_auto_* ones runs a module whose automatic install was used
+    already: those test the manual jobs, which a first start-up with the wires would otherwise
+    pre-empt."""
+    if not request.node.name.startswith("test_auto_"):
+        AUTO_USED.parent.mkdir(exist_ok=True)
+        AUTO_USED.write_bytes(b"\xa5")
+
+
 def crc(data: bytes) -> int:
     return zlib.crc32(data) & 0xFFFFFFFF
 
@@ -443,6 +458,7 @@ def test_install_refuses_an_unprotected_mcu():
         assert (st["state"], st["error"]) == (STATE_FAILED, ERR_WRONG_CLASS)
         stats = target(proc, "stats")
         assert stats["option_programs"] == "0" and int(stats["erases"]) == 0
+        assert stats["core"] == "running"          # told by its read protection, never stopped
 
 
 def test_install_at_once_when_the_factory_firmware_leaves_the_pins(stock, monkeypatch):
@@ -506,3 +522,90 @@ def test_abort_disarms_an_armed_install(stock, monkeypatch):
     with StubProc(device_config=WITH_TOKEN) as proc:
         assert status(Device(proc))["state"] == STATE_IDLE
         assert target(proc, "stats")["pins_taken"] == "0"
+
+
+# ---- the automatic install: two wires and a power-up (user decision 2026-11-19) ----------
+
+def test_auto_install_at_the_first_power_up_with_the_wires(stock, monkeypatch):
+    """No Zigbee command at all: the start-up sees the wires and installs."""
+    monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "1500")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        check_installed(proc, run_until_settled(proc, device, passes=4000))
+        assert target(proc, "stats")["pins_taken"] == "0"      # halted in time
+        assert AUTO_USED.read_bytes() == b"\xa5"
+        resets = target(proc, "stats")["line_resets"]          # the model's counts carry on
+    monkeypatch.setenv("SWD_TARGET_POWER_CYCLE", "1")
+    with StubProc(device_config=WITH_TOKEN) as proc:            # once: the next one leaves it
+        assert status(Device(proc))["state"] == STATE_IDLE
+        assert target(proc, "stats")["line_resets"] == resets
+
+
+def test_auto_install_waits_for_the_wires(stock, monkeypatch):
+    """Converted first, opened later: start-ups without the wires touch nothing; the
+    power-up after the soldering installs."""
+    monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "1500")
+    monkeypatch.setenv("SWD_TARGET_CONNECT", "0")
+    for _ in range(2):
+        with StubProc(device_config=WITH_TOKEN) as proc:
+            assert status(Device(proc))["state"] == STATE_IDLE
+            assert int(target(proc, "stats")["line_resets"]) == 0
+        assert not AUTO_USED.exists()
+    monkeypatch.setenv("SWD_TARGET_CONNECT", "1")
+    monkeypatch.setenv("SWD_TARGET_POWER_CYCLE", "1")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        check_installed(proc, run_until_settled(proc, Device(proc), passes=4000))
+
+
+def test_auto_leaves_an_open_dimmer_mcu_running():
+    """Wires on a unit that runs Open Dimmer already (read protection level 0): told before
+    the core is touched, nothing written, never again."""
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        st = status(Device(proc))
+        assert (st["state"], st["job"], st["error"]) == (STATE_FAILED, JOB_INSTALL, ERR_WRONG_CLASS)
+        stats = target(proc, "stats")
+        assert stats["core"] == "running"
+        assert stats["option_programs"] == "0" and int(stats["erases"]) == 0
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        assert status(Device(proc))["state"] == STATE_IDLE
+        assert int(target(proc, "stats")["line_resets"]) == 0
+
+
+def test_auto_arms_when_the_factory_firmware_has_the_pins(stock, monkeypatch):
+    """Wired first, converted later: the module's first start (after its OTA, the MCU running
+    on) finds the pins held and arms; the next power-up installs."""
+    monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "1500")
+    monkeypatch.setenv("SWD_TARGET_CONNECT", "0")
+    with StubProc(device_config=WITH_TOKEN) as proc:            # the stock MCU runs on
+        Device(proc)
+        proc.exec("step_time 2000")
+        assert target(proc, "stats")["pins_taken"] == "1"
+    monkeypatch.setenv("SWD_TARGET_CONNECT", "1")
+    with StubProc(device_config=WITH_TOKEN) as proc:            # a restart of the module only
+        st = status(Device(proc))
+        assert (st["state"], st["error"]) == (STATE_ARMED, ERR_PINS_DRIVEN)
+        assert int(target(proc, "stats")["contention"]) == 0
+    monkeypatch.setenv("SWD_TARGET_POWER_CYCLE", "1")
+    with StubProc(device_config=WITH_TOKEN) as proc:            # mains off and on
+        check_installed(proc, run_until_settled(proc, Device(proc), passes=4000))
+
+
+def test_auto_gives_up_once_for_good(stock, monkeypatch):
+    """Armed by itself but never attached (something holds SWCLK low at every start): failed
+    after its power-ups, and no new automatic try at the next ones."""
+    monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "1500")
+    monkeypatch.setenv("SWD_TARGET_CONNECT", "0")
+    with StubProc(device_config=WITH_TOKEN) as proc:            # no wires yet: nothing
+        Device(proc)
+        target(proc, "clk_held_low", 1)                         # kept in the model's state
+    monkeypatch.setenv("SWD_TARGET_CONNECT", "1")
+    monkeypatch.setenv("SWD_TARGET_POWER_CYCLE", "1")
+    seen = []
+    for _ in range(5):
+        with StubProc(device_config=WITH_TOKEN) as proc:
+            st = status(Device(proc))
+            seen.append((st["state"], st["page"]))
+            stats = target(proc, "stats")
+            assert stats["option_programs"] == "0" and int(stats["contention"]) == 0
+    assert seen == [(STATE_ARMED, 2), (STATE_ARMED, 1), (STATE_ARMED, 0),
+                    (STATE_FAILED, 0), (STATE_IDLE, 0)], seen

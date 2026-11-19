@@ -17,11 +17,19 @@
  * version feeds an edge-level target model (src/stub/hal/swd_target.c).
  *
  * Electrical rules the implementations keep:
- * - SWCLK is the host's: push-pull output while the link is taken.
- * - SWDIO is shared: input with a weak pull-up (a missing wire reads 1s), the
- *   output enabled only while the host drives a bit (hal_swd_dio_drive).
+ * - Both lines open-drain on the module (the wires have no series resistor):
+ *   low = output enabled at level 0, high = released to the pull-up. The host
+ *   never drives a line high, so it never fights an MCU pin driven low.
+ * - SWDIO is shared: the host pulls it low only in its turns (hal_swd_dio_drive);
+ *   a missing wire reads 1s.
  * - The target samples SWDIO on the rising SWCLK edge and changes it after the
  *   rising edge; the host samples before it raises SWCLK. */
+
+/* Are the SWD wires there? A weak (1 MOhm) pull-up on SWCLK, nothing driven:
+ * 1 = the pin reads 0, something pulls it down (the PY32's SWCLK pull-down,
+ * on from its reset, or its firmware holding the pin low); 0 = it reads 1, an
+ * open pad. Leaves the pin released. */
+uint8_t hal_swd_wired(hal_gpio_pin_t clk);
 
 /* Check before the first drive of a session: put a pull-up on SWCLK, drive
  * nothing, and read it. 0 = something holds SWCLK low (a target firmware that
@@ -29,8 +37,7 @@
  * they were found (released). */
 uint8_t hal_swd_clk_idle_level(hal_gpio_pin_t clk);
 
-/* Take the pins for a session: SWCLK output low, SWDIO input with pull-up,
- * its output off. */
+/* Take the pins for a session: SWCLK low, SWDIO released (input, pull-up). */
 void hal_swd_take(hal_gpio_pin_t clk, hal_gpio_pin_t dio);
 
 /* Release both pins back to the power-up state of the platform (Telink: GPIO,

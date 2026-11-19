@@ -656,14 +656,40 @@ static swd_err_t ob_program(uint8_t *started) {
  * tools/swd/ob_bor25.bin: aa f9 55 06 ff 00 00 ff ff ff ff ff ff ff 00 00). */
 static const uint32_t k_option_area[4] = { 0x0655F9AAu, 0xFF0000FFu, 0xFFFFFFFFu, 0x0000FFFFu };
 
+#define AUTO_MAGIC          0xA5u
+
+/* The automatic install (user decision 2026-11-19: soldering the two wires is
+ * the consent, no Zigbee command, no opt-out): the first start-up that sees the
+ * wires arms an install, once in the module's life (NV_ITEM_MCU_FLASHER_AUTO);
+ * from then on only the manual jobs. A module without the wires costs one pin
+ * read per start-up. Whether the MCU is a factory one is told by its read
+ * protection, read before the core is touched (mcu_flasher_early). */
+static uint8_t auto_arm(armed_t *a) {
+    uint8_t used = 0;
+
+    if ((hal_nvm_read(NV_ITEM_MCU_FLASHER_AUTO, 1, &used) == HAL_NVM_SUCCESS &&
+         used == AUTO_MAGIC) ||
+        !hal_swd_wired(g_clk)) {
+        return 0;
+    }
+    used = AUTO_MAGIC;
+    hal_nvm_write(NV_ITEM_MCU_FLASHER_AUTO, 1, &used);
+    *a = (armed_t){ ARMED_MAGIC, PHASE_ARMED, ARMED_BOOTS, 0 };
+    hal_nvm_write(NV_ITEM_MCU_FLASHER_JOB, sizeof(*a), (uint8_t *)a);
+    return 1;
+}
+
 /* The armed install of this power-up: attach before the factory firmware
  * takes the SWD pins, halt; the rest runs from the main loop. */
 void mcu_flasher_early(void) {
     armed_t a;
 
-    if (!g_enabled || hal_nvm_read(NV_ITEM_MCU_FLASHER_JOB, sizeof(a),
-                                   (uint8_t *)&a) != HAL_NVM_SUCCESS ||
-        a.magic != ARMED_MAGIC) {
+    if (!g_enabled) {
+        return;
+    }
+    if ((hal_nvm_read(NV_ITEM_MCU_FLASHER_JOB, sizeof(a), (uint8_t *)&a) != HAL_NVM_SUCCESS ||
+         a.magic != ARMED_MAGIC) &&
+        !auto_arm(&a)) {
         return;
     }
     g_status.state = MCU_FLASHER_STATE_RUNNING;
@@ -683,6 +709,7 @@ void mcu_flasher_early(void) {
         return;
     }
     uint32_t  dpidr  = 0;
+    uint32_t  optr   = 0;
     uint8_t   halted = 0;
     uint8_t   stage  = STEP_BEGIN;   /* how far it got, shown when it fails */
     swd_err_t err    = SWD_ERR_NO_TARGET;
@@ -715,9 +742,29 @@ void mcu_flasher_early(void) {
             err   = swd_power_up();
         }
         if (err == SWD_OK) {
+            /* read protection first, the core untouched: an MCU at level 0 is
+             * not a factory one (Open Dimmer runs there) and keeps running */
+            stage = STEP_IDENTITY;
+            err   = swd_mem_read32(ADDR_FLASH_OPTR, &optr);
+            if (err == SWD_OK && (uint8_t)optr == 0xAAu) {
+                break;
+            }
+        }
+        if (err == SWD_OK) {
             stage = STEP_STOP;
             err   = halt_now(&halted);
         }
+    }
+    if (err == SWD_OK && (uint8_t)optr == 0xAAu) {
+        swd_power_down();
+        swd_end();
+        hal_nvm_delete(NV_ITEM_MCU_FLASHER_JOB);
+        g_status.dpidr       = dpidr;
+        g_status.optr        = optr;
+        g_status.state       = MCU_FLASHER_STATE_FAILED;
+        g_status.error       = MCU_FLASHER_ERR_WRONG_CLASS;
+        g_status.duration_ms = sat16(hal_millis());
+        return;
     }
     if (err == SWD_OK && halted) {
         g_status.dpidr     = dpidr;
@@ -786,6 +833,19 @@ void mcu_flasher_task(void) {
 
     case STEP_POWER:
         err = swd_power_up();
+        if (err == SWD_OK && is_install()) {
+            /* read protection before the core is stopped: at level 0 it is not a
+             * factory MCU, and it keeps running (a halted one would stay so
+             * until a power cycle) */
+            uint32_t optr = 0;
+
+            err = swd_mem_read32(ADDR_FLASH_OPTR, &optr);
+            g_status.optr = optr;   /* packed: assigned, never through a pointer */
+            if (err == SWD_OK && (uint8_t)optr == 0xAAu) {
+                fail = MCU_FLASHER_ERR_WRONG_CLASS;
+                break;
+            }
+        }
         if (err == SWD_OK) {
             next_step(is_install() ? STEP_STOP : STEP_IDENTITY);
         }

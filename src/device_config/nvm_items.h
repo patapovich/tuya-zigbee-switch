@@ -53,5 +53,7 @@
 
 // SWD master (src/zigbee/mcu_flasher.c): an install armed for the next power-up.
 #define NV_ITEM_MCU_FLASHER_JOB    58
+// SWD master: the automatic install at power-up was used (once per module).
+#define NV_ITEM_MCU_FLASHER_AUTO   59
 
 #endif /* DEVICE_CONFIG_NVM_ITEMS_H_ */

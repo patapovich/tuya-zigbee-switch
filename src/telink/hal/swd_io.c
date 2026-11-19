@@ -53,6 +53,19 @@ uint8_t hal_swd_clk_idle_level(hal_gpio_pin_t clk) {
     return level;
 }
 
+uint8_t hal_swd_wired(hal_gpio_pin_t clk) {
+    GPIO_PinTypeDef pin = (GPIO_PinTypeDef)clk;
+
+    gpio_set_func(pin, AS_GPIO);
+    gpio_set_output_en(pin, 0);
+    gpio_setup_up_down_resistor(pin, PM_PIN_PULLUP_1M);
+    gpio_set_input_en(pin, 1);
+    sleep_us(200);  // 1 MOhm against an open pad's few pF: some 10 us
+    uint8_t wired = gpio_read(pin) ? 0 : 1;
+    pin_released(pin);
+    return wired;
+}
+
 void hal_swd_take(hal_gpio_pin_t clk, hal_gpio_pin_t dio) {
     g_clk = (GPIO_PinTypeDef)clk;
     g_dio = (GPIO_PinTypeDef)dio;

@@ -944,6 +944,12 @@ static void start_from_env(void) {
     if (pc && strcmp(pc, "1") == 0) {
         power_cycle();
     }
+    /* SWD_TARGET_CONNECT=0 / 1: the wires to the SWD pads absent / there from
+     * the start (a power-up without them, the next one after the soldering) */
+    const char *conn = env_str("SWD_TARGET_CONNECT");
+    if (conn) {
+        m.connect = strcmp(conn, "0") != 0;
+    }
 }
 
 static void ensure_ready(void) {
@@ -1957,6 +1963,11 @@ uint8_t swd_target_dio_level(void) {
 uint8_t swd_target_clk_idle_level(void) {
     ensure_ready();
     return (m.connect && clk_held()) ? 0 : 1;
+}
+
+uint8_t swd_target_wired(void) {
+    ensure_ready();
+    return wired();   /* the PY32's SWCLK pull-down, or the pin held low */
 }
 
 void swd_target_note_untaken(void) {
