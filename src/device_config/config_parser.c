@@ -61,9 +61,10 @@ uint8_t         dp_init_cnt = 0;
 relay_t relays[10]; // 4 relay endpoints + 3 cover endpoints
 uint8_t relays_cnt = 0;
 
-zigbee_basic_cluster basic_cluster = {
-    .deviceEnable = 1,
-};
+/* Zero-initialised (.bss): an initialiser would put the whole struct, its
+ * attribute table included, in .data, ~500 bytes of flash. deviceEnable is set
+ * at the start of parse_config() instead. */
+zigbee_basic_cluster basic_cluster;
 
 zigbee_group_cluster group_cluster = {};
 
@@ -116,6 +117,8 @@ static uint8_t dpid_or(uint8_t configured, uint8_t fallback) {
 }
 
 void parse_config() {
+    basic_cluster.deviceEnable = 1;
+
     device_config_read_from_nv();
 
     /* Datapoint map lives in its own string: the ZCL write path caps a single
