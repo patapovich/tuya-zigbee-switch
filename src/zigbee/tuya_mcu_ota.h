@@ -73,7 +73,8 @@
  *     later idea too (an image-info push, a second image for a rescue, a
  *     longer offer). Reason: the stock parser holds 23 bytes in its ISR ring
  *     and 31 in its frame buffer, and a frame of 32..38 bytes wedges its RX
- *     until a power cut.
+ *     until a power cut (zdms16-py32 docs/stock-firmware-analysis.md, "Stock
+ *     MCU parser limits": read from the WiFi 1.0.3, inferred for 1.0.7).
  *     Towards a stock MCU this firmware sends exactly what phase 1 sends, apart
  *     from one more dump query per run, when the run's first one got no DP
  *     report within 1 s.
