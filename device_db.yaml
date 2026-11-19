@@ -507,7 +507,10 @@ MODULE_AVATTO_ZDMS16_2:
   # Secondary MCU (Puya PY32F002A) on UART B1/B7 (issue #387), standard
   # Tuya dimmer DPs (1..6, 7..12, power-on 14). No GPIO LED/switch on this
   # board: everything goes through the MCU, so there are no L/S tokens.
-  config_str: jtbgusdc;TS0601-ZDMS16-2;DM2;M;
+  # SWD3D7: the SWD master (src/zigbee/mcu_flasher.c) on pads D3 (SWCLK) and D7 (SWDIO),
+  # free on this board's PCB (measured): two wires to the MCU's SWD pads install Open Dimmer
+  # at the next power-up. Without the wires it reads one pin per start-up, nothing else.
+  config_str: jtbgusdc;TS0601-ZDMS16-2;DM2;M;SWD3D7;
   # Carries the Open Dimmer firmware (PY32) and updates an MCU that runs an older
   # Open Dimmer version over the UART (tuya_mcu_ota.c); the stock MCU is never
   # touched.
@@ -558,7 +561,9 @@ MODULE_AVATTO_ZDMS16_2_TZE204:
   mcu_family: Telink
   mcu: TLSR8258
   # Same board as MODULE_AVATTO_ZDMS16_2, other stock manufacturer name.
-  config_str: jtbgusdc;TS0601-ZDMS16-2;DM2;M;
+  # SWD3D7 as on MODULE_AVATTO_ZDMS16_2 (the same module; the converter keeps both
+  # definitions identical).
+  config_str: jtbgusdc;TS0601-ZDMS16-2;DM2;M;SWD3D7;
   # Carries the Open Dimmer firmware (PY32) and updates an MCU that runs an older
   # Open Dimmer version over the UART (tuya_mcu_ota.c); the stock MCU is never
   # touched.

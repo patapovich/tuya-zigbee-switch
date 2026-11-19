@@ -58,8 +58,11 @@
 // Secondary MCU link diagnostics (see zigbee/tuya_mcu_diag.h)
 #define ZCL_ATTR_BASIC_MCU_DIAG_COUNTERS          0xff40
 #define ZCL_ATTR_BASIC_MCU_DIAG_LOG_FIRST         0xff41
-#define TUYA_MCU_DIAG_LOG_PAGES                   5 // 0xff41..0xff45
+#define TUYA_MCU_DIAG_LOG_PAGES                   5      // 0xff41..0xff45
 #define ZCL_ATTR_BASIC_MCU_DIAG_CONTROL           0xff4f
+#define ZCL_ATTR_BASIC_MCU_FLASHER_STATUS         0xff50 /* SW token only (mcu_flasher.c) */
+#define ZCL_ATTR_BASIC_MCU_FLASHER_CONTROL        0xff51
+#define ZCL_ATTR_BASIC_MCU_FLASHER_CONFIRM        0xff52
 // Open Dimmer health report (see zigbee/tuya_mcu_ota.h)
 #define ZCL_ATTR_BASIC_MCU_HEALTH                 0xff48
 #define ZCL_ATTR_BASIC_STATUS_LED_STATE           0xff01

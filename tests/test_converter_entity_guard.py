@@ -56,6 +56,8 @@ ZDMS16_2_EXTENDS = [
     "romasku.mcuVersion(mcu_version)",
     "romasku.mcuFirmware()",
     "romasku.mcuHealth()",
+    # the SWD master: no expose unless the device option mcu_flasher is show
+    "romasku.mcuFlasher()",
     "romasku.multiPressResetCount(multi_press_reset_count)",
     "romasku.deviceConfig(device_config)",
     "romasku.deviceConfigExt(device_config_ext)",
@@ -167,7 +169,7 @@ def test_zdms16_2_matching_and_the_entities_of_a_stock_unit_stay():
 
     from generated_converter import run_node
     out = json.loads(run_node("""
-const defs = definitions.filter((d) => d.model === "ZDMS16-2");
+const defs = definitions.filter((d) => d.model === "ZDMS16-2" && d.zigbeeModel);
 const ver = (v) => { const d = h.device(); d.getEndpoint(1).clusters.genBasic.attributes[0xff12] = v; return d; };
 const dynamic = (def, dev) => def.extend.filter((x) => !x.fake).flatMap((x) => x.exposes ?? [])
     .flatMap((x) => (typeof x === "function" ? x(dev, {}) : [x]))

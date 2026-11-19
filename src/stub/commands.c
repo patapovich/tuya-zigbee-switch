@@ -1,11 +1,13 @@
 #include "commands.h"
 #include "machine_io.h"
 
+#include "hal/swd_io.h"
 #include "hal/timer.h"
 #include "hal/uart.h"
 #include "hal/zigbee.h"
 
 #include "stub/hal/stub.h"
+#include "stub/hal/swd_target.h"
 
 #include "stub/stub_app.h"
 #include "zigbee/consts.h"
@@ -78,6 +80,7 @@ static int cmd_status(int argc, char **argv) {
 static int cmd_quit(int argc, char **argv) {
     (void)argc;
     (void)argv;
+    (void)swd_target_save(); /* before the answer: a test may restart at once */
     g_should_exit = 1;
     io_res_ok(NULL);
     return 0;
@@ -537,6 +540,259 @@ static int cmd_zcl_group(int argc, char **argv) {
     return 0;
 }
 
+static int parse_u32(const char *s, int base, uint32_t *out) {
+    char *e = NULL;
+    unsigned long long v = strtoull(s, &e, base);
+
+    if (*s == '\0' || *s == '-' || *e || v > 0xFFFFFFFFull)
+        return -1;
+
+    *out = (uint32_t)v;
+    return 0;
+}
+
+static int parse_bit(const char *s, uint8_t *out) {
+    if (strcmp(s, "0") == 0 || strcmp(s, "1") == 0) {
+        *out = (uint8_t)(s[0] - '0');
+        return 0;
+    }
+    return -1;
+}
+
+/* Raw file into the target's memory map (backdoor). */
+#define SWD_TARGET_LOAD_MAX    (64u * 1024u)
+
+static int swd_target_load_file(uint32_t addr, const char *path, uint32_t *len) {
+    static uint8_t buf[SWD_TARGET_LOAD_MAX + 1];
+    FILE *         f = fopen(path, "rb");
+
+    if (!f)
+        return -1;
+
+    size_t n = fread(buf, 1, sizeof(buf), f);
+    fclose(f);
+    if (n > SWD_TARGET_LOAD_MAX)
+        return -1;
+
+    *len = (uint32_t)n;
+    return swd_target_load(addr, buf, (uint32_t)n);
+}
+
+static void swd_target_print_stats(void) {
+    swd_target_stats_t st;
+    swd_target_state_t cs;
+    char dp[512];
+
+    swd_target_get_stats(&st);
+    swd_target_get_state(&cs);
+    snprintf(dp, sizeof(dp),
+             "line_resets=%u dpidr_reads=%u transfers_ok=%u waits=%u faults=%u "
+             "protocol_errors=%u parity_errors=%u contention=%u mem_writes=%u "
+             "powered=%u bus_errors=%u jtag_to_swd=%u sys_resets=%u "
+             "untaken_ops=%u edges=%u lockout=%u ctrl_stat=0x%08X",
+             st.line_resets, st.dpidr_reads, st.transfers_ok, st.waits,
+             st.faults, st.protocol_errors, st.parity_errors, st.contention,
+             st.mem_writes, swd_target_powered(), st.bus_errors,
+             st.jtag_to_swd, st.sys_resets, st.untaken_ops, st.edges,
+             swd_target_lockout(), swd_target_ctrl_stat());
+    io_res_ok("%s erases=%u programs=%u wrperr=%u power_cycles=%u core=%s "
+              "pc=0x%08X msp=0x%08X xpsr=0x%08X gates_low=%u iwdg_frozen=%u "
+              "timing_set=%u flash_locked=%u key_lockout=%u flash_busy=%u "
+              "swd_lost=%u rdp2_written=%u obl_launches=%u option_programs=%u "
+              "mass_erases=%u preset=%s rdp=%u optlock=%u optkey_lockout=%u "
+              "stock_fw=%u pins_taken=%u stock_pins_ms=%u uptime_ms=%u",
+              dp, st.erases, st.programs, st.wrperr, st.power_cycles, cs.core,
+              cs.pc, cs.msp, cs.xpsr, cs.gates_low, cs.iwdg_frozen,
+              cs.timing_set, cs.flash_locked, cs.key_lockout, cs.flash_busy,
+              cs.swd_lost, st.rdp2_written, st.obl_launches,
+              st.option_programs, st.mass_erases, cs.preset, cs.rdp,
+              cs.optlock, cs.optkey_lockout, cs.stock_fw, cs.pins_taken,
+              cs.stock_pins_ms, cs.uptime_ms);
+}
+
+/* count=<n> dropped=<n> list=<op>:<addr>,... (oldest first) */
+static void swd_target_print_flash_log(void) {
+    uint32_t n   = swd_target_flash_log_count();
+    char *   buf = malloc((size_t)n * 26u + 1u);
+    size_t   pos = 0;
+
+    if (!buf) {
+        io_res_err("no_memory");
+        return;
+    }
+    buf[0] = '\0';
+    for (uint32_t i = 0; i < n; i++) {
+        const char *op;
+        uint32_t    addr;
+        swd_target_flash_log_at(i, &op, &addr);
+        pos += (size_t)snprintf(buf + pos, 27, "%s%s:0x%08X", i ? "," : "", op,
+                                addr);
+    }
+    io_res_ok("count=%u dropped=%u list=%s", n, swd_target_flash_log_dropped(),
+              buf);
+    free(buf);
+}
+
+/* count=<n> dropped=<n> list=<addr>=<value>,... (oldest first, hex) */
+static void swd_target_print_writes(void) {
+    uint32_t n   = swd_target_write_count();
+    char *   buf = malloc((size_t)n * 22u + 1u);
+    size_t   pos = 0;
+
+    if (!buf) {
+        io_res_err("no_memory");
+        return;
+    }
+    buf[0] = '\0';
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t addr, value;
+        swd_target_write_at(i, &addr, &value);
+        pos += (size_t)snprintf(buf + pos, 23, "%s0x%08X=0x%08X", i ? "," : "",
+                                addr, value);
+    }
+    io_res_ok("count=%u dropped=%u list=%s", n, swd_target_writes_dropped(), buf);
+    free(buf);
+}
+
+static int cmd_swd_target(int argc, char **argv) {
+    const char *sub = argc >= 2 ? argv[1] : "";
+    uint32_t    a, v;
+    uint8_t     bit;
+
+    if (strcmp(sub, "reset") == 0 && argc == 2) {
+        swd_target_reset();
+        io_res_ok(NULL);
+    } else if (strcmp(sub, "clear") == 0 && argc == 2) {
+        swd_target_clear();
+        io_res_ok(NULL);
+    } else if (strcmp(sub, "stats") == 0 && argc == 2) {
+        swd_target_print_stats();
+    } else if (strcmp(sub, "writes") == 0 && argc == 2) {
+        swd_target_print_writes();
+    } else if (strcmp(sub, "flash_log") == 0 && argc == 2) {
+        swd_target_print_flash_log();
+    } else if (strcmp(sub, "power_cycle") == 0 && argc == 2) {
+        swd_target_power_cycle();
+        io_res_ok(NULL);
+    } else if (strcmp(sub, "cut_after") == 0 && argc == 3 &&
+               parse_u32(argv[2], 10, &v) == 0) {
+        swd_target_set_cut_after(v);
+        io_res_ok("cut_after=%u", v);
+    } else if (strcmp(sub, "busy_reads") == 0 && argc == 3 &&
+               parse_u32(argv[2], 10, &v) == 0) {
+        swd_target_set_busy_reads(v);
+        io_res_ok("busy_reads=%u", v);
+    } else if (strcmp(sub, "busy_reads_ob") == 0 && argc == 3 &&
+               parse_u32(argv[2], 10, &v) == 0) {
+        swd_target_set_busy_reads_ob(v);
+        io_res_ok("busy_reads_ob=%u", v);
+    } else if (strcmp(sub, "stock_pins_ms") == 0 && argc == 3 &&
+               parse_u32(argv[2], 10, &v) == 0) {
+        swd_target_set_stock_pins_ms(v);
+        io_res_ok("stock_pins_ms=%u", v);
+    } else if (strcmp(sub, "preset") == 0 && argc == 3) {
+        if (swd_target_preset(argv[2])) {
+            io_res_err("unknown_preset=%s", argv[2]);
+            return -1;
+        }
+        io_res_ok("preset=%s", argv[2]);
+    } else if (strcmp(sub, "save") == 0 && argc == 2) {
+        if (swd_target_save()) {
+            io_res_err("not_saved (SWD_TARGET_STATE unset or not writable)");
+            return -1;
+        }
+        io_res_ok(NULL);
+    } else if (strcmp(sub, "connect") == 0 && argc == 3 &&
+               parse_bit(argv[2], &bit) == 0) {
+        swd_target_set_connect(bit);
+        io_res_ok("connect=%u", bit);
+    } else if (strcmp(sub, "clk_held_low") == 0 && argc == 3 &&
+               parse_bit(argv[2], &bit) == 0) {
+        swd_target_set_clk_held_low(bit);
+        io_res_ok("clk_held_low=%u", bit);
+    } else if (strcmp(sub, "rdp") == 0 && argc == 3 &&
+               parse_bit(argv[2], &bit) == 0) {
+        swd_target_set_rdp(bit);
+        io_res_ok("rdp=%u", bit);
+    } else if (strcmp(sub, "wait_ap") == 0 && argc == 3 &&
+               parse_u32(argv[2], 10, &v) == 0) {
+        swd_target_set_wait_ap(v);
+        io_res_ok("wait_ap=%u", v);
+    } else if (strcmp(sub, "poke32") == 0 && argc == 4 &&
+               parse_u32(argv[2], 16, &a) == 0 && parse_u32(argv[3], 16, &v) == 0) {
+        if (swd_target_poke32(a, v)) {
+            io_res_err("unmapped addr=0x%08X", a);
+            return -1;
+        }
+        io_res_ok("addr=0x%08X value=0x%08X", a, v);
+    } else if (strcmp(sub, "peek32") == 0 && argc == 3 &&
+               parse_u32(argv[2], 16, &a) == 0) {
+        if (swd_target_peek32(a, &v)) {
+            io_res_err("unmapped addr=0x%08X", a);
+            return -1;
+        }
+        io_res_ok("addr=0x%08X value=0x%08X", a, v);
+    } else if (strcmp(sub, "load") == 0 && argc == 4 &&
+               parse_u32(argv[2], 16, &a) == 0) {
+        if (swd_target_load_file(a, argv[3], &v)) {
+            io_res_err("load_failed addr=0x%08X", a);
+            return -1;
+        }
+        io_res_ok("addr=0x%08X len=%u", a, v);
+    } else {
+        fprintf(stderr, "Usage: swd_target reset|clear|stats|writes|flash_log|"
+                "power_cycle|save | preset stock|open_dimmer | connect <0|1> | "
+                "clk_held_low <0|1> | rdp <0|1> | wait_ap <n> | busy_reads <n> | "
+                "busy_reads_ob <n> | stock_pins_ms <ms> | cut_after <n> | "
+                "poke32 <addr> <val> | peek32 <addr> | load <addr> <path>\n");
+        io_res_err("usage");
+        return -1;
+    }
+    return 0;
+}
+
+/* The pin layer by hand, for a reference SWD host in the tests. Pins are
+ * numbers as in set_pin / read_pin. */
+static int cmd_swd_pin(int argc, char **argv) {
+    const char *sub = argc >= 2 ? argv[1] : "";
+    uint32_t    clk, dio;
+    uint8_t     bit;
+
+    if (strcmp(sub, "idle") == 0 && argc == 3 &&
+        parse_u32(argv[2], 10, &clk) == 0 && clk < HAL_INVALID_PIN) {
+        bit = hal_swd_clk_idle_level((hal_gpio_pin_t)clk);
+        io_res_ok("clk=%u level=%u", clk, bit);
+    } else if (strcmp(sub, "take") == 0 && argc == 4 &&
+               parse_u32(argv[2], 10, &clk) == 0 && clk < HAL_INVALID_PIN &&
+               parse_u32(argv[3], 10, &dio) == 0 && dio < HAL_INVALID_PIN) {
+        hal_swd_take((hal_gpio_pin_t)clk, (hal_gpio_pin_t)dio);
+        io_res_ok("clk=%u dio=%u", clk, dio);
+    } else if (strcmp(sub, "release") == 0 && argc == 2) {
+        hal_swd_release();
+        io_res_ok(NULL);
+    } else if (strcmp(sub, "clk") == 0 && argc == 3 &&
+               parse_bit(argv[2], &bit) == 0) {
+        hal_swd_clk(bit);
+        io_res_ok(NULL);
+    } else if (strcmp(sub, "drive") == 0 && argc == 3 &&
+               parse_bit(argv[2], &bit) == 0) {
+        hal_swd_dio_drive(bit);
+        io_res_ok(NULL);
+    } else if (strcmp(sub, "set") == 0 && argc == 3 &&
+               parse_bit(argv[2], &bit) == 0) {
+        hal_swd_dio_set(bit);
+        io_res_ok(NULL);
+    } else if (strcmp(sub, "get") == 0 && argc == 2) {
+        io_res_ok("level=%u", hal_swd_dio_get());
+    } else {
+        fprintf(stderr, "Usage: swd_pin idle <clk> | take <clk> <dio> | release "
+                "| clk <0|1> | drive <0|1> | set <0|1> | get\n");
+        io_res_err("usage");
+        return -1;
+    }
+    return 0;
+}
+
 /* Command table */
 static const SimpleReplCommand kCmds[] = {
     { "machine",             cmd_machine             },
@@ -561,6 +817,8 @@ static const SimpleReplCommand kCmds[] = {
     { "freeze_time",         cmd_freeze_time         },
     { "step_time",           cmd_step_time           },
     { "set_battery_voltage", cmd_set_battery_voltage },
+    { "swd_target",          cmd_swd_target          },
+    { "swd_pin",             cmd_swd_pin             },
     { "q",                   cmd_quit                },
     { "quit",                cmd_quit                },
 };

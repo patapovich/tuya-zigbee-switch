@@ -11,8 +11,9 @@ ELF.
     check_dimmer_only_symbols.py --nm <nm> [--dimmer-only] <elf>
 
 --dimmer-only: the board's entry has dimmer_only; its ELF must hold the
-dimmer endpoints and none of the others. Without it, the ELF must hold all of
-them. Exit status 1 on a mismatch.
+dimmer endpoints and none of the others, no Green Power code and no OTA server
+side (the module is an OTA client only). Without it,
+the ELF must hold all of the endpoints. Exit status 1 on a mismatch.
 """
 import argparse
 import subprocess
@@ -24,6 +25,18 @@ LEFT_OUT = ("switch_cluster_add_to_endpoint", "relay_cluster_add_to_endpoint",
             "cover_switch_cluster_add_to_endpoint", "cover_cluster_add_to_endpoint",
             "battery_cluster_add_to_endpoint")
 KEPT = ("dimmer_cluster_add_to_endpoint",)
+# Green Power: a dimmer_only board links src/telink/patch_sdk/gp_stub.c instead
+# (src/telink/sdk.mk GP_SOURCES). One symbol of each library member the stub
+# keeps out; checked one way only, as an end device's stack has no GP at all.
+GP_LEFT_OUT = ("dGp_dataInd", "cgp_mcpsDataIndFilter", "gpDataIndDuplicateFind", "gpCcmStar")
+# OTA server side: a dimmer_only board compiles the SDK's ota.c and zcl_ota.c
+# through src/telink/patch_sdk/ota_client_only.c and zcl_ota_client_only.c,
+# which leave it out. The senders of the server's responses are only reached
+# from it; checked one way only. The client side stays in every board.
+OTA_SERVER_LEFT_OUT = ("zcl_ota_imageBlockRspSend", "zcl_ota_queryNextImageRspSend",
+                       "zcl_ota_upgradeEndRspSend")
+OTA_CLIENT_KEPT = ("zcl_otaCb", "zcl_ota_register", "zcl_ota_queryNextImageReqSend",
+                   "zcl_ota_imageBlockReqSend", "zcl_ota_upgradeEndReqSend")
 
 
 def read_symbols(nm: str, elf: str) -> set[str]:
@@ -32,9 +45,10 @@ def read_symbols(nm: str, elf: str) -> set[str]:
 
 
 def problems(symbols: set[str], dimmer_only: bool) -> list[str]:
-    out = [f"{name} missing" for name in KEPT if name not in symbols]
+    out = [f"{name} missing" for name in KEPT + OTA_CLIENT_KEPT if name not in symbols]
     if dimmer_only:
-        out += [f"{name} present in a dimmer_only board" for name in LEFT_OUT if name in symbols]
+        out += [f"{name} present in a dimmer_only board" for name in LEFT_OUT + GP_LEFT_OUT + OTA_SERVER_LEFT_OUT
+                if name in symbols]
     else:
         out += [f"{name} missing in a board without dimmer_only" for name in LEFT_OUT
                 if name not in symbols]

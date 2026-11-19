@@ -150,6 +150,16 @@ TELINK_SOURCES := \
 	custom_zcl/zcl_scenes_custom.c \
 	patch_sdk/drv_nv.c
 
+ifneq ($(DIMMER_ONLY),)
+TELINK_SOURCES += patch_sdk/gp_stub.c patch_sdk/ota_client_only.c patch_sdk/zcl_ota_client_only.c
+endif
+
+# The SWD master of the secondary MCU (src/zigbee/mcu_flasher.c): only boards
+# that carry an MCU image; dormant there without the SW config token.
+ifneq ($(SECONDARY_MCU_IMAGE),)
+TELINK_SOURCES += hal/swd_io.c
+endif
+
 # Common source files (shared with Silicon Labs build)
 COMMON_SOURCES := \
 	$(SRC_DIR)/app.c \
@@ -181,6 +191,13 @@ COMMON_SOURCES := \
 	$(SRC_DIR)/zigbee/cover_switch_cluster.c \
 	$(SRC_DIR)/zigbee/cover_cluster.c \
 	$(SRC_DIR)/zigbee/battery_cluster.c 
+
+ifneq ($(SECONDARY_MCU_IMAGE),)
+COMMON_SOURCES += \
+	$(SRC_DIR)/base_components/swd.c \
+	$(SRC_DIR)/zigbee/mcu_flasher.c \
+	$(SRC_DIR)/zigbee/secondary_mcu_boot.c
+endif
 
 # All application sources
 ALL_TELINK_SOURCES := $(TELINK_SOURCES) $(COMMON_SOURCES)
@@ -231,6 +248,11 @@ $(BIN_FILE): $(ELF_FILE)
 	@mkdir -p $(dir $@)
 	@$(OBJCOPY) -O binary $< $@
 	@$(SIZE) $<
+
+# The SDK files a dimmer_only board compiles through patch_sdk/ (ota_client_only.c,
+# zcl_ota_client_only.c) get the SDK's flags (sdk.mk: -fpack-struct), so their
+# structures have the layout the SDK's other objects and libraries expect.
+$(BUILD_DIR)/telink/patch_sdk/ota_client_only.o $(BUILD_DIR)/telink/patch_sdk/zcl_ota_client_only.o: GCC_FLAGS += -fpack-struct
 
 # Compile Telink-specific C files
 $(BUILD_DIR)/telink/%.o: %.c
@@ -284,8 +306,10 @@ endif
 OTA_MAX_SIZE_EXPR = printf '\#include "tl_common.h"\nFLASH_OTA_IMAGE_MAX_SIZE\n' | \
 	$(CC) $(DEVICE_DEFS) $(INCLUDE_PATHS) -E -P -x c - | tail -n 1
 
-# Make an ota file
-ota: $(BIN_FILE)
+# Make an ota file. It links the ELF again (sdk-build is phony), so the
+# symbol checks run on that link too: an OTA file made without the board's
+# DIMMER_ONLY / SECONDARY_MCU_IMAGE fails here (board.mk OTA_LINK_VARS).
+ota: $(BIN_FILE) check-open-dimmer check-dimmer-only
 	@if [ -z "$(OTA_MANUFACTURER_ID)" ] || [ "$(OTA_MANUFACTURER_ID)" = "null" ] || \
       [ -z "$(OTA_IMAGE_TYPE)" ]      || [ "$(OTA_IMAGE_TYPE)" = "null" ]; then \
         echo "Skipping OTA file generation: missing arguments"; \

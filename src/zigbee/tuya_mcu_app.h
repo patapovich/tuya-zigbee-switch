@@ -43,6 +43,10 @@ void tuya_mcu_app_set_mcu_own(void);
 /* The MCU answered the identity query: it runs our own PY32 firmware. */
 uint8_t tuya_mcu_app_mcu_is_own(void);
 
+/* The MCU told a version 1.x (the factory firmware) and is not our own: the
+ * class the SWD master's install job takes (mcu_flasher.c). */
+uint8_t tuya_mcu_app_mcu_is_stock(void);
+
 /* Show (and report) the version the MCU told, as far as known now. */
 void tuya_mcu_app_show_mcu_version(void);
 

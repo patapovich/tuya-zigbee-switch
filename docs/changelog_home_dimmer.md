@@ -14,6 +14,33 @@ zdms16-py32 release notes.
 
 ## Next
 
+- Open Dimmer without a probe: solder two wires from the module's free pads D3 and D7 to the
+  MCU's SWD pads (CN2 SWC and SWD), power the module on, and it installs Open Dimmer by itself
+  (a factory MCU: read protection removed, which erases it; the bootloader written; the app
+  sent over the UART; Open Dimmer's default settings). The SWD master is on by default
+  (`SWD3D7` in the board's config); without the wires it reads one pin per start-up and nothing
+  else. It installs once, at the first start-up that sees the wires; an MCU that runs Open
+  Dimmer already is left alone. The wires need no resistors: the module drives SWDIO
+  open-drain and SWCLK only after finding it free. With the device option `mcu_flasher: show`, `mcu_flasher_status` tells what it
+  did, and `mcu_flasher` starts the manual jobs: `survey_dp`, `survey_full` (identity, option
+  bytes, checksums, app header; read only), `update_bootloader` / `update_bootloader_force`
+  and `install` (writing jobs: the job's name into `mcu_flasher_confirm` first), `abort`.
+- Z2M converter: the stock module's definition (AVATTO ZDMS16-2, the `_TZE284_jtbgusdc` and
+  `_TZE204_jtbgusdc` manufacturer names only) is in `switch_custom.js` with OTA, so the conversion
+  is offered with this one converter file (`tuya_with_ota.js` is not needed for it). Configure
+  interviews a converted module first when Zigbee2MQTT still has the stock firmware's endpoints
+  (1 and 242): its interview right after the OTA can answer from its database before the module
+  is back, and the reconfigure then failed on the missing endpoint 2.
+- Green Power is left out of the ZDMS16-2 build (`src/telink/patch_sdk/gp_stub.c`): this
+  firmware never starts it, so a GP frame never got past the stack; now the frame is dropped at
+  once. The OTA image is 6.2 KB smaller (room for the SWD master and Scenes). The OTA files are
+  now linked with the board's own flags (they were linked again without `DIMMER_ONLY`), and the
+  OTA step runs the symbol checks on that link.
+- The OTA server's side is left out of the ZDMS16-2 build (the module only ever receives
+  images): the SDK's `ota.c` and `zcl_ota.c` are compiled through
+  `src/telink/patch_sdk/ota_client_only.c` and `zcl_ota_client_only.c`, with the SDK's flags.
+  A client-to-server OTA command (which only a server receives) is answered as unsupported.
+  The OTA image is 2.3 KB smaller.
 - Zigbee Scenes on both channels (genScenes: Zigbee2MQTT's `scene_store`, `scene_add`,
   `scene_recall`, `scene_remove`, also for groups). A scene keeps the channel's on/off state and
   brightness; a recall fades in the scene's transition time, or with the channel's fade

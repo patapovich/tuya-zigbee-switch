@@ -1,0 +1,110 @@
+#ifndef _MCU_FLASHER_H_
+#define _MCU_FLASHER_H_
+
+#include <stdint.h>
+
+#include "hal/zigbee.h"
+
+/* SWD master for the secondary MCU (the AVATTO ZDMS16-2's PY32F002A), over two
+ * wires from free module pads to the MCU's SWD pads. Only in builds with
+ * SECONDARY_MCU_IMAGE, and dormant there unless the config names the pins
+ * with the SW<clk><dio> token (e.g. SWD3D7): without it no pin is touched, no
+ * attribute is added, and nothing else changes.
+ *
+ * Jobs: the read-only surveys (survey_dp, survey_full) start with one write of
+ * the control attribute; update_bootloader (and _force) writes the carried
+ * bootloader (secondary_mcu_boot.c) into sector 0; install takes a factory MCU
+ * (read-protected) to Open Dimmer: protection off (which erases its flash),
+ * option bytes as Open Dimmer has them, the bootloader, which then fetches the
+ * app over the UART. The writing jobs need the confirm attribute set to the
+ * job's name first (one use, 60 s). An install that cannot attach at once
+ * (the factory firmware may hold the SWD pins) is armed in NV and attaches
+ * early at the next power-ups (mcu_flasher_early). The result is the status
+ * attribute. */
+
+#define MCU_FLASHER_ATTRS               3 /* status, control, confirm: with the token */
+
+#define MCU_FLASHER_JOB_NONE            0
+#define MCU_FLASHER_JOB_SURVEY_DP       1
+#define MCU_FLASHER_JOB_SURVEY_FULL     2
+#define MCU_FLASHER_JOB_UPDATE_BOOT     3
+#define MCU_FLASHER_JOB_UPDATE_FORCE    4
+#define MCU_FLASHER_JOB_INSTALL         5
+#define MCU_FLASHER_JOB_ABORT           0xFF
+
+enum {
+    MCU_FLASHER_STATE_IDLE = 0,
+    MCU_FLASHER_STATE_RUNNING,
+    MCU_FLASHER_STATE_DONE,
+    MCU_FLASHER_STATE_FAILED,
+    MCU_FLASHER_STATE_ABORTED,
+    MCU_FLASHER_STATE_ARMED,       /* install: waits for the next power-up (power-cycle the module) */
+};
+
+enum {
+    MCU_FLASHER_ERR_NONE = 0,
+    MCU_FLASHER_ERR_PINS_DRIVEN,   /* SWCLK held low: nothing driven */
+    MCU_FLASHER_ERR_NO_TARGET,     /* no DP answer */
+    MCU_FLASHER_ERR_WRONG_TARGET,  /* an identity value is not the PY32F002A's */
+    MCU_FLASHER_ERR_SWD,           /* a transfer failed: see swd_err */
+    MCU_FLASHER_ERR_BUSY,          /* a job is running */
+    MCU_FLASHER_ERR_BAD_JOB,       /* unknown job */
+    MCU_FLASHER_ERR_NOT_CONFIRMED, /* a writing job without its confirm text */
+    MCU_FLASHER_ERR_PROTECTED,     /* RDP not 0, unexpected option bytes or sector 0 write-protected */
+    MCU_FLASHER_ERR_HALT,          /* the core did not halt */
+    MCU_FLASHER_ERR_FLASH,         /* unlock failed, write protection error or flash timeout */
+    MCU_FLASHER_ERR_VERIFY,        /* sector 0 CRC wrong after writing it twice */
+    MCU_FLASHER_ERR_WRONG_CLASS,   /* install: not a factory MCU (UART version not 1.x, or RDP 0) */
+    MCU_FLASHER_ERR_OB_VERIFY,     /* install: the option bytes did not read back as written */
+    MCU_FLASHER_ERR_NO_ATTACH,     /* install: no attach in its armed power-ups */
+    MCU_FLASHER_ERR_RELOAD,        /* install: after the option reload not RDP 0 / not erased */
+};
+
+/* Status attribute (Basic 0xff50, octet string), little-endian. At most 48
+ * bytes after the length byte, as every octet string attribute of this
+ * firmware (tuya_mcu_diag.c): a read response or report must fit one frame
+ * (a bigger one is not sent by the stack, and format 1's 80 bytes left a
+ * module mute until a power cycle). */
+typedef struct __attribute__((packed)) {
+    uint8_t  len;          /* ZCL octet string length byte */
+    uint8_t  format;       /* 2 */
+    uint8_t  state;        /* MCU_FLASHER_STATE_* */
+    uint8_t  job;          /* MCU_FLASHER_JOB_* */
+    uint8_t  step;         /* the job's step reached (see mcu_flasher.c) */
+    uint8_t  error;        /* MCU_FLASHER_ERR_* */
+    uint8_t  swd_err;      /* swd_err_t of the failed transfer */
+    uint8_t  boot_version; /* boot_id version byte (0: no "ODBL" boot_id) */
+    uint8_t  app_version;  /* app header version byte, Tuya packed (0: no "APDZ" header) */
+    uint32_t dpidr;
+    uint32_t ap_idr;
+    uint32_t cpuid;
+    uint32_t idcode;       /* DBGMCU IDCODE */
+    uint32_t optr;         /* FLASH_OPTR (RDP level in the low byte) */
+    uint16_t wrpr;         /* FLASH_WRPR */
+    uint16_t app_build;    /* app header build */
+    uint32_t option_crc;   /* CRC-32 of the stored option bytes 0x1FFF0E80, 16 B */
+    uint32_t rom_crc;      /* CRC-32 of the system ROM 0x1FFF0000..0x1FFF0DFF */
+    uint32_t sector0_crc;  /* CRC-32 of 0x08000000..0x08000FFF (RDP 0 only) */
+    uint16_t duration_ms;  /* how long it ran (saturated) */
+    uint8_t  page;         /* update_bootloader: the page being written (1..31, then 0) */
+} mcu_flasher_status_t;
+
+#define MCU_FLASHER_STATUS_MAX    48 /* bytes after the length byte */
+
+/* app.c, right after parse_config(): an armed install attaches here, some
+ * 40-80 ms after power-up, before a factory firmware takes the SWD pins. */
+void mcu_flasher_early(void);
+
+/* config_parser.c: an SW<clk><dio> token. */
+void mcu_flasher_parse_token(const char *entry);
+
+/* basic_cluster.c: the two attributes, only with a valid token (else 0). */
+uint8_t mcu_flasher_register_attrs(hal_zigbee_attribute *table, uint8_t start_index);
+
+/* basic_cluster.c: an attribute write. */
+void mcu_flasher_on_write(uint16_t attribute_id);
+
+/* app.c: one slice of a running job per main-loop pass. */
+void mcu_flasher_task(void);
+
+#endif

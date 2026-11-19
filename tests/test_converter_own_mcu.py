@@ -181,7 +181,8 @@ console.log(JSON.stringify({
     assert out["newWins"] == [16, 2]
     assert out["oldShowStored"] == [{"dimming_curve_l1": "linear"}]
     assert out["options"] == [["open_dimmer_settings", ["auto", "show", "hide"], "Open Dimmer settings"],
-                              ["transition", None, None]]    # its own description (dimmerTransition)
+                              ["transition", None, None],    # its own description (dimmerTransition)
+                              ["mcu_flasher", ["hide", "show"], "MCU flasher"]]  # the SWD master
 
 
 # Every genBasic fromZigbee of the definition in Zigbee2MQTT's order, mcu_version's
@@ -243,11 +244,11 @@ def test_mcu_firmware_is_a_device_level_diagnostic_on_open_dimmer_boards_only():
     text() it was (name, endpoint, access, category, attribute; its get is text()'s)."""
     out = json.loads(run_node("""
 const dev = h.device();
-const firmware = (model) => definitions.filter((d) => d.model === model).map((d) => d.extend.filter((x) => !x.fake)
+const firmware = (model) => definitions.filter((d) => d.model === model && d.zigbeeModel).map((d) => d.extend.filter((x) => !x.fake)
     .flatMap((x) => x.exposes ?? []).flatMap((x) => (typeof x === "function" ? x(dev, {}) : [x]))
     .filter((x) => x.name === "mcu_firmware")
     .map(({type, name, label, access, endpoint, category, description}) => ({type, name, label, access, endpoint: endpoint ?? null, category, description})));
-const version = (model) => definitions.filter((d) => d.model === model)
+const version = (model) => definitions.filter((d) => d.model === model && d.zigbeeModel)
     .map((d) => h.fakeExtends(d).filter((x) => x.args?.name === "mcu_version").map((x) => [x.args, x.toZigbee]));
 console.log(JSON.stringify({
     firmware: ["ZDMS16-2", "SFL02-Z-2", "TS0601_switch_8"].map(firmware),

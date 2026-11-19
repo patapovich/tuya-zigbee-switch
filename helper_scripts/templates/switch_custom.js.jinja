@@ -529,6 +529,13 @@ const romasku = {
                         if (!/^ST[0-9A-Fa-f]{2}$/.test(part)) {
                             throw new Error(`Datapoint ${part} is invalid. Use ST<hh>, e.g. ST01`);
                         }
+                    } else if (part.startsWith('SW')) {
+                        // SWD pins towards the secondary MCU: SW<clk><dio>, e.g. SWD3D7
+                        if (part.length != 6) {
+                            throw new Error(`SWD pins ${part} are invalid. Use SW<clk><dio>, e.g. SWD3D7`);
+                        }
+                        validatePin(part.slice(2,4));
+                        validatePin(part.slice(4,6));
                     } else if (part.startsWith('IT')) {
                         if (!/^IT[0-9A-Fa-f]{2}[124]([0-9A-Fa-f]{2}|[0-9A-Fa-f]{8})$/.test(part)) {
                             throw new Error(`Datapoint init ${part} is invalid. Use IT<hh><t><v>, e.g. IT67101`);
@@ -585,7 +592,7 @@ const romasku = {
                             throw new Error(`Dimmer DPID map ${part} is invalid. Use P<idx>O<oo>L<ll>S<ss>M<mm>X<xx> (hex), e.g. P08O01L08`);
                         }
                     } else {
-                        throw new Error(`Invalid entry ${part}. Should start with one of B, BT, C, D, DM, I, IT, L, M, P, PT, R, RT, S, SLP, ST, W, X, Y, Z, i`);
+                        throw new Error(`Invalid entry ${part}. Should start with one of B, BT, C, D, DM, I, IT, L, M, P, PT, R, RT, S, SLP, ST, SW, W, X, Y, Z, i`);
                     }
                 }
             },
@@ -1203,6 +1210,96 @@ const romasku = {
             }],
         };
     },
+    // SWD master of the dimming MCU (src/zigbee/mcu_flasher.c): only on a module whose config
+    // names its two wires (SW<clk><dio> token), and only shown with the device option
+    // mcu_flasher: show (default hide: no expose, no state). One write of mcu_flasher starts a
+    // job (the read-only surveys; update_bootloader also needs mcu_flasher_confirm = its name,
+    // Basic 0xff52); mcu_flasher_status shows its result (Basic 0xff50 on endpoint 1, format 2:
+    // 47 bytes, mcu_flasher_status_t; reported at every change and about once a second while
+    // it runs).
+    mcuFlasher: () => {
+        const jobs = {survey_dp: 1, survey_full: 2, update_bootloader: 3, update_bootloader_force: 4, install: 5, abort: 0xff};
+        const states = ["idle", "running", "done", "failed", "aborted", "armed"];
+        const errors = ["", "SWCLK held low (power-cycle the module, then try again)", "no answer (wires? power?)",
+                        "not the expected PY32F002A", "SWD transfer failed", "busy", "unknown job",
+                        "not confirmed: write the job's name to mcu_flasher_confirm first (valid 60 s)",
+                        "read-protected, unexpected option bytes or the bootloader write-protected",
+                        "the MCU did not stop", "flash error (unlock, write protection or timeout)",
+                        "the bootloader's checksum was wrong after writing it twice: the MCU stays stopped, its outputs off",
+                        "not a factory MCU (install takes one that told a 1.x version and is read-protected)",
+                        "the option bytes did not read back as written (not loaded; try again)",
+                        "no attach in the armed power-ups",
+                        "after the option reload not unprotected and erased"];
+        const exposes = [
+            e.enum("mcu_flasher", ea.SET, Object.keys(jobs)).withLabel("MCU flasher")
+                .withDescription("Start a job of the module's SWD link to the dimming MCU: survey_dp reads the debug port's id, survey_full the MCU's identity, option bytes and firmware checksums (both only read); update_bootloader writes the module's bootloader into the MCU if it differs (_force: always); install takes a factory MCU to Open Dimmer (ERASES its firmware and settings; then power-cycle the module when the status says so). Writing jobs need mcu_flasher_confirm first. Needs the SW token in device_config")
+                .withCategory("config"),
+            e.text("mcu_flasher_confirm", ea.SET).withLabel("MCU flasher confirm")
+                .withDescription("A writing job runs only if its name was written here within the last 60 s (update_bootloader, update_bootloader_force or install); used once")
+                .withCategory("config"),
+            e.text("mcu_flasher_status", ea.STATE_GET).withLabel("MCU flasher status")
+                .withDescription("State and result of the last MCU flasher job")
+                .withCategory("diagnostic"),
+        ];
+        const shown = (options) => options?.mcu_flasher === "show";
+        const hex = (v) => "0x" + (v >>> 0).toString(16).toUpperCase().padStart(8, "0");
+        const describe = (b) => {
+            const state = states[b[1]] ?? `state ${b[1]}`;
+            const job = Object.keys(jobs).find((k) => jobs[k] === b[2]) ?? `job ${b[2]}`;
+            const parts = [`${state} ${job}`];
+            if (b[1] === 1) parts.push(b[3] === 11 ? `writing page ${b[46] || 32}/32` : `step ${b[3]}`);
+            // page 255: an install past its option bytes, taken up at every power-up until done
+            if (b[1] === 5) parts.push(`power-cycle the module now (${b[46] === 255 ? "the install goes on at every power-up" : `${b[46]} power-ups left`})` + (b[4] ? `; last attach stopped at step ${b[3]}` : ""));
+            if (b[4]) parts.push(`error: ${errors[b[4]] ?? b[4]}` + (b[5] ? ` (SWD ${b[5]})` : ""));
+            const w = (i) => b.readUInt32LE(i);
+            if (w(8)) parts.push(`DPIDR ${hex(w(8))}`);
+            if (w(16)) parts.push(`CPUID ${hex(w(16))}, IDCODE ${hex(w(20))}, AP ${hex(w(12))}`);
+            if (w(24)) parts.push(`OPTR ${hex(w(24))} (RDP ${b[24] === 0xaa ? 0 : b[24] === 0xcc ? 2 : 1}), WRPR ${hex(b.readUInt16LE(28))}, option bytes CRC ${hex(w(32))}`);
+            if (w(36)) parts.push(`ROM CRC ${hex(w(36))}`);
+            if (w(40)) parts.push(`sector 0 CRC ${hex(w(40))}`);
+            if (b[6]) parts.push(`bootloader v${b[6]}`);
+            if (b[7]) parts.push(`app ${b[7] >> 6}.${(b[7] >> 4) & 3}.${b[7] & 15} build ${b.readUInt16LE(30)}`);
+            else if (b[2] === 5 && b.readUInt16LE(30)) parts.push(`attached ${b.readUInt16LE(30)} ms after the module's start`);
+            if (b[1] >= 2) parts.push(`${(b.readUInt16LE(44) / 1000).toFixed(1)} s`);
+            return parts.join("; ");
+        };
+        return {
+            isModernExtend: true,
+            options: [
+                e.enum("mcu_flasher", ea.SET, ["hide", "show"]).withLabel("MCU flasher")
+                    .withDescription("The module's SWD link to the dimming MCU (two extra wires and the SW token in device_config): show its controls. hide (default): nothing shown"),
+            ],
+            exposes: [(device, options) => (shown(options) ? exposes : [])],
+            fromZigbee: [{
+                cluster: "genBasic",
+                type: ["attributeReport", "readResponse"],
+                convert: (model, msg, publish, options) => {
+                    const raw = msg.data?.[0xff50];
+                    if (msg.endpoint?.ID !== 1 || raw === undefined || !shown(options)) return;
+                    const b = Buffer.from(raw);
+                    if (b.length < 47 || b[0] !== 2) return;
+                    return {mcu_flasher_status: describe(b)};
+                },
+            }],
+            toZigbee: [{
+                key: ["mcu_flasher", "mcu_flasher_status", "mcu_flasher_confirm"],
+                convertSet: async (entity, key, value, meta) => {
+                    if (!shown(meta.options)) throw new Error(`${key}: set the device option mcu_flasher to show first`);
+                    if (key === "mcu_flasher_confirm") {
+                        const text = String(value);
+                        if (text.length > 23) throw new Error("mcu_flasher_confirm: at most 23 characters");
+                        await meta.device.getEndpoint(1).write("genBasic", {0xff52: {value: text, type: 0x42}});
+                        return;
+                    }
+                    if (jobs[value] === undefined) throw new Error(`mcu_flasher: unknown job ${value}`);
+                    await meta.device.getEndpoint(1).write("genBasic", {0xff51: {value: jobs[value], type: 0x20}});
+                },
+                convertGet: async (entity, key, meta) => {
+                    await meta.device.getEndpoint(1).read("genBasic", [0xff50]);
+                },
+            }],
+        };
+    },
     // Transitions of the dimmer channels. zigbee-herdsman-converters sends a level change
     // without a transition (neither the message's nor the device option transition) with time
     // 0, which Open Dimmer takes for "at once": those go out with 0xFFFF ("none": the module's
@@ -1475,6 +1572,7 @@ const definitions = [
             {% if device.secondary_mcu_image %}
             romasku.mcuFirmware(),
             romasku.mcuHealth(),
+            romasku.mcuFlasher(),
             {% endif %}
             {% endif %}
             romasku.multiPressResetCount("multi_press_reset_count"),
@@ -1493,6 +1591,16 @@ const definitions = [
         onEvent: romasku.dimmerOnLevelRefresh([{% for dimmerName in device.dimmerNames %}{{loop.index + dimmer_base}}{{ ", " if not loop.last }}{% endfor %}]),
         {% endif %}
         configure: async (device, coordinatorEndpoint, logger) => {
+            {% if device.secondary_mcu_image and device.dimmerNames %}
+            {% set last_endpoint = (device.switchNames | length) + (device.relayNames | length) + (device.coverSwitchNames | length) + (device.coverNames | length) + (device.dimmerNames | length) %}
+            // Right after the conversion from the stock firmware Zigbee2MQTT may still hold the
+            // stock firmware's endpoints (1 and 242): its interview after the OTA can run before
+            // the converted module is back, and answers from its database. The binds below
+            // would then fail on the missing endpoint {{ last_endpoint }}: interview it again first.
+            if (!device.getEndpoint({{ last_endpoint }})) {
+                await device.interview(true);
+            }
+            {% endif %}
             {% if device.dimmerNames or (device.dp_attributes | selectattr("min_mcu") | list) %}
             // Right after a module restart the module answers with defaults (0) until the MCU
             // has sent its values; reading then would leave 0 on the page. Wait for a real MCU
@@ -1692,5 +1800,37 @@ const definitions = [
     },
 {% endfor %}
 ];
+
+{% if stock_ota %}
+// The stock modules of the boards that carry the Open Dimmer image ({% for stock in stock_ota %}{{ stock.vendor }} {{ stock.model }}{{ ", " if not loop.last }}{% endfor %}):
+// zigbee-herdsman-converters' own definition, with OTA, for those boards' stock manufacturer
+// names only. Zigbee2MQTT then offers the conversion (the -from_tuya image of the OTA index)
+// with this file alone; tuya_with_ota.js gives OTA to some 60 stock models at once.
+{% for stock in stock_ota %}
+{
+    let stockDefinitions = require("zigbee-herdsman-converters/devices/{{ stock.module }}");
+    stockDefinitions = stockDefinitions.definitions ?? stockDefinitions;
+    const stock = stockDefinitions.find((d) => d.model === "{{ stock.model }}" && d.vendor === "{{ stock.vendor }}");
+    if (stock) {
+        const {zigbeeModel, ...stockWithoutIds} = stock;   // matched by the fingerprints below only
+        definitions.push({
+            ...stockWithoutIds,
+            fingerprint: [
+                {% for name in stock.manufacturer_names %}
+                {modelID: "{{ stock.zb_model }}", manufacturerName: "{{ name }}"},
+                {% endfor %}
+            ],
+            {% if z2m_v1 %}
+            ota: ota.zigbeeOTA,
+            {% else %}
+            ota: true,
+            {% endif %}
+        });
+    } else {
+        console.warn("switch_custom.js: no stock {{ stock.vendor }} {{ stock.model }} definition in zigbee-herdsman-converters: the conversion OTA is not offered");
+    }
+}
+{% endfor %}
+{% endif %}
 
 module.exports = definitions;

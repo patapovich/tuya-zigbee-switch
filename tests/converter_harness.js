@@ -189,6 +189,15 @@ const fakes = {
         access: {STATE: 1, SET: 2, STATE_SET: 3, STATE_GET: 5, ALL: 7},
     },
     "zigbee-herdsman-converters/lib/ota": {zigbeeOTA: {}},
+    // the stock module's own definition (zigbee-herdsman-converters devices/avatto.js): a few of
+    // its fingerprints and what the converter must keep of it
+    "zigbee-herdsman-converters/devices/avatto": {definitions: [
+        {zigbeeModel: ["other"], model: "ZMS-other", vendor: "AVATTO", description: "another one"},
+        {fingerprint: [{modelID: "TS0601", manufacturerName: "_TZE204_o9gyszw2"},
+                       {modelID: "TS0601", manufacturerName: "_TZE284_jtbgusdc"}],
+         model: "ZDMS16-2", vendor: "AVATTO", description: "Zigbee Module 2 channels Dimmer",
+         exposes: ["stock exposes"], fromZigbee: ["stock fz"], toZigbee: ["stock tz"]},
+    ]},
     "zigbee-herdsman": {Zcl: {DataType: {BOOLEAN: 0x10, BITMAP8: 0x18, UINT8: 0x20, UINT16: 0x21, UINT32: 0x23, ENUM8: 0x30}}},
 };
 
@@ -205,11 +214,13 @@ global.setTimeout = (fn, ms) => { delays.push(ms); return realSetTimeout(fn, 0);
  * versions (the last one repeats; an Error is thrown), a genLevelCtrl onLevel read with
  * onLevel (255: none, as the module has it by default), and every other read with {}.
  * Reads, writes and reporting land in log. */
-const device = ({versions = [""], meta = {}, onLevel = 255} = {}) => {
+const device = ({versions = [""], meta = {}, onLevel = 255, missing = []} = {}) => {
     const cache = {};
     const queue = [...versions];
     const endpoints = {};
-    const endpoint = (id) => (endpoints[id] ??= {
+    // missing: endpoints Zigbee2MQTT's database does not have (yet), until an interview
+    const absent = new Set(missing);
+    const endpoint = (id) => absent.has(id) ? undefined : (endpoints[id] ??= {
         ID: id,
         deviceIeeeAddress: "0x0000000000000001",
         clusters: {genBasic: {attributes: cache}},
@@ -228,7 +239,8 @@ const device = ({versions = [""], meta = {}, onLevel = 255} = {}) => {
         command: async (cluster, command, payload) => log.push(["command", id, cluster, command, payload]),
         configureReporting: async (cluster, items) => log.push(["report", id, cluster, items]),
     });
-    return {ieeeAddr: "0x0000000000000001", meta, saves: 0, save() { this.saves++; }, getEndpoint: endpoint, endpoints: []};
+    return {ieeeAddr: "0x0000000000000001", meta, saves: 0, save() { this.saves++; }, getEndpoint: endpoint, endpoints: [],
+            interview: async (ignoreCache) => { log.push(["interview", ignoreCache]); absent.clear(); }};
 };
 
 /* The converter's definitions and, for the tests, some of its internals. */
