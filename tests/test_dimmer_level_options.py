@@ -148,12 +148,15 @@ def test_commands_with_onoff_are_not_affected():
         proc.stop()
 
 
-def test_options_survive_a_restart():
+@pytest.mark.parametrize("value", [1, 0xFF, 0])
+def test_options_survive_a_restart(value):
+    """Any value is kept, 0xFF too (no "none" value collides with it)."""
     proc, device = stock_off(options=1)
+    device.write_zigbee_attr(1, LEVEL, ATTR_OPTIONS, value)
     proc.stop()
     proc, device = start()
     try:
-        assert int(device.read_zigbee_attr(1, LEVEL, ATTR_OPTIONS)) == 1
+        assert int(device.read_zigbee_attr(1, LEVEL, ATTR_OPTIONS)) == value
         assert int(device.read_zigbee_attr(2, LEVEL, ATTR_OPTIONS)) == 0      # per channel
     finally:
         proc.stop()
@@ -161,10 +164,12 @@ def test_options_survive_a_restart():
 
 # ---- ExecuteIfOff, Open Dimmer -------------------------------------------------------------
 
-def test_open_dimmer_keeps_a_level_written_while_off():
+@pytest.mark.parametrize("build", [500, 400, None])
+def test_open_dimmer_keeps_a_level_written_while_off(build):
+    """Every Open Dimmer app does (from its first Tuya protocol code; 2.1.x apps have no build)."""
     proc, device = start()
     try:
-        mcu = own_mcu_contact(proc, device, build=500)
+        mcu = own_mcu_contact(proc, device, build=build)
         take_tx(proc)
         device.write_zigbee_attr(1, LEVEL, ATTR_OPTIONS, 1)
         mcu.writes.clear()

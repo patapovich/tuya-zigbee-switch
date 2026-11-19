@@ -173,6 +173,7 @@ const char *stub_app_attribute_value_to_string(hal_zigbee_attribute *attr,
     switch (attr->data_type_id) {
     case ZCL_DATA_TYPE_BOOLEAN:
     case ZCL_DATA_TYPE_UINT8:
+    case ZCL_DATA_TYPE_BITMAP8:
     case ZCL_DATA_TYPE_ENUM8:
         if (attr->size >= 1)
             snprintf(buf, bufsize, "%u", attr->value[0]);
@@ -262,6 +263,7 @@ int stub_app_string_to_attribute_value(hal_zigbee_attribute *attr,
     switch (attr->data_type_id) {
     case ZCL_DATA_TYPE_BOOLEAN:
     case ZCL_DATA_TYPE_UINT8:
+    case ZCL_DATA_TYPE_BITMAP8:
     case ZCL_DATA_TYPE_ENUM8: {
         unsigned int v = 0;
         if (sscanf(str, "%u", &v) != 1)

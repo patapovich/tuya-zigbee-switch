@@ -385,15 +385,18 @@ static uint8_t dimmer_on_level_set(const zigbee_dimmer_cluster *cluster) {
 
 #define DIMMER_ON_LEVEL_UNDEFINED    0xFF
 
-/* One byte the Zigbee side keeps for a dimmer (its OnLevel, its DefaultMoveRate); 0xFF when
- * there is none. */
+/* One byte the Zigbee side keeps for a dimmer; 1 when one is stored. */
+static uint8_t dimmer_nv_read(const zigbee_dimmer_cluster *cluster, uint8_t item, uint8_t *value) {
+    return cluster->dimmer_idx < NV_LAYOUT_DIMMERS &&
+           hal_nvm_read(item, sizeof(*value), value) == HAL_NVM_SUCCESS;
+}
+
+/* Its OnLevel, its DefaultMoveRate: 0xFF ("none" in ZCL) when there is none. */
 static uint8_t dimmer_nv_load(const zigbee_dimmer_cluster *cluster, uint8_t item) {
     uint8_t value = 0xFF;
 
-    if (cluster->dimmer_idx >= NV_LAYOUT_DIMMERS ||
-        hal_nvm_read(item, sizeof(value), &value) != HAL_NVM_SUCCESS) {
+    if (!dimmer_nv_read(cluster, item, &value))
         value = 0xFF;
-    }
     return value;
 }
 
@@ -422,8 +425,10 @@ static void dimmer_load_on_level(zigbee_dimmer_cluster *cluster) {
     cluster->on_level_local       = value;
     cluster->on_level_local_saved = value;
 
-    value = dimmer_nv_load(cluster, NV_ITEM_DIMMER_LEVEL_OPTIONS(cluster->dimmer_idx));
-    cluster->level_options       = value == 0xFF ? 0 : value;   /* none stored: 0 */
+    /* Options: any value is one (0xFF too); none stored is 0, so a 0 needs no write. */
+    if (!dimmer_nv_read(cluster, NV_ITEM_DIMMER_LEVEL_OPTIONS(cluster->dimmer_idx), &value))
+        value = 0;
+    cluster->level_options       = value;
     cluster->level_options_saved = value;
 }
 
@@ -468,7 +473,13 @@ static void dimmer_turn_off(zigbee_dimmer_cluster *cluster) {
 }
 
 /* ZCL ExecuteIfOff of a level command without OnOff: Options bit 0, unless its
- * OptionsMask / OptionsOverride (at payload[at], when there) set it otherwise. */
+ * OptionsMask / OptionsOverride (at payload[at], when there) set it otherwise.
+ * Limit on Telink: the SDK's level handler (zcl_level.c, its options check
+ * before the app callback) applies the same rule first and is stricter for
+ * some mask shapes: it executes only when (mask & override) is exactly 0x01,
+ * so a mask that also has bit 1 (CoupleColorTempToLevel) set, or bit 0
+ * cleared by a mask with bit 1 while Options has ExecuteIfOff, is dropped
+ * there before it reaches us. No dimmer controller sends bit 1. */
 static uint8_t dimmer_execute_if_off(const zigbee_dimmer_cluster *cluster, const uint8_t *payload,
                                      uint16_t len, uint16_t at) {
     uint8_t options = cluster->level_options;
@@ -478,12 +489,17 @@ static uint8_t dimmer_execute_if_off(const zigbee_dimmer_cluster *cluster, const
     return options & ZCL_LEVEL_OPTIONS_EXECUTE_IF_OFF;
 }
 
+/* Every Open Dimmer app keeps a level written while off for its next on: it
+ * did from its first Tuya protocol code (zdms16-py32 26e5126), in every tag
+ * from v2.1.9 (no build, 0) to v2.1.14 (build 400). */
+#define OPEN_DIMMER_KEEPS_OFF_LEVEL_BUILD    0
+
 /* While off (ExecuteIfOff): the level the light comes on at, the light stays
  * off. Open Dimmer keeps a level written while off; a stock MCU would forget
  * it, so it is kept here for the next on. */
 static void dimmer_set_off_level(zigbee_dimmer_cluster *cluster, uint8_t level) {
     dimmer_set_current_level(cluster, level);
-    if (dimmer_own_mcu(cluster)) {
+    if (dimmer_od_from(cluster, OPEN_DIMMER_KEEPS_OFF_LEVEL_BUILD)) {
         dimmer_write_level(cluster, level);
     } else {
         cluster->level_value   = dimmer_level_to_value(cluster, level);
