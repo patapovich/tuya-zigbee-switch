@@ -42,12 +42,16 @@ VERSION_STR := $(shell echo "$(VERSION_FILE_CONTENT)-$(GIT_HASH)" | cut -c1-16)
 # APP_RELEASE, APP_BUILD, STACK_RELEASE, STACK_BUILD
 # We encode MAJOR.MINOR -> APP_RELEASE (in BCD format)
 # PATCH -> APP_BUILD
-# and STACK_RELEASE fixed to 0x30,
-# STACK_BUILD is depth from main branch, to allow easy updating during feature development
+# and STACK_RELEASE 0x30,
+# STACK_BUILD is depth from main branch, to allow easy updating during feature development.
+# A depth over 255 carries into STACK_RELEASE (0x30 + depth / 256, STACK_BUILD depth % 256):
+# the file version keeps growing with the depth and stays 4 bytes (a plain "%02X" of the depth
+# gave 3 hex digits from 256 on). Up to 255 the version is the same as before.
 STACK_BUILD := $(shell git rev-list --count origin/main..HEAD 2>/dev/null || echo "0")
 VERSION_PATCH_HEX := $(shell printf "%02d" $(VERSION_PATCH))
-STACK_BUILD_HEX := $(shell printf "%02X" $(STACK_BUILD))
-FILE_VERSION = 0x$(VERSION_MAJOR)$(VERSION_MINOR)$(VERSION_PATCH_HEX)30$(STACK_BUILD_HEX)
+STACK_RELEASE_HEX := $(shell printf "%02X" $$((48 + $(STACK_BUILD) / 256)))
+STACK_BUILD_HEX := $(shell printf "%02X" $$(($(STACK_BUILD) % 256)))
+FILE_VERSION = 0x$(VERSION_MAJOR)$(VERSION_MINOR)$(VERSION_PATCH_HEX)$(STACK_RELEASE_HEX)$(STACK_BUILD_HEX)
 
 NVM_MIGRATIONS_VERSION := $(shell cat NVM_MIGRATIONS_VERSION 2>/dev/null || echo "1")
 
