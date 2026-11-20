@@ -11,6 +11,9 @@ run-name: Carry PY32 ${{ inputs.py32_tag || github.event.client_payload.tag || '
 # A named tag (by hand or dispatched) that cannot be carried fails the run; the hourly check
 # only notes it (home-dimmer ahead of the latest release, or carrying another image of the
 # same version by hand).
+# Every change of home-dimmer gets its module firmware too: home-dimmer_build older than
+# home-dimmer (any file but the build changelog differs) is built again, by the hourly check or
+# at once by home-dimmer's test workflow, which starts this one after a push's tests pass.
 
 on:
   schedule:
@@ -114,11 +117,28 @@ jobs:
           echo "change=true" >> "$GITHUB_OUTPUT"
           cp /tmp/py32/secondary_mcu_image.c src/zigbee/secondary_mcu_image.c
 
+      # Is home-dimmer_build cut from the home-dimmer of now? Its base is where it leaves
+      # home-dimmer; a later commit that changes only the build changelog (a build's own stamp)
+      # needs no build.
+      - name: Build branch up to date
+        id: stale
+        run: |
+          set -e
+          git fetch -q origin home-dimmer_build
+          base=$(git merge-base HEAD origin/home-dimmer_build)
+          if git diff --quiet "$base" HEAD -- . ':(exclude)docs/changelog_home_dimmer.md'; then
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+            echo "home-dimmer_build is cut from $(git rev-parse --short "$base"): up to date"
+          else
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::home-dimmer changed since home-dimmer_build was cut from $(git rev-parse --short "$base"): building"
+          fi
+
       # apt through home-dimmer's .github/ci/apt.sh (Azure mirror first, time limits, one retry on
       # the main archive; .deb files cached by their exact versions).
       - name: Packages (versions)
         id: apt
-        if: steps.rel.outputs.change == 'true' || inputs.force
+        if: steps.rel.outputs.change == 'true' || inputs.force || steps.stale.outputs.stale == 'true'
         timeout-minutes: 6
         run: |
           .github/ci/apt.sh --mirrors
@@ -134,7 +154,7 @@ jobs:
           key: ${{ steps.apt.outputs.key }}
 
       - name: Lint and tests with the image
-        if: steps.rel.outputs.change == 'true' || inputs.force
+        if: steps.rel.outputs.change == 'true' || inputs.force || steps.stale.outputs.stale == 'true'
         timeout-minutes: 30
         run: |
           .github/ci/apt.sh install-cached make python3 python3-pytest python3-yaml python3-jinja2 uncrustify
@@ -160,7 +180,7 @@ jobs:
 
       - name: Build branch and module firmware
         id: build
-        if: steps.rel.outputs.change == 'true' || inputs.force
+        if: steps.rel.outputs.change == 'true' || inputs.force || steps.stale.outputs.stale == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PUSH_TOKEN: ${{ secrets.BUMP_PUSH_TOKEN }}
