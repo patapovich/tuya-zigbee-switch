@@ -139,3 +139,27 @@ jobs:
         git add zigbee2mqtt/*
         git diff --cached --quiet || git commit -m "Freeze links in OTA index files"
         git push
+
+    # patapovich fork, home-dimmer_build only: the build's OTA images become the assets of its
+    # own release (tag zdms16-2-<build>) and the index files point there, because GitHub counts
+    # release downloads (download_count) but not raw ones. Zigbee2MQTT follows the redirect of
+    # releases/download and the sha512 stays the same; the index files stay where they are. The
+    # index moves off the raw links only after the assets were checked against the files, so it
+    # names files that exist at every moment. Undownloaded releases beyond the 10 newest go
+    # (their tags stay).
+    - name: Publish OTA images as release assets
+      if: github.repository == 'patapovich/tuya-zigbee-switch' && github.ref_name == 'home-dimmer_build'
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        source .venv/bin/activate
+        python3 helper_scripts/ota_release_assets.py \
+          --repo "$GITHUB_REPOSITORY" --tag-prefix zdms16-2 --name "AVATTO ZDMS16-2" \
+          --commit "$(git rev-parse HEAD)" --keep 10 \
+          --index-url "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_REF_NAME/zigbee2mqtt/ota/index_router.json" \
+          --link "Build changelog: https://github.com/$GITHUB_REPOSITORY/blob/home-dimmer/docs/changelog_home_dimmer.md" \
+          --link "Open Dimmer and the install guide: https://github.com/patapovich/open-dimmer" \
+          zigbee2mqtt/ota/index_router.json zigbee2mqtt/ota/index_router-FORCE.json
+        git add zigbee2mqtt/ota/*.json
+        git diff --cached --quiet || git commit -m "Point OTA index files at the release assets"
+        git push
