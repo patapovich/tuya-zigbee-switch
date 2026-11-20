@@ -155,11 +155,24 @@ void hal_register_on_network_status_change_callback(
     network_status_change_callback = callback;
 }
 
+#ifdef DIMMER_SCENES
+static hal_network_left_callback_t network_left_callback = NULL;
+
+void hal_zigbee_register_on_network_left_callback(hal_network_left_callback_t callback) {
+    network_left_callback = callback;
+}
+
+#endif
+
 void hal_zigbee_leave_network(void) {
     if (network_status == HAL_ZIGBEE_NETWORK_NOT_JOINED) {
         io_log("ZIGBEE", "Cannot leave network - not joined");
         return;
     }
+#ifdef DIMMER_SCENES
+    if (network_left_callback != NULL)
+        network_left_callback();
+#endif
     io_evt("zcl_leave_network");
     io_log("ZIGBEE", "Leaving network");
     network_status = HAL_ZIGBEE_NETWORK_NOT_JOINED;

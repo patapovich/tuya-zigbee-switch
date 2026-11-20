@@ -1076,22 +1076,25 @@ const romasku = {
     // the whole range (Level Control 0xff12, 1/10 s, kept by the module; 0xFFFF unset: the
     // module's default, the whole range in 2 s, the MCU's own rate). Open Dimmer 2.1.14 and
     // later (its transition time).
-    // Unset again: the preset default (or an empty value or a negative one); shown as null.
+    // Unset is shown as 2 (s) and a written 2 is stored as unset: the module's default is the
+    // whole range in 2 s at the MCU's own rate, a 2.0 s of its own differs only by the ~6 % the
+    // module computes from the channel's min..max instead of 0..1000. Unset also: the preset
+    // default, an empty value or a negative one.
     dimmerBrightnessFadeTime: (endpointName) => {
         const expose = e.numeric("brightness_fade_time", ea.ALL).withEndpoint(endpointName)
             .withValueMin(0).withValueMax(60).withValueStep(0.1).withUnit("s")
-            .withPreset("default", "default", "The module's default: the whole range in 2 s")
-            .withDescription("Fade time of brightness changes from Zigbee2MQTT / Home Assistant while the light is on, as the time for the whole range (a smaller change is quicker). Empty: the module's default, the whole range in 2 s (the preset default sets it back). A transition (in the message or the device option transition) wins. Open Dimmer 2.1.14 and later")
+            .withPreset("default", 2, "The module's default: the whole range in 2 s")
+            .withDescription("Fade time of brightness changes from Zigbee2MQTT / Home Assistant while the light is on, as the time for the whole range (a smaller change is quicker). 2 s is the module's default. A transition (in the message or the device option transition) wins. Open Dimmer 2.1.14 and later")
             .withCategory("config");
         return romasku.dimmerOwnAttr({
             expose, endpointName, cluster: "genLevelCtrl", attr: {ID: 0xff12}, type: Zcl.DataType.UINT16,
             minMcu: "2.1.14",
-            fromValue: (v) => (v === 0xffff ? null : v / 10),
+            fromValue: (v) => (v === 0xffff ? 2 : v / 10),
             toValue: (value) => {
                 if (value === "default" || value === "" || value === null || value === undefined) return 0xffff;
                 const v = Number(value);
                 if (Number.isNaN(v) || v > 60) throw new Error("brightness_fade_time: 0..60 s, or default");
-                return v < 0 ? 0xffff : Math.round(v * 10);
+                return v < 0 || Math.round(v * 10) === 20 ? 0xffff : Math.round(v * 10);
             },
         });
     },

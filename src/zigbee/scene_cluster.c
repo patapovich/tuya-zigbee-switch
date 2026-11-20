@@ -104,6 +104,21 @@ static void scene_on_group_removed(uint8_t endpoint, uint16_t group_id, bool all
     scene_drop(endpoint, all ? SCENE_DROP_ALL : group_id);
 }
 
+/* Left the network: its scenes go (group 0's too, which no group removal ever drops), else a
+ * module paired again would recall what the old network stored. */
+static void scene_on_network_left(void) {
+    memset(scenes, 0, sizeof(scenes));
+    scene_save();
+    for (uint8_t i = 0; i < SCENE_MAX_ENDPOINTS; i++) {
+        zigbee_scene_cluster *c = scene_by_endpoint[i];
+        if (c) {
+            c->current_scene = 0;
+            c->current_group = 0;
+            c->scene_valid   = 0;
+        }
+    }
+}
+
 static uint8_t scene_set(scene_entry_t *e, const scene_entry_t *v) {
     if (memcmp(e, v, sizeof(*e)) == 0)
         return 0; /* unchanged: no NV write */
@@ -299,6 +314,7 @@ void scene_cluster_add_to_endpoint(zigbee_scene_cluster *cluster, hal_zigbee_end
             memset(scenes, 0, sizeof(scenes)); /* none yet, or another size: an empty table */
         scene_recount();
         hal_zigbee_register_on_group_removed_callback(scene_on_group_removed);
+        hal_zigbee_register_on_network_left_callback(scene_on_network_left);
     }
     if (endpoint->endpoint < SCENE_MAX_ENDPOINTS)
         scene_by_endpoint[endpoint->endpoint] = cluster;

@@ -270,6 +270,28 @@ def test_kept_over_a_restart():
         proc.stop()
 
 
+def test_a_network_leave_forgets_every_scene():
+    """NV_MODULE_APP outlives a leave: the scenes of group 0 (which no group removal drops)
+    would else come back for the next network."""
+    proc, device = start()
+    try:
+        call(device, ADD, add_payload(0, 2, 4, ext(1, 77)))
+        call(device, ADD, add_payload(0, 3, 0, ext(0)), ep=2)
+        assert attr(device, ATTR_COUNT) == 2
+        assert proc.exec("zcl_leave").ok
+        assert attr(device, ATTR_COUNT) == 0
+        assert attr(device, ATTR_VALID) == 0
+    finally:
+        proc.stop()
+    proc, device = start()
+    try:
+        device.set_network(1)
+        assert attr(device, ATTR_COUNT) == 0
+        assert call(device, VIEW, u16(0) + b"\x02")[0] == NOT_FOUND
+    finally:
+        proc.stop()
+
+
 def test_removing_a_group_drops_its_scenes(dev):
     proc, device = dev
     for g in (5, 6):

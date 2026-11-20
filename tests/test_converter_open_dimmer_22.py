@@ -454,7 +454,9 @@ const ver = (v) => { const d = h.device(); d.getEndpoint(1).clusters.genBasic.at
     set12: await set("brightness_fade_time", 1.2, 2),
     set0: await set("brightness_fade_time", 0),
     unset: [await set("brightness_fade_time", "default"), await set("brightness_fade_time", ""),
-            await set("brightness_fade_time", -1)],
+            await set("brightness_fade_time", -1), await set("brightness_fade_time", 2),
+            await set("brightness_fade_time", "2.0")],
+    set21: await set("brightness_fade_time", 2.1),
     bad: await set("brightness_fade_time", 61),
     reports: [fz(ver("2.1.14 own"), 1, {[0xff12]: 25}), fz(ver("2.1.14 own"), 2, {[0xff12]: 0xffff}),
               fz(ver("2.1.13 own"), 1, {[0xff12]: 25}), fz(ver("1.0.7"), 1, {[0xff12]: 25})],
@@ -465,13 +467,15 @@ const ver = (v) => { const d = h.device(); d.getEndpoint(1).clusters.genBasic.at
     w = lambda ep, v: [["write", ep, "genLevelCtrl", {str(0xff12): {"value": v, "type": 0x21}}]]
     assert out["set12"] == [w(2, 12), {"brightness_fade_time": 1.2}]
     assert out["set0"] == [w(1, 0), {"brightness_fade_time": 0}]
-    assert out["unset"] == [[w(1, 0xFFFF), {"brightness_fade_time": None}]] * 3
+    # Unset (the module's default, the whole range in 2 s) is shown as 2; a written 2 is unset.
+    assert out["unset"] == [[w(1, 0xFFFF), {"brightness_fade_time": 2}]] * 5
+    assert out["set21"] == [w(1, 21), {"brightness_fade_time": 2.1}]
     assert "0..60" in out["bad"]
     assert out["reports"] == [[{"brightness_fade_time_l1": 2.5}],
-                              [{"brightness_fade_time_l2": None}], [], []]
+                              [{"brightness_fade_time_l2": 2}], [], []]
     assert [p[:6] for p in out["presets"]] == [["l1", 0, 60, 0.1, "s", ["default"]],
                                                ["l2", 0, 60, 0.1, "s", ["default"]]]
-    for words in ("as the time for the whole range", "Empty: the module's default, the whole range in 2 s",
+    for words in ("as the time for the whole range", "2 s is the module's default",
                   "A transition (in the message or the device option transition) wins", "Open Dimmer 2.1.14"):
         assert all(words in p[6] for p in out["presets"]), words
 

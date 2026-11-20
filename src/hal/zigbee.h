@@ -227,6 +227,15 @@ void hal_zigbee_register_on_group_removed_callback(hal_group_removed_callback_t 
 
 #endif
 
+#ifdef DIMMER_SCENES
+
+/** Called when the device leaves its network (also a reset to factory new): what belonged to
+ *  that network is to be forgotten (the scenes; the stack drops its groups and bindings). */
+typedef void (*hal_network_left_callback_t)(void);
+void hal_zigbee_register_on_network_left_callback(hal_network_left_callback_t callback);
+
+#endif
+
 #ifdef DIMMER_BINDINGS
 /** The group a binding of the endpoint's cluster goes to (the first such), 0 if none. */
 uint16_t hal_zigbee_bound_group(uint8_t endpoint, uint16_t cluster_id);

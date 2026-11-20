@@ -223,6 +223,19 @@ void hal_zigbee_register_on_group_removed_callback(hal_group_removed_callback_t 
     group_removed_callback = callback;
 }
 
+static hal_network_left_callback_t network_left_callback = NULL;
+
+void hal_zigbee_register_on_network_left_callback(hal_network_left_callback_t callback) {
+    network_left_callback = callback;
+}
+
+/* Every leave (asked by the network or by us) and every reset to factory new goes through the
+ * stack's nv_resetToFactoryNew (patch_sdk/drv_nv.c), which keeps NV_MODULE_APP. */
+void telink_zigbee_network_left(void) {
+    if (network_left_callback != NULL)
+        network_left_callback();
+}
+
 /* Remove Group (0x03) / Remove All Groups (0x04) of the Groups cluster, cluster-specific, client
  * to server, not manufacturer-specific: told before the stack takes it. */
 static void scene_check_group_removal(apsdeDataInd_t *ind) {

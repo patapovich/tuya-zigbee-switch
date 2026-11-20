@@ -540,6 +540,15 @@ static int cmd_zcl_group(int argc, char **argv) {
     return 0;
 }
 
+/* zcl_leave: the device leaves its network (as asked by the coordinator). */
+static int cmd_zcl_leave(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    hal_zigbee_leave_network();
+    io_res_ok("left");
+    return 0;
+}
+
 /* zcl_bind_group <ep> <cluster:hex> <group:dec>: a binding of the endpoint's cluster to a group. */
 static int cmd_zcl_bind_group(int argc, char **argv) {
     uint8_t  ep;
@@ -830,6 +839,7 @@ static const SimpleReplCommand kCmds[] = {
     { "zcl_group_cmd",       cmd_zcl_group_cmd       },
     { "zcl_group",           cmd_zcl_group           },
     { "zcl_bind_group",      cmd_zcl_bind_group      },
+    { "zcl_leave",           cmd_zcl_leave           },
     { "freeze_time",         cmd_freeze_time         },
     { "step_time",           cmd_step_time           },
     { "set_battery_voltage", cmd_set_battery_voltage },
