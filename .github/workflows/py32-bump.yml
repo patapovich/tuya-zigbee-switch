@@ -1,10 +1,10 @@
 name: Carry a PY32 release
-# The title names the tag, so zdms16-py32 tools/release/release.sh finds its run.
+# The title names the tag, so open-dimmer tools/release/release.sh finds its run.
 run-name: Carry PY32 ${{ inputs.py32_tag || github.event.client_payload.tag || 'latest release' }}
 
 # patapovich fork only. The ZDMS16-2 build of the home-dimmer branch carries the own PY32
 # MCU firmware (src/zigbee/secondary_mcu_image.c). This puts the newest release of
-# patapovich/zdms16-py32 there (hourly check, or at once by hand / by a repository_dispatch
+# patapovich/open-dimmer there (hourly check, or at once by hand / by a repository_dispatch
 # "py32-release" from that repo), tests it, commits it to home-dimmer and builds the module
 # firmware on home-dimmer_build (= home-dimmer + the fork-ci build change). It lives on the
 # default branch because scheduled and dispatched workflows only run from there.
@@ -21,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       py32_tag:
-        description: "zdms16-py32 release tag (empty: the latest release)"
+        description: "open-dimmer release tag (empty: the latest release)"
         required: false
       force:
         description: "build even if home-dimmer already carries it; allow an older version or replace another image of the same version"
@@ -60,14 +60,14 @@ jobs:
           if [ -n "$tag" ]; then
             explicit=true
           else
-            tag=$(gh release view --repo patapovich/zdms16-py32 --json tagName --jq .tagName)
+            tag=$(gh release view --repo patapovich/open-dimmer --json tagName --jq .tagName)
           fi
           if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::not a release tag vX.Y.Z: '${tag//[^A-Za-z0-9._-]/?}'"
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          gh release download "$tag" --repo patapovich/zdms16-py32 \
+          gh release download "$tag" --repo patapovich/open-dimmer \
             --pattern secondary_mcu_image.c --pattern SHA256SUMS --dir /tmp/py32
           (cd /tmp/py32 && grep -E '[ *]secondary_mcu_image\.c$' SHA256SUMS | sha256sum -c -)
           ver() { sed -n 's/.*own MCU firmware: version \([0-9.]*\).*/\1/p' "$1" | head -1; }
