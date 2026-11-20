@@ -1,4 +1,4 @@
-"""A fake own PY32 MCU (zdms16-py32 fw/src/tuya.c, dimmer.c) for the stub
+"""A fake own PY32 MCU (open-dimmer src/tuya.c, dimmer.c) for the stub
 tests: it answers what the module sends in the order the real firmware does,
 with the real full dump, and each round of answers back to back (the module's
 UART hands them over as one burst).

@@ -247,7 +247,7 @@ static uint8_t dimmer_od_from(const zigbee_dimmer_cluster *cluster, uint16_t bui
  *    settings. DP 0 goes out only while an earlier time could still apply to this change.
  *  - 0: at once. DP 1 ms (0 there means the fade settings): the MCU's timed move lands in one
  *    half cycle, from dark (its floor) to the level as well; an off goes to the floor at once
- *    and is dark after its usual moment there (off_hold_ms, 80 ms: zdms16-py32 dim_core.c
+ *    and is dark after its usual moment there (off_hold_ms, 80 ms: open-dimmer dim_core.c
  *    dim_fader_set_timed() takes it from a time only when the time is longer).
  *  - 1..0xFFFE: that many tenths (at most 65.535 s, the DP's range).
  * The write queue keeps one frame in flight and sends a lost one again before the next, so the
@@ -354,7 +354,7 @@ static void dimmer_send_level_transition(zigbee_dimmer_cluster *cluster, const u
 
 /* ---- Open Dimmer settings (from OPEN_DIMMER_FEATURES_BUILD) -----------------
  *
- * Its DPs per channel (zdms16-py32 src/dimmer.h): DP 6 / 12 the countdown, and from 162 on,
+ * Its DPs per channel (open-dimmer src/dimmer.h): DP 6 / 12 the countdown, and from 162 on,
  * 162 + 2 * k + channel: k 0 wall switch mode, 1 level after a power cut, 2 identify, 3 start
  * boost, 4 fast press; all values. Written only to such an MCU: to any other one a write of their
  * attributes sends nothing and sets them back to "none". */
@@ -617,7 +617,7 @@ static uint8_t dimmer_execute_if_off(const zigbee_dimmer_cluster *cluster, const
 }
 
 /* Every Open Dimmer app keeps a level written while off for its next on: it
- * did from its first Tuya protocol code (zdms16-py32 26e5126), in every tag
+ * did from its first Tuya protocol code (open-dimmer 26e5126), in every tag
  * from v2.1.9 (no build, 0) to v2.1.14 (build 400). */
 #define OPEN_DIMMER_KEEPS_OFF_LEVEL_BUILD    0
 
@@ -655,7 +655,7 @@ static void dimmer_change_level(zigbee_dimmer_cluster *cluster, uint8_t level,
  * skips a step's write now and then). Open Dimmer from OPEN_DIMMER_TRANSITION_BUILD takes each
  * step in the step period (a transition time before it): one even movement instead of a fade
  * per step. (2.1.14, build 400, already gives a level change within 1 s of a DP 160 / 161 that
- * time, zdms16-py32 v2.1.14 apply(): a 300 ms time every 300 ms step is continuous.) */
+ * time, open-dimmer v2.1.14 apply(): a 300 ms time every 300 ms step is continuous.) */
 
 #define DIMMER_RAMP_PERIOD_MS    300
 #define DIMMER_RAMP_RATE         40  /* levels/s, the wall switch's speed: 12 per step */

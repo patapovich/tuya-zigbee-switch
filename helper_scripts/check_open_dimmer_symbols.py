@@ -6,7 +6,7 @@ Only boards whose entry has secondary_mcu_image may ask an MCU who it is
 (0xA3) or take its seq-0 network queries for a restart: every other board
 compiles the stubs of tuya_mcu_ota.c, so the factory MCUs of touch switches
 and relays never see either (src/zigbee/tuya_mcu_ota.h, contract items 4 and
-6; zdms16-py32 docs/BOOTLOADER.md section 15, rule 6). The compiler flag that
+6; open-dimmer docs/BOOTLOADER.md section 15, rule 6). The compiler flag that
 selects them comes from the board's Makefile wiring, which no host test sees;
 this check reads the symbols of the linked ELF.
 

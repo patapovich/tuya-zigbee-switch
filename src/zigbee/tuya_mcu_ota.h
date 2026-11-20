@@ -20,7 +20,7 @@
  *
  * The MCU's v2 bootloader is replaced only over SWD, while this firmware
  * changes over the air, so every later release of it keeps these promises
- * (zdms16-py32 docs/BOOTLOADER.md section 10; the MCU side is its
+ * (open-dimmer docs/BOOTLOADER.md section 10; the MCU side is its
  * src/ota_proto.h). Pinned by tests/test_mcu_ota.py and
  * tests/test_stock_mcu_compat.py (and, for boards without an image, by the
  * symbol check of every Telink board build), and checked on a test module
@@ -83,7 +83,7 @@
  *     later idea too (an image-info push, a second image for a rescue, a
  *     longer offer). Reason: the stock parser holds 23 bytes in its ISR ring
  *     and 31 in its frame buffer, and a frame of 32..38 bytes wedges its RX
- *     until a power cut (zdms16-py32 docs/stock-firmware-analysis.md, "Stock
+ *     until a power cut (open-dimmer docs/stock-firmware-analysis.md, "Stock
  *     MCU parser limits": read from the WiFi 1.0.3, inferred for 1.0.7).
  *     Towards a stock MCU this firmware sends exactly what phase 1 sends, apart
  *     from one more dump query per run, when the run's first one got no DP
@@ -140,7 +140,7 @@ void tuya_mcu_ota_mcu_restarted(void);
 uint16_t tuya_mcu_ota_own_build(void);
 
 /* Open Dimmer from this build (2.1.14) takes a transition time: DP 160 / 161, the ms its
- * network changes of the next second take (zdms16-py32 src/dimmer.h). */
+ * network changes of the next second take (open-dimmer src/dimmer.h). */
 #define OPEN_DIMMER_TRANSITION_BUILD    400
 
 /* Open Dimmer from this build (2.2.0) takes a countdown (DP 6 / 12), the wall switch mode
@@ -148,7 +148,7 @@ uint16_t tuya_mcu_ota_own_build(void);
  * boost (168 / 169). Nothing of these goes to any other MCU. */
 #define OPEN_DIMMER_FEATURES_BUILD      500
 
-/* ---- ring gate and health report (Open Dimmer, zdms16-py32 src/health.h) ----------------
+/* ---- ring gate and health report (Open Dimmer, open-dimmer src/health.h) ----------------
  *
  * An app before 2.1.14 keeps its settings ring at 0x08004000, right after a 12 KB app; 2.1.14
  * (build 400, the ring mover) moves it up to 0x08004800 and says so in its health report: DP

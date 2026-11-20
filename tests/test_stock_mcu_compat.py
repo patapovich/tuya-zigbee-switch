@@ -1,4 +1,4 @@
-"""Factory firmware compatibility gate (zdms16-py32 docs/BOOTLOADER.md section
+"""Factory firmware compatibility gate (open-dimmer docs/BOOTLOADER.md section
 15, rule 3): towards a stock PY32 (1.0.7, the ZDMS16-2's factory firmware) the module
 sends exactly what phase 1 sends: the same commands, data, order and timing
 (within 50 ms).

@@ -35,7 +35,7 @@ KINDS = {
     11: "UART_REINIT", 12: "IDENT", 13: "BOOT_REQUEST",
 }
 
-# Block request modes of the v2 bootloader (zdms16-py32 src/ota_proto.h).
+# Block request modes of the v2 bootloader (open-dimmer src/ota_proto.h).
 MODES = {0: "v1 bootloader", 1: "asked update", 2: "no app", 3: "power-on probe",
          4: "rescue (crash loop)", 5: "rescue (module button)", 6: "link probe"}
 

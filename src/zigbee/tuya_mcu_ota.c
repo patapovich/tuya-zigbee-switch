@@ -11,7 +11,7 @@
 
 #ifdef SECONDARY_MCU_IMAGE
 
-/* The carried app image as the MCU's bootloader takes it (zdms16-py32
+/* The carried app image as the MCU's bootloader takes it (open-dimmer
  * src/ota_proto.h): the vector table, then a 16 byte header at offset 0xC0,
  * little-endian as in flash: magic, size, CRC, version byte, flags, build. */
 #define IMAGE_HEADER_OFFSET     0xC0
@@ -463,7 +463,7 @@ static void answer_block(uint16_t seq, const uint8_t *data, uint16_t len) {
          * one or a v1 bootloader's). A v2 probe (power-on, or asked by the app's link
          * watchdog) waits its whole window for a header and only then starts the app: its
          * header request gets a refusal, a header answer the bootloader takes for no image
-         * (all zero: no magic, size 0, CRC 0), which ends the probe at once (zdms16-py32
+         * (all zero: no magic, size 0, CRC 0), which ends the probe at once (open-dimmer
          * boot/boot.c pick()). Nothing else of the gated image is answered. A refusal counts
          * as no failure and no offer. */
         static const uint8_t refusal[16] = { 0 };

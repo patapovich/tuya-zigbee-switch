@@ -1,7 +1,7 @@
 """The symbol check every Telink board build runs on its ELF
 (helper_scripts/check_open_dimmer_symbols.py, src/telink/Makefile
 check-open-dimmer): Open Dimmer support exactly in the boards whose device_db
-entry has secondary_mcu_image (zdms16-py32 docs/BOOTLOADER.md section 15, rule
+entry has secondary_mcu_image (open-dimmer docs/BOOTLOADER.md section 15, rule
 6). Here on host builds of the stub, with and without SECONDARY_MCU_IMAGE, and
 on nm listings of the edge cases."""
 import shutil

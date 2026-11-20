@@ -624,7 +624,7 @@ def test_offers_stop_when_the_update_never_starts():
 
 
 # ---- phase 3: the frozen contract (tuya_mcu_ota.h) -----------------------
-# zdms16-py32 docs/BOOTLOADER.md section 10: what the MCU's v2 bootloader,
+# open-dimmer docs/BOOTLOADER.md section 10: what the MCU's v2 bootloader,
 # replaced only over SWD, needs from every later release of this firmware.
 
 OTA_H = ROOT / "src/zigbee/tuya_mcu_ota.h"
@@ -1239,7 +1239,7 @@ GATED_REQUESTS = gated_requests(INSTALLED_LOW)
 
 
 def boot_pick(answer: bytes, mode: int, installed: bytes = IMAGE[0xC8:0xD0]) -> str:
-    """zdms16-py32 boot/boot.c pick() on a block answer, as far as the module's answer decides
+    """open-dimmer boot/boot.c pick() on a block answer, as far as the module's answer decides
     it: NONE (no header answer: the probe waits on), REFUSE (a probe ends: the app starts), TAKE.
     installed: the request's installed header bytes 8..15 (CRC, version, flags, build). The
     limit is the installed layout's (12 KB without RING_HIGH, 14 KB with it or without an app);

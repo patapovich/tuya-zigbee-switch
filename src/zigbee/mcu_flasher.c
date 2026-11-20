@@ -111,7 +111,7 @@ typedef char   ob_user_byte_is_open_dimmers[(((OB_OPTR >> 8) & 0xFFu) == 0xF9u) 
 #define FLASH_BUSY_POLLS         200u     /* SR reads: ~25 ms at 400 kHz, ~7 page erases */
 #define HALT_POLLS               50u
 
-/* The mailbox's boot word and its complement (zdms16-py32 docs/BOOTLOADER.md
+/* The mailbox's boot word and its complement (open-dimmer docs/BOOTLOADER.md
  * section 3): written 0 before every reset this issues, as tools/swd/install.sh
  * does, so the bootloader starts with fresh tries. */
 #define ADDR_BOOT_WORD           0x20000BF8u
@@ -704,7 +704,7 @@ static swd_err_t ob_program(uint8_t *started) {
     return err;
 }
 
-/* The stored option bytes as ob_program writes them (zdms16-py32
+/* The stored option bytes as ob_program writes them (open-dimmer
  * tools/swd/ob_bor25.bin: aa f9 55 06 ff 00 00 ff ff ff ff ff ff ff 00 00). */
 static const uint32_t k_option_area[4] = { 0x0655F9AAu, 0xFF0000FFu, 0xFFFFFFFFu, 0x0000FFFFu };
 

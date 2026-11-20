@@ -177,7 +177,7 @@ static hal_task_t g_contact_timer;
  * levels drive the lamp below its minimum). So when no DP report has come
  * DUMP_RETRY_MS after the first contact's dump, the dump is asked once more:
  * a command the MCU already gets, and the only frame the stock MCU gets that
- * phase 1 did not send it (zdms16-py32 docs/BOOTLOADER.md section 10, change
+ * phase 1 did not send it (open-dimmer docs/BOOTLOADER.md section 10, change
  * 6). Once per run, for the run's first dump only: later contacts (the MCU's
  * first network query, a treated restart) send phase 1's dump and nothing
  * more, so a factory MCU gets at most one 0x28 more than under phase 1

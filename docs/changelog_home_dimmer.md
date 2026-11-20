@@ -9,8 +9,8 @@ The fork's py32-bump workflow turns "Next" into the section of the build it star
 carried Open Dimmer version, and opens an empty "Next"
 (`helper_scripts/home_dimmer_changelog.py`). A build by hand gets its section the same way:
 `home_dimmer_changelog.py stamp --build 1.1.3-<id> --carries X.Y.Z`. The upstream feature
-changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are in the
-zdms16-py32 release notes.
+changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are in its
+[release notes](https://github.com/patapovich/open-dimmer/releases).
 
 ## Next
 

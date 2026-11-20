@@ -100,7 +100,7 @@ STOCK_VERSION = 0x47                         # the stock ZDMS16-2 PY32: 1.0.7
 # What the module may send to an MCU it has not identified as Open Dimmer
 # (contract item 6, src/zigbee/tuya_mcu_ota.h): the stock USART ring holds 23
 # bytes, its parse buffer 31, and a frame of 32..38 bytes wedges its RX until
-# a power cut (zdms16-py32 docs/BOOTLOADER.md section 15, WiFi 1.0.3 parser).
+# a power cut (open-dimmer docs/BOOTLOADER.md section 15, WiFi 1.0.3 parser).
 FACTORY_FRAME_MAX = 29
 FACTORY_BURST_MAX = 23
 
