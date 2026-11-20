@@ -14,6 +14,8 @@ zdms16-py32 release notes.
 
 ## Next
 
+## 1.1.3-ee5a9c9f (2026-11-20), carries Open Dimmer 2.2.3
+
 - Open Dimmer without a probe: solder two wires from the module's free pads D3 and D7 to the
   MCU's SWD pads (CN2 SWC and SWD), power the module on, and it installs Open Dimmer by itself
   (a factory MCU: read protection removed, which erases it; the bootloader written; the app
