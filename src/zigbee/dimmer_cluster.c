@@ -968,8 +968,6 @@ static uint8_t dimmer_own_mcu(const zigbee_dimmer_cluster *cluster) {
 }
 
 #ifdef DIMMER_BINDINGS
-#pragma GCC push_options
-#pragma GCC optimize("Os") /* not on the hot path: small over fast */
 
 /* ---- the wall switch's bindings (its own endpoint, 3 / 4 on the ZDMS16-2) -----------------
  *
@@ -1223,7 +1221,6 @@ void dimmer_cluster_add_switch_endpoint(zigbee_dimmer_cluster *cluster,
         endpoint->clusters[i].is_server = 0; /* clients: commands out */
 }
 
-#pragma GCC pop_options
 #endif
 
 static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,

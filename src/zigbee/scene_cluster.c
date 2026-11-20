@@ -1,8 +1,7 @@
 #include "scene_cluster.h"
 
 #ifdef DIMMER_SCENES
-/* Rarely run code, every byte counts in the ZDMS16-2's OTA image: for size (~300 bytes less). */
-#pragma GCC optimize("Os")
+/* -O2 like the rest: a per-function size level miscompiles a switch (tests/test_no_optimize_pragma.py). */
 
 #include "consts.h"
 #include "device_config/nvm_items.h"
