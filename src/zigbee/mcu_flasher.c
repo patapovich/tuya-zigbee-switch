@@ -14,6 +14,7 @@
 #include "hal/nvm.h"
 #include "hal/swd_io.h"
 #include "hal/uart.h"
+#include "hal/zigbee.h"
 #include "hal/timer.h"
 #include "zigbee/consts.h"
 #include "zigbee/secondary_mcu_boot.h"
@@ -127,6 +128,11 @@ typedef char mcu_flasher_status_fits_one_frame[
 #define TRIES_PER_STEP     3u
 #define REPORT_EVERY_MS    1000u
 
+/* An armed install waits for the user's power cycle: its status goes to the
+ * Basic bindings once the module is on the network, then this often (the
+ * converter shows it in mcu_firmware). */
+#define ARMED_REPORT_MS    600000u
+
 /* Steps; survey_dp stops after STEP_CONNECT. update_bootloader: as
  * survey_full up to STEP_SECTOR0, then (unless sector 0 already holds the
  * carried bootloader and the job is not _force) STEP_HALT .. STEP_RUN. */
@@ -190,12 +196,13 @@ static uint16_t       g_word;      /* words done in the current CRC step */
 static uint32_t       g_crc;
 static uint32_t       g_started;
 static uint32_t       g_last_report;
-static uint8_t        g_page;      /* STEP_PROGRAM: next page, 1..31 then 0 */
-static uint8_t        g_rewrites;  /* STEP_OB_CHECK / STEP_VERIFY: written again */
-static uint8_t        g_resumed;   /* an install taken up after its option bytes */
-static uint8_t        g_past_ob;   /* this install started its option bytes (or was taken up) */
+static uint8_t        g_was_joined; /* ARMED: on the network at the last pass */
+static uint8_t        g_page;       /* STEP_PROGRAM: next page, 1..31 then 0 */
+static uint8_t        g_rewrites;   /* STEP_OB_CHECK / STEP_VERIFY: written again */
+static uint8_t        g_resumed;    /* an install taken up after its option bytes */
+static uint8_t        g_past_ob;    /* this install started its option bytes (or was taken up) */
 static uint32_t       g_confirm_at;
-static uint32_t       g_step_at;   /* when the current wait step began */
+static uint32_t       g_step_at;    /* when the current wait step began */
 
 /* Confirm attribute (Basic 0xff52, char string): a writing job's own name.
  * The SDK copies a written string without checking its length against the
@@ -871,8 +878,28 @@ void mcu_flasher_early(void) {
     g_status.duration_ms = sat16(hal_millis());
 }
 
+/* The armed state is set at start-up, before the network (mcu_flasher_early),
+ * or by a job that ends armed: told when the module is on the network (again),
+ * then every ARMED_REPORT_MS. */
+static void armed_report(void) {
+    uint8_t joined = hal_zigbee_get_network_status() == HAL_ZIGBEE_NETWORK_JOINED;
+
+    if (joined && (!g_was_joined || hal_millis() - g_last_report >= ARMED_REPORT_MS)) {
+        report();
+    }
+    g_was_joined = joined;
+}
+
 void mcu_flasher_task(void) {
-    if (!g_enabled || g_status.state != MCU_FLASHER_STATE_RUNNING) {
+    if (!g_enabled) {
+        return;
+    }
+    if (g_status.state == MCU_FLASHER_STATE_ARMED) {
+        armed_report();
+        return;
+    }
+    g_was_joined = 0;
+    if (g_status.state != MCU_FLASHER_STATE_RUNNING) {
         return;
     }
     if (g_abort) {

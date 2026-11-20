@@ -14,6 +14,12 @@ zdms16-py32 release notes.
 
 ## Next
 
+## 1.1.3-b9e411c1 (2026-11-20), carries Open Dimmer 2.2.4
+
+- Carries Open Dimmer 2.2.4.
+
+## 1.1.3-ee5a9c9f (2026-11-20), carries Open Dimmer 2.2.3
+
 - Open Dimmer without a probe: solder two wires from the module's free pads D3 and D7 to the
   MCU's SWD pads (CN2 SWC and SWD), power the module on, and it installs Open Dimmer by itself
   (a factory MCU: read protection removed, which erases it; the bootloader written; the app
@@ -25,6 +31,10 @@ zdms16-py32 release notes.
   did, and `mcu_flasher` starts the manual jobs: `survey_dp`, `survey_full` (identity, option
   bytes, checksums, app header; read only), `update_bootloader` / `update_bootloader_force`
   and `install` (writing jobs: the job's name into `mcu_flasher_confirm` first), `abort`.
+  Wires soldered before the conversion: the factory MCU holds its SWD pins until the module
+  is power-cycled; `mcu_flasher_status` is not needed to see it, `mcu_firmware` then says
+  "Tuya (stock): power-cycle the module to install Open Dimmer" (also while the install runs
+  or after it failed), and configure binds the Basic cluster for the SWD master's reports.
 - Z2M converter: the stock module's definition (AVATTO ZDMS16-2, the `_TZE284_jtbgusdc` and
   `_TZE204_jtbgusdc` manufacturer names only) is in `switch_custom.js` with OTA, so the conversion
   is offered with this one converter file (`tuya_with_ota.js` is not needed for it). Configure

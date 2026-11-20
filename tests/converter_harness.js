@@ -212,9 +212,11 @@ global.setTimeout = (fn, ms) => { delays.push(ms); return realSetTimeout(fn, 0);
 
 /* A device whose endpoint 1 answers mcu_version reads with the next of
  * versions (the last one repeats; an Error is thrown), a genLevelCtrl onLevel read with
- * onLevel (255: none, as the module has it by default), and every other read with {}.
+ * onLevel (255: none, as the module has it by default), a read of the SWD master's
+ * status (Basic 0xff50) with flasher (a byte array; undefined: a module without the
+ * master answers nothing), and every other read with {}.
  * Reads, writes and reporting land in log. */
-const device = ({versions = [""], meta = {}, onLevel = 255, missing = []} = {}) => {
+const device = ({versions = [""], meta = {}, onLevel = 255, missing = [], flasher} = {}) => {
     const cache = {};
     const queue = [...versions];
     const endpoints = {};
@@ -233,6 +235,7 @@ const device = ({versions = [""], meta = {}, onLevel = 255, missing = []} = {}) 
                 return {[0xff12]: v};
             }
             if (cluster === "genLevelCtrl" && attrs.length === 1 && attrs[0] === "onLevel") return {onLevel};
+            if (id === 1 && cluster === "genBasic" && attrs[0] === 0xff50 && flasher !== undefined) return {[0xff50]: flasher};
             return {};
         },
         write: async (cluster, payload) => log.push(["write", id, cluster, payload]),

@@ -331,23 +331,49 @@ const romasku = {
     // version reports as mcu_version: Open Dimmer when the module has
     // identified it (sticky as in mcuVersionOf), else the stock Tuya firmware.
     // Nothing while the version is not known ("" or 0.0.0).
-    mcuFirmware: () => ({
-        isModernExtend: true,
-        exposes: [e.text("mcu_firmware", ea.STATE)
-            .withLabel("MCU firmware")
-            .withDescription("Firmware of the secondary MCU (the chip that drives the outputs): Open Dimmer or the stock Tuya firmware")
-            .withCategory("diagnostic")],
-        fromZigbee: [{
-            cluster: "genBasic",
-            type: ["attributeReport", "readResponse"],
-            convert: (model, msg) => {
-                const raw = msg.data?.[0xff12];
-                if (msg.endpoint?.ID !== 1 || !realMcuVersion(raw)) return;
-                const v = mcuVersionOf(raw, msg.device?.meta?.mcuVersion);
-                return {mcu_firmware: v.endsWith(" own") ? "Open Dimmer" : "Tuya (stock)"};
-            },
-        }],
-    }),
+    // Not Open Dimmer yet: an install by the module's SWD master (status Basic
+    // 0xff50, mcu_flasher.c) that waits for a power cycle, runs or failed is
+    // told here too, whatever the device option mcu_flasher says: with the
+    // wires soldered before the conversion the factory MCU holds its SWD pins
+    // until the module is power-cycled, and nothing else would show it. The
+    // last such state is kept in device.meta.mcuInstall.
+    mcuFirmware: () => {
+        const installNote = (raw) => {
+            const b = Buffer.from(raw);
+            if (b.length < 47 || b[0] !== 2 || b[2] !== 5) return null;   // not an install
+            return {1: "installing Open Dimmer",
+                    3: "Open Dimmer install failed (device option mcu_flasher: show tells why)",
+                    5: "power-cycle the module to install Open Dimmer"}[b[1]] ?? null;
+        };
+        return {
+            isModernExtend: true,
+            exposes: [e.text("mcu_firmware", ea.STATE)
+                .withLabel("MCU firmware")
+                .withDescription("Firmware of the secondary MCU (the chip that drives the outputs): Open Dimmer or the stock Tuya firmware; while not Open Dimmer, also an Open Dimmer install that waits for a power cycle, runs or failed")
+                .withCategory("diagnostic")],
+            fromZigbee: [{
+                cluster: "genBasic",
+                type: ["attributeReport", "readResponse"],
+                convert: (model, msg) => {
+                    const raw = msg.data?.[0xff12];
+                    const status = msg.data?.[0xff50];
+                    if (msg.endpoint?.ID !== 1 || (!realMcuVersion(raw) && status === undefined)) return;
+                    if (status !== undefined && msg.device) {
+                        const note = installNote(status);
+                        if ((msg.device.meta?.mcuInstall ?? null) !== note) {
+                            msg.device.meta.mcuInstall = note ?? undefined;
+                            msg.device.save();
+                        }
+                    }
+                    const v = mcuVersionOf(raw, msg.device?.meta?.mcuVersion);
+                    if (v?.endsWith(" own")) return {mcu_firmware: "Open Dimmer"};
+                    const note = msg.device?.meta?.mcuInstall;
+                    if (note) return {mcu_firmware: v ? `Tuya (stock): ${note}` : note};
+                    if (v) return {mcu_firmware: "Tuya (stock)"};
+                },
+            }],
+        };
+    },
     mcuVersionMeta: () => ({
         isModernExtend: true,
         fromZigbee: [{
@@ -1651,6 +1677,21 @@ const definitions = [
                     if (openDimmer22) await mcuEndpoint.read("genBasic", [0xff48]); // health report
                 } catch (error) {
                     // not answered now; bound at the next configure, the report comes within 10 min
+                }
+            } else if (mcuVersion !== undefined) {
+                // A module with the SWD master (the SW token, mcu_flasher.c) reports its status
+                // to the Basic cluster's bindings too: bound with the stock MCU as well, so that
+                // an install at a later power-up and the Open Dimmer version it brings reach
+                // Zigbee2MQTT without another configure. The status is read once: mcu_firmware
+                // tells an install that waits for a power cycle. (Not for a module that did not
+                // answer at all: offline.)
+                try {
+                    const result = await mcuEndpoint.read("genBasic", [0xff50]); // mcu_flasher_status
+                    if (result?.[0xff50] !== undefined) {
+                        await reporting.bind(mcuEndpoint, coordinatorEndpoint, ["genBasic"]);
+                    }
+                } catch (error) {
+                    // no SWD master (no SW token, an older build) or not answered now
                 }
             }
             {% endif %}

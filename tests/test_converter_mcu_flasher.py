@@ -76,8 +76,10 @@ def test_a_job_is_one_write_of_the_control_attribute():
 
 
 def decode(raw: list[int], options: str = '{mcu_flasher: "show"}', endpoint: int = 1):
+    """mcu_flasher_status as published (mcu_firmware's install note: test below)."""
     return json.loads(run_node(FLASHER + f"""
-console.log(JSON.stringify(fz(h.device(), {endpoint}, {{[0xff50]: {json.dumps(raw)}}}, {options})));
+console.log(JSON.stringify(fz(h.device(), {endpoint}, {{[0xff50]: {json.dumps(raw)}}}, {options})
+    .filter((r) => r.mcu_flasher_status !== undefined)));
 """))
 
 
@@ -163,3 +165,84 @@ def test_install_and_its_armed_state():
                         "(the install goes on at every power-up); 1.2 s"}]
     wrong = decode(status(state=0, job=5, step=0, error=12))
     assert "not a factory MCU" in wrong[0]["mcu_flasher_status"]
+
+
+FIRMWARE = FLASHER + """
+const firmware = (dev, data) => fz(dev, 1, data, {}).map((r) => r.mcu_firmware).filter((x) => x !== undefined);
+"""
+
+
+def test_mcu_firmware_tells_an_install_whatever_the_option():
+    """An install by the SWD master shows in mcu_firmware (device option mcu_flasher left
+    hidden) while the MCU is not Open Dimmer: waiting for a power cycle, running, failed;
+    kept in device.meta.mcuInstall so a later version report keeps it; Open Dimmer wins."""
+    armed = status(state=5, job=5, step=0, error=1, page=3)
+    running = status(state=1, job=5, step=11)
+    done = status(state=2, job=5)
+    failed = status(state=3, job=5, error=14)
+    survey = status(state=1, job=2, step=4)
+    out = json.loads(run_node(FIRMWARE + f"""
+const dev = h.device({{meta: {{mcuVersion: "1.0.7"}}}});
+const steps = [];
+for (const [what, data] of [
+    ["armed", {{[0xff50]: {json.dumps(armed)}}}],
+    ["version", {{[0xff12]: "1.0.7"}}],
+    ["running", {{[0xff50]: {json.dumps(running)}}}],
+    ["done", {{[0xff50]: {json.dumps(done)}}}],
+    ["survey", {{[0xff50]: {json.dumps(survey)}}}],
+    ["failed", {{[0xff50]: {json.dumps(failed)}}}],
+    ["own", {{[0xff12]: "2.2.3 own"}}],
+]) {{
+    steps.push([what, firmware(dev, data), dev.meta.mcuInstall ?? null]);
+}}
+const blank = h.device();
+const own = h.device({{meta: {{mcuVersion: "2.2.3 own"}}}});
+console.log(JSON.stringify({{steps, saves: dev.saves,
+    blank: firmware(blank, {{[0xff50]: {json.dumps(armed)}}}),
+    own: firmware(own, {{[0xff50]: {json.dumps(failed)}}}),
+    restart: firmware(h.device({{meta: {{mcuVersion: "1.0.7", mcuInstall: "x"}}}}), {{[0xff12]: ""}}),
+}}));
+"""))
+    wait = "power-cycle the module to install Open Dimmer"
+    fail = "Open Dimmer install failed (device option mcu_flasher: show tells why)"
+    assert out["steps"] == [
+        ["armed", [f"Tuya (stock): {wait}"], wait],
+        ["version", [f"Tuya (stock): {wait}"], wait],   # a version report keeps it
+        ["running", ["Tuya (stock): installing Open Dimmer"], "installing Open Dimmer"],
+        ["done", ["Tuya (stock)"], None],
+        ["survey", ["Tuya (stock)"], None],               # other jobs: no note
+        ["failed", [f"Tuya (stock): {fail}"], fail],
+        ["own", ["Open Dimmer"], fail],                    # Open Dimmer wins over a kept note
+    ]
+    assert out["saves"] == 5          # when the note changes (4), and the kept version once (own)
+    assert out["blank"] == [wait]                          # MCU version not known (erased)
+    assert out["own"] == ["Open Dimmer"]
+    assert out["restart"] == []                            # "" after a restart: nothing, as before
+
+
+CONFIGURE = FLASHER + """
+const run = async (opts) => {
+    h.log.length = 0;
+    const dev = h.device(opts);
+    await def.configure(dev, {ID: 1}, console);
+    return {basicBind: h.log.some((e) => e[0] === "bind" && e[1] === 1 && e[2].includes("genBasic")),
+            statusRead: h.log.some((e) => e[0] === "read" && e[1] === 1 && e[3].includes(0xff50))};
+};
+"""
+
+
+def test_configure_binds_basic_for_the_swd_master_with_a_stock_mcu():
+    """With the stock MCU, configure reads the master's status (mcu_firmware tells a waiting
+    install) and, if the module has the master, binds the Basic cluster: its status reports
+    and the Open Dimmer version after an install then reach Zigbee2MQTT without another
+    configure. A module without the master: no bind, as before. Open Dimmer: as before."""
+    out = json.loads(run_node(CONFIGURE + f"""
+(async () => console.log(JSON.stringify({{
+    master: await run({{versions: ["1.0.7"], flasher: {json.dumps(status(state=5, job=5, page=3))}}}),
+    none: await run({{versions: ["1.0.7"]}}),
+    own: await run({{versions: ["2.2.3 own"], flasher: {json.dumps(status())}}}),
+}})))();
+"""))
+    assert out["master"] == {"basicBind": True, "statusRead": True}
+    assert out["none"] == {"basicBind": False, "statusRead": True}
+    assert out["own"] == {"basicBind": True, "statusRead": False}
