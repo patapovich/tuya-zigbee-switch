@@ -37,7 +37,11 @@ typedef struct {
     hal_zigbee_attribute attr_infos[10];
     hal_zigbee_attribute multistate_attr_infos[4];  // wall switch gestures (own MCU)
     hal_zigbee_attribute ballast_attr_infos[3];     // min/max level, [start boost] (lightingBallastCfg)
+#ifdef DIMMER_BINDINGS
+    hal_zigbee_attribute switch_type_attr_infos[6]; // ..., bind mode, double / triple press action
+#else
     hal_zigbee_attribute switch_type_attr_infos[3]; // switch type, [wall switch mode, fast press] (genOnOffSwitchCfg)
+#endif
     hal_zigbee_attribute identify_attr_infos[1];    // [IdentifyTime] (genIdentify)
 
     /* Open Dimmer from OPEN_DIMMER_FEATURES_BUILD (2.2.0), as its dump and the answers to our
@@ -160,6 +164,10 @@ typedef struct {
     uint8_t              bind_after_on;
     uint32_t             bind_time;
     hal_task_t           bind_task;
+
+    /* Kept in NV (NV_ITEM_DIMMER_BIND): bind mode (DIMMER_BIND_*), double and triple press
+     * action (DIMMER_ACT_*). */
+    uint8_t              bind_cfg[3];
 #endif
 } zigbee_dimmer_cluster;
 

@@ -1111,6 +1111,22 @@ const romasku = {
             },
         });
     },
+    // The wall switch's bindings (dimmer-only builds: genOnOffSwitchCfg 0xff12..0xff14, kept
+    // by the module): what goes to the lights and groups bound to the channel's wall switch
+    // endpoint (3 / 4 on the ZDMS16-2). An enum each, its values by their index.
+    dimmerBindSetting: (name, endpointName, attrId, values, label, description) => {
+        const expose = e.enum(name, ea.ALL, values).withEndpoint(endpointName).withLabel(label)
+            .withDescription(description).withCategory("config");
+        return romasku.dimmerOwnAttr({
+            expose, endpointName, cluster: "genOnOffSwitchCfg", attr: {ID: attrId}, type: Zcl.DataType.ENUM8,
+            fromValue: (v) => values[v] ?? v,
+            toValue: (value) => {
+                const v = values.indexOf(value);
+                if (v < 0) throw new Error(`${name}: one of ${values.join(", ")}`);
+                return v;
+            },
+        });
+    },
     // ZCL ExecuteIfOff (Level Control Options bit 0, kept by the module): a brightness change
     // without on/off while off sets the brightness the light comes on at, the light stays off.
     dimmerExecuteIfOff: (endpointName) => {
@@ -1580,6 +1596,14 @@ const definitions = [
             romasku.dimmerExecuteIfOff("{{dimmerName}}"),
             romasku.dimmerOnLevelLocal("{{dimmerName}}"),
             romasku.dimmerBrightnessFadeTime("{{dimmerName}}"),
+            {% if device.dimmer_only %}
+            romasku.dimmerBindSetting("bind_mode", "{{dimmerName}}", 0xff12, ["auto", "off", "mirror", "remote"], "Bound lights",
+                "What goes to the lights and groups bound to this channel's wall switch (in Bind: source endpoint {{ loop.index + device.dimmerNames|length }}): auto = they follow the wall switch in the normal switch_mode (on, off, a hold) and its gestures drive them in detached; off = nothing; mirror = they only follow the wall switch; remote = only its gestures drive them (in the normal switch_mode the channel acts too). Open Dimmer firmware"),
+            romasku.dimmerBindSetting("double_press_action", "{{dimmerName}}", 0xff13, ["none", "full", "off", "scene_1", "scene_2"], "Double press (bound lights)",
+                "What a double press sends to the bound lights when the gestures drive them (bind_mode remote, or auto in the detached switch_mode): full brightness (default), off, or Recall Scene 1 / 2 of the group the Scenes binding goes to (scene ids of scene_store). Open Dimmer firmware"),
+            romasku.dimmerBindSetting("triple_press_action", "{{dimmerName}}", 0xff14, ["none", "full", "off", "scene_1", "scene_2"], "Triple press (bound lights)",
+                "What a triple press sends to the bound lights when the gestures drive them (as double_press_action; default none). Open Dimmer firmware"),
+            {% endif %}
             {% endif %}
             {% endfor %}
             {% if device.dimmerNames and device.secondary_mcu_image %}
@@ -1822,7 +1846,8 @@ const definitions = [
             if (openDimmer22) {
                 for (const [cluster, attrs] of [["genOnOff", [0xff10]], ["genOnOffSwitchCfg", [0xff10, 0xff11]],
                                                 ["genLevelCtrl", ["startUpCurrentLevel", "options", 0xff11]],
-                                                ["lightingBallastCfg", [0xff10]]]) {
+                                                ["lightingBallastCfg", [0xff10]]{% if device.dimmer_only %},
+                                                ["genOnOffSwitchCfg", [0xff12, 0xff13, 0xff14]]{% endif %}]) {
                     try {
                         await dimmer{{loop.index}}.read(cluster, attrs);
                     } catch (error) {

@@ -48,6 +48,10 @@ ZDMS16_2_EXTENDS = [
             f"romasku.dimmerExecuteIfOff({dimmer})",
             f"romasku.dimmerOnLevelLocal({dimmer})",
             f"romasku.dimmerBrightnessFadeTime({dimmer})",
+            # the wall switch's bindings (dimmer-only builds; shown as Open Dimmer settings)
+            f"romasku.dimmerBindSetting(bind_mode, {dimmer}, auto, off, mirror, remote)",
+            f"romasku.dimmerBindSetting(double_press_action, {dimmer}, none, full, off, scene_1, scene_2)",
+            f"romasku.dimmerBindSetting(triple_press_action, {dimmer}, none, full, off, scene_1, scene_2)",
         )
     ],
     "romasku.dimmerGestures(l1, l2)",

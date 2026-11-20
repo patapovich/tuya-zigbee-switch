@@ -20,6 +20,9 @@ void stub_nvm_set_data_dir(const char *dir);
 // Zigbee stub functions
 void stub_zigbee_enable_debug(int enable);
 void stub_zigbee_set_network_status(hal_zigbee_network_status_t status);
+
+/* A binding of the endpoint's cluster to a group (hal_zigbee_bound_group). */
+void stub_zigbee_add_group_binding(uint8_t endpoint, uint16_t cluster_id, uint16_t group);
 void stub_zigbee_add_binding(uint16_t short_addr, uint8_t endpoint,
                              uint16_t cluster_id);
 void stub_zigbee_clear_bindings(void);

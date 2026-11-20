@@ -69,6 +69,13 @@ zdms16-py32 release notes.
   press sets full brightness. On, off, toggle and move-to-level are sent with an APS
   acknowledgement, so a bound light that misses one gets it again; groups are sent without
   one. Nothing is sent without a binding; the light entities stay as they were.
+- Settings for that, per channel (Open Dimmer settings in Zigbee2MQTT): `bind_mode` auto (as
+  above, by the wall switch mode), off, mirror (only following the wall switch) or remote (only
+  its gestures, also in the normal mode where the channel acts too); `double_press_action` and
+  `triple_press_action`: none, full, off, or scene_1 / scene_2 = Recall Scene 1 / 2 of the
+  group the wall switch's Scenes binding goes to (store the scene with Zigbee2MQTT's
+  scene_store). Defaults: auto, full, none. The wall switch endpoints also have a Scenes client
+  for that binding.
 
 ## 1.1.3-ab06b9a0 (2026-11-19), carries Open Dimmer 2.2.3
 

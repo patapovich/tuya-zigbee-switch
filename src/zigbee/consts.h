@@ -101,6 +101,9 @@
 #define ZCL_ATTR_ONOFF_CONFIGURATION_SWITCH_BINDING_MODE       0xff05
 #define ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_INPUT_MODE         0xff10 /* dimmer: wall switch mode */
 #define ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_FAST_PRESS         0xff11 /* dimmer: fast press */
+#define ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_BIND_MODE          0xff12 /* dimmer: its bindings */
+#define ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_DOUBLE_ACTION      0xff13 /* dimmer: double press */
+#define ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_TRIPLE_ACTION      0xff14 /* dimmer: triple press */
 
 
 // Multistate cluster

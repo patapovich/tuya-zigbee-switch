@@ -306,3 +306,86 @@ def test_aps_acks_for_switching_not_for_moving():
                                 (MOVE_TO_LEVEL_WITH_ONOFF, 1)]
     finally:
         proc.stop()
+
+
+# ---- B3: the bind mode and the double / triple press actions (genOnOffSwitchCfg, kept in NV) --
+SWITCH_CFG, BIND_MODE, DOUBLE_ACT, TRIPLE_ACT = 0x0007, 0xFF12, 0xFF13, 0xFF14
+AUTO, MODE_OFF, MIRROR, REMOTE = 0, 1, 2, 3
+ACT_NONE, ACT_FULL, ACT_OFF, SCENE_1, SCENE_2 = 0, 1, 2, 3, 4
+SCENES, RECALL = 0x0005, 0x05
+
+
+def cfg(device, ch: int = 1) -> list[int]:
+    return [int(device.read_zigbee_attr(ch, SWITCH_CFG, a)) for a in (BIND_MODE, DOUBLE_ACT, TRIPLE_ACT)]
+
+
+def set_cfg(device, attr: int, value: int, ch: int = 1) -> None:
+    device.write_zigbee_attr(ch, SWITCH_CFG, attr, value)
+
+
+def test_the_settings_default_check_and_survive_a_restart():
+    proc, device = start()
+    try:
+        assert cfg(device) == [AUTO, ACT_FULL, ACT_NONE] == cfg(device, 2)
+        set_cfg(device, BIND_MODE, REMOTE)
+        set_cfg(device, DOUBLE_ACT, SCENE_2)
+        set_cfg(device, TRIPLE_ACT, 9)                         # out of range: its default
+        set_cfg(device, TRIPLE_ACT, ACT_OFF, ch=2)
+        assert cfg(device) == [REMOTE, SCENE_2, ACT_NONE]
+    finally:
+        proc.stop()
+    proc, device = start()
+    try:
+        assert cfg(device) == [REMOTE, SCENE_2, ACT_NONE]
+        assert cfg(device, 2) == [AUTO, ACT_FULL, ACT_OFF]
+    finally:
+        proc.stop()
+
+
+def test_bind_mode_off_and_remote_stop_the_mirror(stock):
+    proc, device = stock
+    for mode in (MODE_OFF, REMOTE):
+        set_cfg(device, BIND_MODE, mode)
+        known_off(proc)
+        mcu_report(proc, bool_dp(DP_ON_L1, 1))
+        settle(proc, device)
+        mcu_report(proc, value_dp(DP_LEVEL_L1, 600))
+        device.step_time(1000)
+        assert sent(device) == [], mode
+    set_cfg(device, BIND_MODE, MIRROR)
+    mcu_report(proc, bool_dp(DP_ON_L1, 0))
+    settle(proc, device)
+    assert sent(device) == [(3, ON_OFF, OFF, b"")]
+
+
+@pytest.mark.parametrize("mode,input_mode,out", [
+    (MODE_OFF, 1, False), (MIRROR, 1, False), (REMOTE, 0, True), (REMOTE, 1, True),
+    (AUTO, 0, False)])
+def test_gestures_go_out_in_the_remote_mode(mode, input_mode, out):
+    proc, device, mcu = od(input_mode)
+    try:
+        set_cfg(device, BIND_MODE, mode)
+        assert (gesture(proc, device, SINGLE) == [(3, ON_OFF, TOGGLE, b"")]) == out
+    finally:
+        proc.stop()
+
+
+def test_double_and_triple_press_actions():
+    proc, device, mcu = od()
+    try:
+        assert gesture(proc, device, DOUBLE) == [(3, LEVEL, MOVE_TO_LEVEL_WITH_ONOFF, bytes([254, 4, 0]))]
+        assert gesture(proc, device, TRIPLE) == []
+        set_cfg(device, DOUBLE_ACT, ACT_OFF)
+        set_cfg(device, TRIPLE_ACT, SCENE_2)
+        assert gesture(proc, device, DOUBLE) == [(3, ON_OFF, OFF, b"")]
+        assert gesture(proc, device, TRIPLE) == [(3, SCENES, RECALL, bytes([0, 0, 2]))]  # a device
+        assert proc.exec("zcl_bind_group 3 0005 517").ok         # the Scenes binding: a group
+        set_cfg(device, DOUBLE_ACT, SCENE_1)
+        mcu_report(proc, enum_dp(DP_ACTION[1], DOUBLE))
+        device.step_time(50)
+        assert acks(device) == [(RECALL, 1)]
+        assert sent(device) == [(3, SCENES, RECALL, bytes([5, 2, 1]))]
+        set_cfg(device, DOUBLE_ACT, ACT_NONE)
+        assert gesture(proc, device, DOUBLE) == []
+    finally:
+        proc.stop()

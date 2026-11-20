@@ -12,7 +12,9 @@ from generated_converter import run_node
 from test_converter_own_mcu import CONFIGURE, ZDMS
 
 NEW_PER_CHANNEL = ["countdown", "switch_mode", "fast_press", "current_level_startup",
-                   "start_boost", "execute_if_off", "on_level_local"]
+                   "start_boost", "execute_if_off", "on_level_local",
+                   # the wall switch's bindings (dimmer-only builds)
+                   "bind_mode", "double_press_action", "triple_press_action"]
 NEW_DEVICE = ["identify", "mcu_uptime", "mcu_reset_cause", "mcu_zero_cross_losses",
               "mcu_uart_rx_losses", "mcu_temperature", "mcu_settings_ring_moved"]
 NEW = [f"{n}_{ch}" for ch in ("l1", "l2") for n in NEW_PER_CHANNEL] + NEW_DEVICE
@@ -254,9 +256,10 @@ def test_configure_binds_basic_for_open_dimmer_and_reads_the_new_settings_of_2_2
     assert "1:genBasic" in own["binds"]
     new_reads = [f"{ep}:{cluster}" for ep in (1, 2) for cluster in
                  ("genOnOff:65296", "genOnOffSwitchCfg:65296+65297",
-                  "genLevelCtrl:startUpCurrentLevel+options+65297", "lightingBallastCfg:65296")]
+                  "genLevelCtrl:startUpCurrentLevel+options+65297", "lightingBallastCfg:65296",
+                  "genOnOffSwitchCfg:65298+65299+65300")]       # the binding settings
     assert [r for r in own["dimmerReads"] if r in new_reads] == new_reads
-    assert len(own["dimmerReads"]) == 8 + 8 + 2
+    assert len(own["dimmerReads"]) == 8 + 10 + 2
     assert "1:genBasic" in out["2.1.14 own"]["binds"]     # any Open Dimmer: its version reports
     for v in ("1.0.7", "2.2.0"):                            # stock, not identified: no bind
         assert "1:genBasic" not in out[v]["binds"], v
@@ -471,3 +474,32 @@ const ver = (v) => { const d = h.device(); d.getEndpoint(1).clusters.genBasic.at
     for words in ("as the time for the whole range", "Empty: the module's default, the whole range in 2 s",
                   "A transition (in the message or the device option transition) wins", "Open Dimmer 2.1.14"):
         assert all(words in p[6] for p in out["presets"]), words
+
+
+def test_the_wall_switch_binding_settings():
+    """bind_mode / double_press_action / triple_press_action: genOnOffSwitchCfg 0xff12..0xff14
+    (enum8, the values by their index), kept by the module; shown as Open Dimmer settings."""
+    out = json.loads(run_node(SET + """
+const fzc = (ep, data) => def.extend.filter((x) => !x.fake).flatMap((x) => x.fromZigbee ?? [])
+    .filter((f) => f.cluster === "genOnOffSwitchCfg")
+    .map((f) => f.convert(model, {device: dev, endpoint: {ID: ep}, data}, () => {}, {}, {device: dev}))
+    .filter((r) => r !== undefined);
+const stock = h.device(); stock.getEndpoint(1).clusters.genBasic.attributes[0xff12] = "1.0.7";
+(async () => console.log(JSON.stringify({
+    mode: await set("bind_mode", "remote", 2),
+    modeBad: await set("bind_mode", "always"),
+    double: await set("double_press_action", "scene_1"),
+    triple: await set("triple_press_action", "off"),
+    reports: [fzc(1, {[0xff12]: 2}), fzc(2, {[0xff13]: 4}), fzc(1, {[0xff14]: 0})],
+    stock: await tz("bind_mode").convertSet(stock.getEndpoint(1), "bind_mode", "off",
+                                            {device: stock, mapped: model, options: {}}).catch((e) => e.message),
+})))();
+"""))
+    assert out["mode"] == [[["write", 2, "genOnOffSwitchCfg", {str(0xff12): {"value": 3, "type": 0x30}}]],
+                           {"bind_mode": "remote"}]
+    assert "auto, off, mirror, remote" in out["modeBad"]
+    assert out["double"][0] == [["write", 1, "genOnOffSwitchCfg", {str(0xff13): {"value": 3, "type": 0x30}}]]
+    assert out["triple"][1] == {"triple_press_action": "off"}
+    assert out["reports"] == [[{"bind_mode_l1": "mirror"}], [{"double_press_action_l2": "scene_2"}],
+                              [{"triple_press_action_l1": "none"}]]
+    assert "Open Dimmer" in out["stock"]                  # a stock MCU: not shown, not written

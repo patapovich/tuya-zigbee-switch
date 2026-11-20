@@ -540,6 +540,21 @@ static int cmd_zcl_group(int argc, char **argv) {
     return 0;
 }
 
+/* zcl_bind_group <ep> <cluster:hex> <group:dec>: a binding of the endpoint's cluster to a group. */
+static int cmd_zcl_bind_group(int argc, char **argv) {
+    uint8_t  ep;
+    uint16_t cl, group;
+
+    if (argc != 4 || parse_u8_dec(argv[1], &ep) || parse_u16_hex(argv[2], &cl) ||
+        parse_u16_dec(argv[3], &group)) {
+        io_res_err("usage");
+        return -1;
+    }
+    stub_zigbee_add_group_binding(ep, cl, group);
+    io_res_ok("ep=%u cluster=0x%04X group=%u", ep, cl, group);
+    return 0;
+}
+
 static int parse_u32(const char *s, int base, uint32_t *out) {
     char *e = NULL;
     unsigned long long v = strtoull(s, &e, base);
@@ -814,6 +829,7 @@ static const SimpleReplCommand kCmds[] = {
     { "zcl_cmd_no_activity", cmd_zcl_cmd_no_activity },
     { "zcl_group_cmd",       cmd_zcl_group_cmd       },
     { "zcl_group",           cmd_zcl_group           },
+    { "zcl_bind_group",      cmd_zcl_bind_group      },
     { "freeze_time",         cmd_freeze_time         },
     { "step_time",           cmd_step_time           },
     { "set_battery_voltage", cmd_set_battery_voltage },

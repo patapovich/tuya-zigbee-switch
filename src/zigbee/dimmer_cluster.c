@@ -990,9 +990,17 @@ static uint8_t dimmer_own_mcu(const zigbee_dimmer_cluster *cluster) {
  * MoveToLevelWithOnOff(254, 0.4 s), full; triple nothing (an action in Zigbee2MQTT only). Off
  * mode: nothing. Without a binding nothing goes out. On / Off / Toggle and MoveToLevel ask for
  * an APS ack (retried if a unicast target misses it; the stack asks none of a group), Move and
- * Stop not (a late retry would move again). */
+ * Stop not (a late retry would move again).
+ *
+ * Configurable (genOnOffSwitchCfg 0xff12..0xff14, kept in NV): the bind mode, auto (the above,
+ * by the wall switch mode), off (nothing), mirror (only following the wall switch, any mode) or
+ * remote (only the gestures, also in the normal mode where the channel itself acts too); what a
+ * double and a triple press send in remote: nothing, full (the default of a double), off, or a
+ * Recall Scene of scene 1 / 2 of the group the Scenes binding goes to (0 if it goes to a
+ * device). */
 #define DIMMER_GESTURE_SINGLE     1
 #define DIMMER_GESTURE_DOUBLE     2
+#define DIMMER_GESTURE_TRIPLE     3
 #define DIMMER_GESTURE_HOLD       4
 #define DIMMER_GESTURE_RELEASE    5
 #define DIMMER_GESTURE_PRESS      6
@@ -1002,6 +1010,19 @@ static uint8_t dimmer_own_mcu(const zigbee_dimmer_cluster *cluster) {
 #define DIMMER_BIND_FADE          4    /* 1/10 s, of a MoveToLevelWithOnOff */
 #define DIMMER_BIND_END_MS        800  /* no level report for this long: the hold has ended */
 #define DIMMER_BIND_ON_MS         2000 /* a level this soon after the wall switch's on: its start */
+#define DIMMER_BIND_AUTO          0
+#define DIMMER_BIND_OFF           1
+#define DIMMER_BIND_MIRROR        2
+#define DIMMER_BIND_REMOTE        3
+#define DIMMER_ACT_NONE           0
+#define DIMMER_ACT_FULL           1
+#define DIMMER_ACT_OFF            2
+#define DIMMER_ACT_SCENE_1        3
+#define DIMMER_ACT_SCENE_2        4
+static const uint8_t dimmer_bind_default[3] = { DIMMER_BIND_AUTO, DIMMER_ACT_FULL,
+                                                DIMMER_ACT_NONE };
+static const uint8_t dimmer_bind_max[3] = { DIMMER_BIND_REMOTE, DIMMER_ACT_SCENE_2,
+                                            DIMMER_ACT_SCENE_2 };
 
 static void dimmer_add_cluster(hal_zigbee_endpoint *endpoint, uint16_t cluster_id,
                                uint8_t attribute_count, hal_zigbee_attribute *attributes,
@@ -1019,7 +1040,7 @@ static void dimmer_bind_send(const zigbee_dimmer_cluster *cluster, uint16_t clus
         .disable_default_rsp =                               1,
         .payload             = payload,
         .payload_len         = len,
-        .aps_ack             = cluster_id == ZCL_CLUSTER_ON_OFF ||
+        .aps_ack             = cluster_id != ZCL_CLUSTER_LEVEL_CONTROL ||
                                command_id == ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF,
     };
 
@@ -1032,6 +1053,53 @@ static void dimmer_bind_level(zigbee_dimmer_cluster *cluster, uint8_t level) {
 
     dimmer_bind_send(cluster, ZCL_CLUSTER_LEVEL_CONTROL, ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF,
                      p, 3);
+}
+
+/* The bindings follow the wall switch / its gestures drive them (bind mode, wall switch mode). */
+static uint8_t dimmer_bind_mirrors(const zigbee_dimmer_cluster *cluster) {
+    uint8_t m = cluster->bind_cfg[0];
+
+    return m == DIMMER_BIND_MIRROR ||
+           (m == DIMMER_BIND_AUTO && cluster->input_mode_mcu == DIMMER_INPUT_NORMAL);
+}
+
+static uint8_t dimmer_bind_remote(const zigbee_dimmer_cluster *cluster) {
+    uint8_t m = cluster->bind_cfg[0];
+
+    return m == DIMMER_BIND_REMOTE ||
+           (m == DIMMER_BIND_AUTO && cluster->input_mode_mcu == DIMMER_INPUT_DETACHED);
+}
+
+/* One out of range is its default again. */
+static void dimmer_bind_cfg_check(zigbee_dimmer_cluster *cluster) {
+    for (uint8_t i = 0; i < 3; i++) {
+        if (cluster->bind_cfg[i] > dimmer_bind_max[i])
+            cluster->bind_cfg[i] = dimmer_bind_default[i];
+    }
+}
+
+/* Written (one at a time, by hand): stored. */
+static void dimmer_bind_cfg_store(zigbee_dimmer_cluster *cluster) {
+    dimmer_bind_cfg_check(cluster);
+    if (cluster->dimmer_idx < NV_LAYOUT_DIMMERS)
+        hal_nvm_write(NV_ITEM_DIMMER_BIND(cluster->dimmer_idx), 3, cluster->bind_cfg);
+}
+
+/* The settings from NV (else the defaults), as attributes base.. of genOnOffSwitchCfg. */
+__attribute__((noinline)) static void dimmer_bind_setup(zigbee_dimmer_cluster *cluster,
+                                                        uint8_t base) {
+    if (cluster->dimmer_idx >= NV_LAYOUT_DIMMERS ||
+        hal_nvm_read(NV_ITEM_DIMMER_BIND(cluster->dimmer_idx), 3, cluster->bind_cfg) !=
+        HAL_NVM_SUCCESS) {
+        for (uint8_t i = 0; i < 3; i++)
+            cluster->bind_cfg[i] = dimmer_bind_default[i];
+    }
+    dimmer_bind_cfg_check(cluster);
+    for (uint8_t i = 0; i < 3; i++) {
+        SETUP_ATTR_FOR_TABLE(cluster->switch_type_attr_infos, base + i,
+                             ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_BIND_MODE + i,
+                             ZCL_DATA_TYPE_ENUM8, ATTR_WRITABLE, cluster->bind_cfg[i]);
+    }
 }
 
 static uint8_t dimmer_bind_default_rate(const zigbee_dimmer_cluster *cluster) {
@@ -1090,9 +1158,23 @@ __attribute__((noinline)) static void dimmer_bind_follow(zigbee_dimmer_cluster *
     hal_tasks_schedule(&cluster->bind_task, DIMMER_BIND_END_MS);
 }
 
+/* A double / triple press's action (DIMMER_ACT_*). */
+static void dimmer_bind_action(zigbee_dimmer_cluster *cluster, uint8_t act) {
+    if (act == DIMMER_ACT_FULL) {
+        dimmer_bind_level(cluster, ZCL_LEVEL_MAX);
+    } else if (act == DIMMER_ACT_OFF) {
+        dimmer_bind_send(cluster, ZCL_CLUSTER_ON_OFF, ZCL_CMD_ONOFF_OFF, NULL, 0);
+    } else if (act >= DIMMER_ACT_SCENE_1) {
+        uint16_t group = hal_zigbee_bound_group(cluster->bind_endpoint, ZCL_CLUSTER_SCENES);
+        uint8_t  p[3]  = { (uint8_t)group, (uint8_t)(group >> 8),
+                           (uint8_t)(act - DIMMER_ACT_SCENE_1 + 1) };
+        dimmer_bind_send(cluster, ZCL_CLUSTER_SCENES, ZCL_CMD_SCENE_RECALL, p, 3);
+    }
+}
+
 __attribute__((noinline)) static void dimmer_bind_gesture(zigbee_dimmer_cluster *cluster,
                                                           uint8_t gesture) {
-    if (cluster->input_mode_mcu != DIMMER_INPUT_DETACHED) {
+    if (!dimmer_bind_remote(cluster)) {
         if (gesture == DIMMER_GESTURE_RELEASE && cluster->bind_reports) {
             hal_tasks_unschedule(&cluster->bind_task);   /* Open Dimmer: the hold's end */
             dimmer_bind_follow_end(cluster);
@@ -1107,7 +1189,8 @@ __attribute__((noinline)) static void dimmer_bind_gesture(zigbee_dimmer_cluster 
         dimmer_bind_send(cluster, ZCL_CLUSTER_ON_OFF, ZCL_CMD_ONOFF_TOGGLE, NULL, 0);
         break;
     case DIMMER_GESTURE_DOUBLE:
-        dimmer_bind_level(cluster, ZCL_LEVEL_MAX);
+    case DIMMER_GESTURE_TRIPLE:
+        dimmer_bind_action(cluster, cluster->bind_cfg[gesture - 1]);
         break;
     case DIMMER_GESTURE_HOLD:
         dimmer_bind_move(cluster, cluster->bind_hold_down ? 2 : 1,
@@ -1135,8 +1218,9 @@ void dimmer_cluster_add_switch_endpoint(zigbee_dimmer_cluster *cluster,
     hal_tasks_init(&cluster->bind_task);
     dimmer_add_cluster(endpoint, ZCL_CLUSTER_ON_OFF, 0, NULL, NULL);
     dimmer_add_cluster(endpoint, ZCL_CLUSTER_LEVEL_CONTROL, 0, NULL, NULL);
-    endpoint->clusters[0].is_server = 0; /* clients: commands out */
-    endpoint->clusters[1].is_server = 0;
+    dimmer_add_cluster(endpoint, ZCL_CLUSTER_SCENES, 0, NULL, NULL);
+    for (uint8_t i = 0; i < 3; i++)
+        endpoint->clusters[i].is_server = 0; /* clients: commands out */
 }
 
 #pragma GCC pop_options
@@ -1182,7 +1266,7 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
                                    !(cluster->countdown && dimmer_countdown_left(cluster) == 0) &&
                                    !tuya_secondary_mcu_report_is_passive() &&
                                    !tuya_secondary_mcu_report_acks_write();
-            if ((switched_on || switched_off) && cluster->input_mode_mcu == DIMMER_INPUT_NORMAL)
+            if ((switched_on || switched_off) && dimmer_bind_mirrors(cluster))
                 dimmer_bind_send(cluster, ZCL_CLUSTER_ON_OFF,
                                  switched_on ? ZCL_CMD_ONOFF_ON : ZCL_CMD_ONOFF_OFF, NULL, 0);
             if (!value[0])
@@ -1218,7 +1302,7 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
 #ifdef DIMMER_BINDINGS
                 /* The wall switch dimming (the same tests as its on above). */
                 if (cluster->current_level != was_level && cluster->on && cluster->state_known &&
-                    cluster->bind_endpoint && cluster->input_mode_mcu == DIMMER_INPUT_NORMAL &&
+                    cluster->bind_endpoint && dimmer_bind_mirrors(cluster) &&
                     !tuya_secondary_mcu_report_is_passive() &&
                     !tuya_secondary_mcu_report_acks_write())
                     dimmer_bind_follow(cluster, was_level);
@@ -1468,7 +1552,14 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
                        dimmer_cluster_level_callback_trampoline);
     dimmer_add_cluster(endpoint, ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG, 2 + DIMMER_OD_ATTRS,
                        cluster->ballast_attr_infos, NULL);
-    dimmer_add_cluster(endpoint, ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG, 1 + 2 * DIMMER_OD_ATTRS,
+#ifdef DIMMER_BINDINGS
+    dimmer_bind_setup(cluster, 1 + 2 * DIMMER_OD_ATTRS);
+#define DIMMER_BIND_ATTRS    3
+#else
+#define DIMMER_BIND_ATTRS    0
+#endif
+    dimmer_add_cluster(endpoint, ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG,
+                       1 + 2 * DIMMER_OD_ATTRS + DIMMER_BIND_ATTRS,
                        cluster->switch_type_attr_infos, NULL);
 
 #ifdef SECONDARY_MCU_IMAGE
@@ -1623,6 +1714,12 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
             }
             dimmer_write_tuya_value(dimmer_od_dp(cluster, DIMMER_OD_FAST_PRESS),
                                     cluster->fast_press ? 1 : 0);
+        }
+#endif
+#ifdef DIMMER_BINDINGS
+        else if (attribute_id >= ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_BIND_MODE &&
+                 attribute_id <= ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_TRIPLE_ACTION) {
+            dimmer_bind_cfg_store(cluster);
         }
 #endif
         break;

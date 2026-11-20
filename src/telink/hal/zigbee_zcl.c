@@ -433,6 +433,20 @@ hal_zigbee_status_t hal_zigbee_send_cmd_to_bindings(const hal_zigbee_cmd *cmd) {
     return HAL_ZIGBEE_OK;
 }
 
+#ifdef DIMMER_BINDINGS
+__attribute__((optimize("Os"))) uint16_t hal_zigbee_bound_group(uint8_t endpoint,
+                                                                uint16_t cluster_id) {
+    for (u8 i = 0; i < APS_BINDING_TABLE_SIZE; i++) {
+        aps_binding_entry_t *b = &g_apsBindingTbl[i];
+        if (b->used && b->srcEp == endpoint && b->clusterId == cluster_id &&
+            b->dstAddrMode == APS_SHORT_GROUPADDR_NOEP)
+            return b->groupAddr;
+    }
+    return 0;
+}
+
+#endif
+
 hal_zigbee_status_t
 hal_zigbee_send_report_attr(uint8_t endpoint, uint16_t cluster_id,
                             uint16_t attr_id, uint8_t zcl_type_id,

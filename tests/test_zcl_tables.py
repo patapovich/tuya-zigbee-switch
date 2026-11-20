@@ -64,10 +64,11 @@ def test_the_zdms16_2_counts_and_headroom(tmp_path):
     got = counts(tmp_path, board["config_str"], dp_config_of(board))
     print("ZDMS16-2 ZCL tables:", got)
     # Scenes (DIMMER_SCENES): +1 cluster and +5 attributes per dimmer endpoint; the wall
-    # switches' endpoints 3 / 4 (DIMMER_BINDINGS): On/Off and Level Control clients each;
-    # attributes: also the SWD master's 3 (status, control, confirm; SWD3D7 in the board's config).
-    assert got == {"endpoints": (4, 8), "in_clusters": (17, 32), "out_clusters": (5, 32),
-                   "zcl_clusters": (22, 32), "attributes": (93, 128)}     # 21 + the SDK's OTA
+    # switches' endpoints 3 / 4 (DIMMER_BINDINGS): On/Off, Level Control and Scenes clients each,
+    # and per dimmer 3 binding settings (genOnOffSwitchCfg); attributes: also the SWD master's 3
+    # (status, control, confirm; SWD3D7 in the board's config).
+    assert got == {"endpoints": (4, 8), "in_clusters": (17, 32), "out_clusters": (7, 32),
+                   "zcl_clusters": (24, 32), "attributes": (99, 128)}     # 23 + the SDK's OTA
 
 
 def test_a_config_over_the_limits_is_said_so(tmp_path):

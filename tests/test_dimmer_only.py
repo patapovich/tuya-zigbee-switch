@@ -97,10 +97,11 @@ def test_its_endpoints_and_attributes_are_those_of_the_full_build(board, dimmer_
 def test_the_tokens_it_leaves_out_are_ignored(dimmer_only, tmp_path):
     config = "A;B;DM1;RA0;SA1u;CC2C3;XB4B5u;BTC5;LD2;IA4;BC0u;RT18;ST19;PT0E;SLP;LP50;D60;M;"
     listing = attribute_listing(dimmer_only, config, "", tmp_path / "dimmer_only")
-    # The dimmer and its wall switch's endpoint (its On/Off and Level Control clients) only.
+    # The dimmer and its wall switch's endpoint (its On/Off, Level Control, Scenes clients) only.
     assert "Endpoint 1:" in listing and "Endpoint 3:" not in listing
     assert listing.split("Endpoint 2:")[1].split("====")[0].split() == [
-        "Cluster", "0x0006", "(client):", "Cluster", "0x0008", "(client):"]
+        "Cluster", "0x0006", "(client):", "Cluster", "0x0008", "(client):",
+        "Cluster", "0x0005", "(client):"]
     assert "Endpoint 6:" in attribute_listing(FULL, config, "", tmp_path / "full")
 
 

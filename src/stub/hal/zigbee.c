@@ -24,6 +24,7 @@ typedef struct {
     uint16_t short_addr;
     uint8_t  endpoint;
     uint16_t cluster_id;
+    uint16_t group; /* 0: to short_addr */
 } stub_binding_t;
 
 static hal_zigbee_endpoint *endpoints             = NULL;
@@ -298,10 +299,26 @@ void stub_zigbee_add_binding(uint16_t short_addr, uint8_t endpoint,
     bindings[binding_count].short_addr = short_addr;
     bindings[binding_count].endpoint   = endpoint;
     bindings[binding_count].cluster_id = cluster_id;
+    bindings[binding_count].group      = 0;
     binding_count++;
 
     io_log("ZIGBEE", "Added binding: addr=0x%04x, ep=%d, cluster=0x%04x",
            short_addr, endpoint, cluster_id);
+}
+
+void stub_zigbee_add_group_binding(uint8_t endpoint, uint16_t cluster_id, uint16_t group) {
+    stub_zigbee_add_binding(0, endpoint, cluster_id);
+    if (binding_count && bindings[binding_count - 1].endpoint == endpoint)
+        bindings[binding_count - 1].group = group;
+}
+
+uint16_t hal_zigbee_bound_group(uint8_t endpoint, uint16_t cluster_id) {
+    for (int i = 0; i < binding_count; i++) {
+        if (bindings[i].endpoint == endpoint && bindings[i].cluster_id == cluster_id &&
+            bindings[i].group)
+            return bindings[i].group;
+    }
+    return 0;
 }
 
 void stub_zigbee_clear_bindings(void) {
