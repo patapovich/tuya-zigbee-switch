@@ -14,6 +14,8 @@ zdms16-py32 release notes.
 
 ## Next
 
+## 1.1.3-8bf3a03c (2026-11-20), carries Open Dimmer 2.2.4
+
 - Scenes are forgotten when the module leaves its network (group 0's too, which no group
   removal drops): a module paired again no longer recalls what the old network stored.
 - `brightness_fade_time` shows 2 (s) when unset instead of nothing ("unknown" in Home
