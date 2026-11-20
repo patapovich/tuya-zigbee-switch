@@ -14,6 +14,11 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
 
 ## Next
 
+- A wall switch hold from dark is followed in real time: the module ends its 3 s level holdoff
+  (taken after writing the wall switch's OnLevel) when Open Dimmer reports the hold, so the
+  hub and the bound lights get the hold's level every 0.5 s instead of the OnLevel during the
+  hold and the real level about 2 s after the release.
+
 ## 1.1.3-796e77e9 (2026-11-20), carries Open Dimmer 2.2.4
 
 - Rebuilt, nothing new; carries Open Dimmer 2.2.4.
