@@ -14,6 +14,11 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
 
 ## Next
 
+- No "off" at a restart: after an update (or any restart) the stack reported the dimmer's
+  defaults (off, level 0) before the MCU had told the light's state, and a hub took that as the
+  light going off (Adaptive Lighting then dropped a level set by hand). The reports now wait
+  until every dimmer knows its state (10 s at most).
+
 ## 1.1.3-69efbba2 (2026-11-20), carries Open Dimmer 2.2.5
 
 - Carries Open Dimmer 2.2.5.
