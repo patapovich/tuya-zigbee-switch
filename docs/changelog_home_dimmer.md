@@ -14,6 +14,10 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
 
 ## Next
 
+- Every build's OTA images are also the assets of its own release (tag
+  `zdms16-2-<build>`), and the index files point there: GitHub counts those downloads. Same
+  files and sha512, same index address.
+
 ## 1.1.3-2b74dd50 (2026-11-20), carries Open Dimmer 2.2.5
 
 - No "off" at a restart: after an update (or any restart) the stack reported the dimmer's
