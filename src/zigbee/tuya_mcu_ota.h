@@ -135,6 +135,15 @@ uint8_t tuya_mcu_ota_may_be_own(uint8_t packed);
  *  contact asks again). */
 void tuya_mcu_ota_mcu_restarted(void);
 
+/** The dimmers' light: lit = 1 while any channel is on or its state is not known yet. An
+ *  update makes the light go dark for the few seconds the MCU's bootloader writes, so an offer
+ *  waits while it is lit (and a minute after it went off), a day at most. */
+void tuya_mcu_ota_set_light(uint8_t lit);
+
+/** For tuya_mcu_ota_set_light: the dimmers exist, their state is not known yet (as lit). A board
+ *  without dimmers never says it, and its offers never wait. */
+#define TUYA_MCU_OTA_LIGHT_UNKNOWN    0xFF
+
 /** The build an Open Dimmer said in its last identity answer (0: none yet, or a 2.1.x app
  *  without one). Valid only while tuya_mcu_app_mcu_is_own(). */
 uint16_t tuya_mcu_ota_own_build(void);

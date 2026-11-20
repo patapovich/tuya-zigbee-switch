@@ -142,6 +142,23 @@ static void dimmer_notify_level(zigbee_dimmer_cluster *cluster) {
                                         ZCL_ATTR_LEVEL_CURRENT_LEVEL);
 }
 
+/* The light as a whole for the MCU updates (tuya_mcu_ota_set_light): lit while any channel is
+ * on; told once every channel's state is known, and on every change after. */
+static void dimmer_light_tell(void) {
+    uint8_t lit = 0;
+
+    for (int i = 0; i < DIMMER_MAX_ENDPOINTS; i++) {
+        zigbee_dimmer_cluster *c = dimmer_cluster_by_endpoint[i];
+        if (!c)
+            continue;
+        if (!c->state_known)
+            return;
+
+        lit |= c->on;
+    }
+    tuya_mcu_ota_set_light(lit);
+}
+
 static void dimmer_set_current_level(zigbee_dimmer_cluster *cluster, uint8_t level) {
     if (cluster->current_level == level)
         return;
@@ -167,6 +184,7 @@ static void dimmer_set_on(zigbee_dimmer_cluster *cluster, uint8_t on) {
         hal_zigbee_notify_attribute_changed(cluster->endpoint, ZCL_CLUSTER_ON_OFF,
                                             ZCL_ATTR_ONOFF_COUNTDOWN);
     }
+    dimmer_light_tell();
 }
 
 /* ---- MCU writes ---------------------------------------------------------- */
@@ -1280,6 +1298,7 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
             if (!cluster->state_known) {
                 cluster->state_known = 1;
                 dimmer_reports_known();
+                dimmer_light_tell();
             }
 
             /* Go to the wall switch's OnLevel (else OnLevel) at once, with
@@ -1498,6 +1517,7 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
         dimmer_reports_task.arg     = NULL;
         hal_tasks_init(&dimmer_reports_task);
         hal_zigbee_hold_reports(1, DIMMER_REPORTS_HOLD_MS);
+        tuya_mcu_ota_set_light(TUYA_MCU_OTA_LIGHT_UNKNOWN);  /* no MCU update until known */
     }
     cluster->endpoint = endpoint->endpoint;
     if (endpoint->endpoint < DIMMER_MAX_ENDPOINTS)

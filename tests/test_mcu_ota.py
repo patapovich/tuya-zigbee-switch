@@ -14,6 +14,8 @@ from tuya_mcu import (
     TUYA_CMD_QUERY_ALL,
     TUYA_CMD_QUERY_NETWORK,
     TUYA_CMD_WRITE,
+    bool_dp,
+    mcu_report,
     parse_frames,
     pump,
     take_tx,
@@ -181,14 +183,28 @@ def test_version_is_shown_only_once_the_mcu_said_who_it_is():
         proc.stop()
 
 
+DP_ON_L1, DP_ON_L2 = 1, 7
+
+
+def lights(proc, l1: int, l2: int = 0) -> None:
+    """The MCU reports both channels' on/off (the module learns the light's state)."""
+    mcu_report(proc, bool_dp(DP_ON_L1, l1))
+    mcu_report(proc, bool_dp(DP_ON_L2, l2))
+
+
+def lights_off(proc) -> None:
+    lights(proc, 0, 0)
+
+
 def contact_as_own(proc, device, running: int, build: int | None = None,
-                   boot: int | None = None):
+                   boot: int | None = None, lit: int = 0):
     """Version answered; once the module asks who it is, our firmware answers.
     Returns (commands up to the identity query, frames after the answer)."""
     device.step_time(2100)
     pump(proc)
     take_tx(proc)
     proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_MCU_VERSION, bytes([running]))}")
+    lights(proc, lit)                    # its state, as the dump at the first contact has it
     cmds = []
     for _ in range(5):                   # behind the settings query in the queue
         cmds += [cmd for cmd, _ in cmds_after(proc, device, 100)]
@@ -217,15 +233,16 @@ def ring_report(proc, device) -> list[tuple[int, bytes]]:
     return cmds_after(proc, device, 200)
 
 
-def contact_as_updatable_own(proc, device, running: int):
+def contact_as_updatable_own(proc, device, running: int, lit: int = 0):
     """contact_as_own() of an older Open Dimmer that may take the carried image: a 2.1.x app
     (7-byte identity, the version byte rule) for an image up to 12 KB; for a larger one the
     ring mover (2.1.14, build 400), which then reports its ring moved (the ring gate: the
     offer comes with the run's first such report, or at the identity once it came)."""
     if not GATED:
-        return contact_as_own(proc, device, running)
+        return contact_as_own(proc, device, running, lit=lit)
     assert IMAGE_BUILD > RING_MOVER_BUILD
-    cmds, frames = contact_as_own(proc, device, running, build=RING_MOVER_BUILD, boot=2)
+    cmds, frames = contact_as_own(proc, device, running, build=RING_MOVER_BUILD, boot=2,
+                                  lit=lit)
     return cmds, frames + ring_report(proc, device)
 
 
@@ -246,6 +263,39 @@ def test_own_mcu_with_an_older_version_is_offered_the_carried_one():
         offers = [data for cmd, data in frames if cmd == OTA_NOTIFY]
         assert offers == [offer()]                   # a 2.1.x app reads the first 9 bytes
         assert shown_version(device).endswith(" own")
+    finally:
+        proc.stop()
+
+
+def offers_in(frames) -> list[bytes]:
+    return [data for cmd, data in frames if cmd == OTA_NOTIFY]
+
+
+def test_an_offer_waits_while_the_light_is_on_and_a_minute_after_the_off():
+    """The bootloader keeps the light dark while it writes: an update waits for the light to
+    be off, and a minute more (whoever just switched it off may switch it on again)."""
+    proc, device = start()
+    try:
+        _, frames = contact_as_updatable_own(proc, device, older_version(), lit=1)
+        assert offers_in(frames) == []
+        assert offers_in(cmds_after(proc, device, 3_600_000)) == []    # an hour: still lit
+        lights(proc, 0)                                               # switched off
+        assert offers_in(cmds_after(proc, device, 30_000)) == []
+        lights(proc, 1)                                               # on again within the minute
+        lights(proc, 0)                                               # and off: a new minute
+        assert offers_in(cmds_after(proc, device, 59_000)) == []
+        assert offers_in(cmds_after(proc, device, 2_000)) == [offer()]
+    finally:
+        proc.stop()
+
+
+def test_an_offer_goes_after_a_day_at_the_latest():
+    proc, device = start()
+    try:
+        _, frames = contact_as_updatable_own(proc, device, older_version(), lit=1)
+        assert offers_in(frames) == []
+        assert offers_in(cmds_after(proc, device, 86_000_000)) == []
+        assert offers_in(cmds_after(proc, device, 500_000)) == [offer()]   # a day after
     finally:
         proc.stop()
 

@@ -85,6 +85,17 @@ static uint8_t  g_failures;                 /* failed update results since the l
 static uint16_t g_pause_min;                /* not served for this long after failures, 0: served */
 static uint8_t  g_offers;                   /* offers since the last result */
 
+/* An offer waits while the light is lit, OFFER_OFF_WAIT_MS after it went off (someone who just
+ * switched it off may switch it on again), OFFER_WAIT_MAX_MS at most. */
+#define OFFER_OFF_WAIT_MS    60000u
+#define OFFER_WAIT_MAX_MS    86400000u       /* a day */
+static uint8_t    g_light_lit;               /* lit, or the dimmers' state not known yet */
+static uint8_t    g_light_known;             /* the dimmers have told once */
+static uint32_t   g_light_off_at;            /* when it went off (0: off from the start) */
+static uint8_t    g_offer_waits;             /* 1: an offer waits, 2: a gated_only one */
+static uint32_t   g_offer_wait_since;
+static hal_task_t g_offer_task;
+
 static hal_task_t g_pause_timer;
 static uint8_t    g_pause_timer_ready;
 
@@ -357,6 +368,28 @@ static void offer_update(uint8_t gated_only) {
     if (g_offers >= OFFERS_MAX) {
         return;                     /* accepted but never started: not again */
     }
+
+    /* Not while the light is lit: the bootloader keeps it dark while it writes. */
+    uint32_t now  = hal_millis();
+    uint32_t wait = 0;
+    if (!g_offer_waits)
+        g_offer_wait_since = now;
+    if (now - g_offer_wait_since < OFFER_WAIT_MAX_MS) {
+        if (g_light_lit)
+            wait = OFFER_WAIT_MAX_MS - (now - g_offer_wait_since);
+        else if (g_light_off_at && now - g_light_off_at < OFFER_OFF_WAIT_MS)
+            wait = OFFER_OFF_WAIT_MS - (now - g_light_off_at);
+    }
+    if (wait) {
+        if (!g_offer_waits)
+            printf("Carried MCU firmware: the offer waits for the light to be off\r\n");
+        g_offer_waits = (uint8_t)((g_offer_waits == 1 || !gated_only) ? 1 : 2);
+        hal_tasks_unschedule(&g_offer_task);
+        hal_tasks_schedule(&g_offer_task, wait);
+        return;
+    }
+    g_offer_waits = 0;
+    hal_tasks_unschedule(&g_offer_task);
     g_offers++;
     uint8_t d[NOTIFY_LEN];
     d[0] = img.version;
@@ -568,7 +601,37 @@ static void health_on_dp(uint8_t dpid, uint8_t dp_type, const uint8_t *value,
     }
 }
 
+static void offer_task(void *arg) {
+    (void)arg;
+    if (g_offer_waits)
+        offer_update(g_offer_waits == 2);
+}
+
+void tuya_mcu_ota_set_light(uint8_t lit) {
+    uint8_t was_known = g_light_known;
+
+    if (lit == TUYA_MCU_OTA_LIGHT_UNKNOWN) {
+        g_light_lit = 1;
+        return;
+    }
+    lit           = lit ? 1 : 0;
+    g_light_known = 1;
+    if (lit == g_light_lit)
+        return;
+
+    if (!lit && was_known) {
+        uint32_t now = hal_millis();
+        g_light_off_at = now ? now : 1u;         /* switched off now (0: off from the start) */
+    }
+    g_light_lit = lit;
+    if (g_offer_waits)
+        offer_update(g_offer_waits == 2);   /* waits again (lit, just off) or goes now */
+}
+
 void tuya_mcu_ota_init(void) {
+    g_offer_task.handler = offer_task;
+    g_offer_task.arg     = NULL;
+    hal_tasks_init(&g_offer_task);
     g_health.temperature = -32768;
     if (tuya_secondary_mcu_add_dp_listener(health_on_dp) != 0) {
         printf("health_on_dp: not registered, its DPs are not taken\r\n");
@@ -658,6 +721,10 @@ void tuya_mcu_ota_mcu_restarted(void) {
 }
 
 void tuya_mcu_ota_mcu_queried(void) {
+}
+
+void tuya_mcu_ota_set_light(uint8_t lit) {
+    (void)lit;
 }
 
 uint8_t tuya_mcu_ota_on_command(uint8_t cmd, uint16_t seq, const uint8_t *data,
