@@ -225,9 +225,15 @@ hal_zigbee_status_t hal_zigbee_send_cmd_to_bindings(const hal_zigbee_cmd *cmd) {
     char buffer[cmd->payload_len * 2 + 1];
     bytes_to_hexstr(cmd->payload, cmd->payload_len, buffer);
 
+#ifdef DIMMER_BINDINGS
+    io_evt("zcl_cmd_send ep=%u cluster=0x%04X cmd=0x%02X len=%u ack=%u data_hex=%s",
+           cmd->endpoint, cmd->cluster_id, cmd->command_id, cmd->payload_len, cmd->aps_ack,
+           buffer);
+#else
     io_evt("zcl_cmd_send ep=%u cluster=0x%04X cmd=0x%02X len=%u data_hex=%s",
            cmd->endpoint, cmd->cluster_id, cmd->command_id, cmd->payload_len,
            buffer);
+#endif
 
     // Simulate sending to all relevant bindings
     int sent_count = 0;

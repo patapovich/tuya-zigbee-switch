@@ -417,6 +417,11 @@ hal_zigbee_status_t hal_zigbee_send_cmd_to_bindings(const hal_zigbee_cmd *cmd) {
 
     dstEpInfo.profileId   = HA_PROFILE_ID;
     dstEpInfo.dstAddrMode = APS_DSTADDR_EP_NOTPRESETNT;
+#ifdef DIMMER_BINDINGS
+    /* Each binding goes out as its own aps_data_request; a group's clears the ack bit. */
+    if (cmd->aps_ack)
+        dstEpInfo.txOptions = APS_TX_OPT_ACK_TX;
+#endif
     zcl_sendCmd(cmd->endpoint, &dstEpInfo, cmd->cluster_id, cmd->command_id,
                 cmd->cluster_specific,
                 cmd->direction == HAL_ZIGBEE_DIR_CLIENT_TO_SERVER

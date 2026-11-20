@@ -140,6 +140,9 @@ typedef struct {
     uint16_t               manufacturer_code;   // 0 if not manufacturer-specific
     const uint8_t *        payload;             // raw payload (little-endian encoded)
     uint8_t                payload_len;
+#ifdef DIMMER_BINDINGS
+    uint8_t                aps_ack;             // 1 = APS-acknowledged (the stack drops it for groups)
+#endif
 } hal_zigbee_cmd;
 
 /** Zigbee operation result codes (success or failure reasons) */

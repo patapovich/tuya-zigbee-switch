@@ -146,9 +146,11 @@ typedef struct {
 
 #ifdef DIMMER_BINDINGS
     /* Its wall switch's own endpoint (dimmer_cluster_add_switch_endpoint; 0: none), for the
-     * lights bound to it; bind_hold_down: its next hold (detached mode) dims down. */
+     * lights bound to it; bind_hold_down: its next hold (detached mode) dims down; bind_task:
+     * the wall switch's level, once settled, to them (normal mode). */
     uint8_t              bind_endpoint;
     uint8_t              bind_hold_down;
+    hal_task_t           bind_task;
 #endif
 } zigbee_dimmer_cluster;
 

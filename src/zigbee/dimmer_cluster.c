@@ -973,13 +973,17 @@ static uint8_t dimmer_own_mcu(const zigbee_dimmer_cluster *cluster) {
  *
  * Lights bound to it follow the wall switch. Normal mode (DP 162 / 163 0, also any MCU that does
  * not have it): the channel's on and off by the wall switch go out as On / Off (never Toggle:
- * right also when the channel itself is in a bound group); only the changes taken for the wall
- * switch's (not our commands, their answers, a query's answer, the first report after a boot,
- * the countdown's end), so two units bound to each other cannot loop. Detached mode (Open
- * Dimmer): its gestures drive them: single (and the fast press) Toggle; hold MoveWithOnOff up
- * and Move down by turns (the first up, a single starts again at up); its release
- * StopWithOnOff; double MoveToLevelWithOnOff(254, 0.4 s), full; triple nothing (an action in
- * Zigbee2MQTT only). Off mode: nothing. Without a binding nothing goes out. */
+ * right also when the channel itself is in a bound group), its level once settled (no new one
+ * for DIMMER_BIND_SETTLE_MS: the MCU reports a hold's level at its end or on the way) as one
+ * MoveToLevelWithOnOff over 0.4 s; only the changes taken for the wall switch's (not our
+ * commands, their answers, a query's answer, the first report after a boot, the countdown's
+ * end), so two units bound to each other cannot loop. Detached mode (Open Dimmer): its gestures
+ * drive them: single (and the fast press) Toggle; hold MoveWithOnOff up and Move down by turns
+ * (the first up, a single starts again at up); its release StopWithOnOff; double
+ * MoveToLevelWithOnOff(254, 0.4 s), full; triple nothing (an action in Zigbee2MQTT only). Off
+ * mode: nothing. Without a binding nothing goes out. On / Off / Toggle and MoveToLevel ask for
+ * an APS ack (retried if a unicast target misses it; the stack asks none of a group), Move and
+ * Stop not (a late retry would move again). */
 #define DIMMER_GESTURE_SINGLE     1
 #define DIMMER_GESTURE_DOUBLE     2
 #define DIMMER_GESTURE_HOLD       4
@@ -987,7 +991,9 @@ static uint8_t dimmer_own_mcu(const zigbee_dimmer_cluster *cluster) {
 #define DIMMER_GESTURE_PRESS      6
 #define DIMMER_INPUT_NORMAL       0
 #define DIMMER_INPUT_DETACHED     1
-#define DIMMER_BIND_RATE          50 /* levels/s of a hold without a DefaultMoveRate */
+#define DIMMER_BIND_RATE          50  /* levels/s of a hold without a DefaultMoveRate */
+#define DIMMER_BIND_FADE          4   /* 1/10 s, of a MoveToLevelWithOnOff */
+#define DIMMER_BIND_SETTLE_MS     400
 
 static void dimmer_add_cluster(hal_zigbee_endpoint *endpoint, uint16_t cluster_id,
                                uint8_t attribute_count, hal_zigbee_attribute *attributes,
@@ -1005,10 +1011,26 @@ static void dimmer_bind_send(const zigbee_dimmer_cluster *cluster, uint16_t clus
         .disable_default_rsp =                               1,
         .payload             = payload,
         .payload_len         = len,
+        .aps_ack             = cluster_id == ZCL_CLUSTER_ON_OFF ||
+                               command_id == ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF,
     };
 
     if (cluster->bind_endpoint)
         hal_zigbee_send_cmd_to_bindings(&cmd);
+}
+
+static void dimmer_bind_level(zigbee_dimmer_cluster *cluster, uint8_t level) {
+    uint8_t p[3] = { level, DIMMER_BIND_FADE, 0 };
+
+    dimmer_bind_send(cluster, ZCL_CLUSTER_LEVEL_CONTROL, ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF,
+                     p, 3);
+}
+
+static void dimmer_bind_settled(void *arg) {
+    zigbee_dimmer_cluster *cluster = (zigbee_dimmer_cluster *)arg;
+
+    if (cluster->on && cluster->input_mode_mcu == DIMMER_INPUT_NORMAL)
+        dimmer_bind_level(cluster, cluster->current_level);
 }
 
 static void dimmer_bind_gesture(zigbee_dimmer_cluster *cluster, uint8_t gesture) {
@@ -1025,12 +1047,7 @@ static void dimmer_bind_gesture(zigbee_dimmer_cluster *cluster, uint8_t gesture)
         dimmer_bind_send(cluster, ZCL_CLUSTER_ON_OFF, ZCL_CMD_ONOFF_TOGGLE, NULL, 0);
         break;
     case DIMMER_GESTURE_DOUBLE:
-        p[0] = ZCL_LEVEL_MAX;
-        p[1] = 4; /* 0.4 s */
-        p[2] = 0;
-        dimmer_bind_send(cluster, ZCL_CLUSTER_LEVEL_CONTROL,
-                         ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF,
-                         p, 3);
+        dimmer_bind_level(cluster, ZCL_LEVEL_MAX);
         break;
     case DIMMER_GESTURE_HOLD:
         p[0] = cluster->bind_hold_down ? ZCL_LEVEL_MOVE_DOWN : ZCL_LEVEL_MOVE_UP;
@@ -1050,9 +1067,12 @@ static void dimmer_bind_gesture(zigbee_dimmer_cluster *cluster, uint8_t gesture)
 
 void dimmer_cluster_add_switch_endpoint(zigbee_dimmer_cluster *cluster,
                                         hal_zigbee_endpoint *endpoint) {
-    endpoint->device_id     = ZCL_HA_DEVICE_ID_DIMMER_SWITCH;
-    cluster->bind_endpoint  = endpoint->endpoint;
-    cluster->bind_hold_down = 0;
+    endpoint->device_id        = ZCL_HA_DEVICE_ID_DIMMER_SWITCH;
+    cluster->bind_endpoint     = endpoint->endpoint;
+    cluster->bind_hold_down    = 0;
+    cluster->bind_task.handler = dimmer_bind_settled;
+    cluster->bind_task.arg     = cluster;
+    hal_tasks_init(&cluster->bind_task);
     dimmer_add_cluster(endpoint, ZCL_CLUSTER_ON_OFF, 0, NULL, NULL);
     dimmer_add_cluster(endpoint, ZCL_CLUSTER_LEVEL_CONTROL, 0, NULL, NULL);
     endpoint->clusters[0].is_server = 0; /* clients: commands out */
@@ -1129,6 +1149,16 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
                 cluster->level_value = number;
                 cluster->fade_ms     = 0; /* the MCU's word now */
                 dimmer_set_current_level(cluster, dimmer_value_to_level(cluster, number));
+#ifdef DIMMER_BINDINGS
+                /* The wall switch dimming (the same tests as its on above). */
+                if (cluster->current_level != was_level && cluster->on && cluster->state_known &&
+                    cluster->bind_endpoint &&
+                    !tuya_secondary_mcu_report_is_passive() &&
+                    !tuya_secondary_mcu_report_acks_write()) {
+                    hal_tasks_unschedule(&cluster->bind_task);
+                    hal_tasks_schedule(&cluster->bind_task, DIMMER_BIND_SETTLE_MS);
+                }
+#endif
             }
         } else if (dp_type == TUYA_DP_TYPE_VALUE && cluster->min_level_dpid &&
                    dpid == cluster->min_level_dpid) {
