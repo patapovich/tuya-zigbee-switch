@@ -14,6 +14,7 @@
 #define ZCL_CLUSTER_MULTISTATE_INPUT_BASIC     0x0012
 #define ZCL_CLUSTER_LEVEL_CONTROL              0x0008
 #define ZCL_CLUSTER_GROUPS                     0x0004
+#define ZCL_CLUSTER_SCENES                     0x0005
 #define ZCL_CLUSTER_OTA_BOOTLOAD               0x0019
 #define ZCL_CLUSTER_WINDOW_COVERING            0x0102
 #define ZCL_CLUSTER_COVER_SWITCH_CONFIG        0xFC01
@@ -22,6 +23,7 @@
 // Device ids (HA profile)
 
 #define ZCL_HA_DEVICE_ID_DIMMABLE_LIGHT    0x0101
+#define ZCL_HA_DEVICE_ID_DIMMER_SWITCH     0x0104
 
 
 // Attributes
@@ -99,6 +101,9 @@
 #define ZCL_ATTR_ONOFF_CONFIGURATION_SWITCH_BINDING_MODE       0xff05
 #define ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_INPUT_MODE         0xff10 /* dimmer: wall switch mode */
 #define ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_FAST_PRESS         0xff11 /* dimmer: fast press */
+#define ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_BIND_MODE          0xff12 /* dimmer: its bindings */
+#define ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_DOUBLE_ACTION      0xff13 /* dimmer: double press */
+#define ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_TRIPLE_ACTION      0xff14 /* dimmer: triple press */
 
 
 // Multistate cluster
@@ -112,6 +117,26 @@
 // Groups cluster
 
 #define ZCL_ATTR_GROUP_NAME_SUPPORT                                  0x0000
+
+// Scenes cluster attributes and commands (requests and their responses share the ids)
+#define ZCL_ATTR_SCENE_COUNT                                         0x0000
+#define ZCL_ATTR_SCENE_CURRENT_SCENE                                 0x0001
+#define ZCL_ATTR_SCENE_CURRENT_GROUP                                 0x0002
+#define ZCL_ATTR_SCENE_SCENE_VALID                                   0x0003
+#define ZCL_ATTR_SCENE_NAME_SUPPORT                                  0x0004
+#define ZCL_CMD_SCENE_ADD                                            0x00
+#define ZCL_CMD_SCENE_VIEW                                           0x01
+#define ZCL_CMD_SCENE_REMOVE                                         0x02
+#define ZCL_CMD_SCENE_REMOVE_ALL                                     0x03
+#define ZCL_CMD_SCENE_STORE                                          0x04
+#define ZCL_CMD_SCENE_RECALL                                         0x05
+#define ZCL_CMD_SCENE_GET_MEMBERSHIP                                 0x06
+#define ZCL_CMD_SCENE_ENHANCED_ADD                                   0x40
+#define ZCL_CMD_SCENE_ENHANCED_VIEW                                  0x41
+#define ZCL_STATUS_SUCCESS                                           0x00
+#define ZCL_STATUS_INVALID_FIELD                                     0x85
+#define ZCL_STATUS_INSUFFICIENT_SPACE                                0x89
+#define ZCL_STATUS_NOT_FOUND                                         0x8B
 
 // Level Control cluster
 #define ZCL_ATTR_LEVEL_CURRENT_LEVEL                                 0x0000

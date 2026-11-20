@@ -12,6 +12,9 @@
 #include "zigbee/poll_control_cluster.h"
 #include "zigbee/switch_cluster.h"
 #include "zigbee/dimmer_cluster.h"
+#ifdef DIMMER_SCENES
+#include "zigbee/scene_cluster.h"
+#endif
 #include "hal/uart.h"
 #include "zigbee/tuya_dp_relay.h"
 #include "zigbee/dp_attr.h"
@@ -91,6 +94,9 @@ zigbee_relay_cluster relay_clusters[6];
 uint8_t relay_clusters_cnt = 0;
 
 zigbee_dimmer_cluster dimmer_clusters[4];
+#ifdef DIMMER_SCENES
+static zigbee_scene_cluster scene_clusters[4]; /* one per dimmer endpoint */
+#endif
 uint8_t dimmer_clusters_cnt = 0;
 
 zigbee_cover_switch_cluster cover_switch_clusters[3];
@@ -673,6 +679,9 @@ void parse_config() {
         // binds from remotes need it.
         group_cluster_add_to_endpoint(&group_cluster,
                                       &endpoints[dimmer_base + index]);
+#ifdef DIMMER_SCENES
+        scene_cluster_add_to_endpoint(&scene_clusters[index], &endpoints[dimmer_base + index]);
+#endif
     }
 
     // Endpoint order: switches, relays, dimmers, cover switches, covers.
@@ -697,6 +706,20 @@ void parse_config() {
         cover_cluster_add_to_endpoint(&cover_clusters[index],
                                       &endpoints[cover_base + index]);
     }
+
+#ifdef DIMMER_BINDINGS
+    /* Each dimmer's wall switch as an endpoint of its own, after every other one (none moves):
+     * other lights bound to it follow the wall switch (dimmer_cluster.c). */
+    for (int index = 0; index < dimmer_clusters_cnt &&
+         total_endpoints < (int)(sizeof(endpoints) / sizeof(endpoints[0])); index++) {
+        endpoints[total_endpoints].endpoint   = total_endpoints + 1;
+        endpoints[total_endpoints].profile_id = 0x0104;
+        cluster_ptr += endpoints[total_endpoints - 1].cluster_count;
+        endpoints[total_endpoints].clusters = cluster_ptr;
+        dimmer_cluster_add_switch_endpoint(&dimmer_clusters[index], &endpoints[total_endpoints]);
+        total_endpoints++;
+    }
+#endif
 
     hal_zigbee_init(endpoints, total_endpoints);
     while (cursor != (char *)device_config_str.data) {

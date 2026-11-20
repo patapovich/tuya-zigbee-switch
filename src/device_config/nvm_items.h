@@ -56,4 +56,11 @@
 // SWD master: the automatic install at power-up was used (once per module).
 #define NV_ITEM_MCU_FLASHER_AUTO    59
 
+/* The Scenes table of the dimmer endpoints (DIMMER_SCENES, src/zigbee/scene_cluster.c). */
+#define NV_ITEM_SCENE_TABLE         60
+
+/* The wall switch's bindings of a dimmer (DIMMER_BINDINGS: bind mode, double and triple press
+ * actions, 3 bytes): 61..64. */
+#define NV_ITEM_DIMMER_BIND(dimmer_idx)    (61 + (dimmer_idx))
+
 #endif /* DEVICE_CONFIG_NVM_ITEMS_H_ */

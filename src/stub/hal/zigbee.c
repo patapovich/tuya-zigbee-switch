@@ -24,6 +24,7 @@ typedef struct {
     uint16_t short_addr;
     uint8_t  endpoint;
     uint16_t cluster_id;
+    uint16_t group; /* 0: to short_addr */
 } stub_binding_t;
 
 static hal_zigbee_endpoint *endpoints             = NULL;
@@ -36,6 +37,21 @@ static uint32_t poll_rate_ms = 0;
 
 static stub_binding_t bindings[MAX_BINDINGS];
 static int            binding_count = 0;
+
+/* The command being handled (hal_zigbee_send_response answers it): its endpoint and cluster,
+ * and whether it came to a group (no response then). */
+static uint8_t  cmd_active;
+static uint8_t  cmd_ep;
+static uint16_t cmd_cluster;
+static uint8_t  cmd_to_group;
+
+/* The group table, as APS_GROUP_TABLE_NUM on Telink (8 entries of group + endpoint). */
+#define STUB_GROUPS    8
+static struct {
+    uint16_t group_id;
+    uint8_t  endpoint; /* 0: free */
+} groups[STUB_GROUPS];
+static hal_group_removed_callback_t group_removed_callback = NULL;
 
 void hal_zigbee_init(hal_zigbee_endpoint *ep_list, uint8_t ep_count) {
     if (!ep_list && ep_count > 0) {
@@ -210,9 +226,15 @@ hal_zigbee_status_t hal_zigbee_send_cmd_to_bindings(const hal_zigbee_cmd *cmd) {
     char buffer[cmd->payload_len * 2 + 1];
     bytes_to_hexstr(cmd->payload, cmd->payload_len, buffer);
 
+#ifdef DIMMER_BINDINGS
+    io_evt("zcl_cmd_send ep=%u cluster=0x%04X cmd=0x%02X len=%u ack=%u data_hex=%s",
+           cmd->endpoint, cmd->cluster_id, cmd->command_id, cmd->payload_len, cmd->aps_ack,
+           buffer);
+#else
     io_evt("zcl_cmd_send ep=%u cluster=0x%04X cmd=0x%02X len=%u data_hex=%s",
            cmd->endpoint, cmd->cluster_id, cmd->command_id, cmd->payload_len,
            buffer);
+#endif
 
     // Simulate sending to all relevant bindings
     int sent_count = 0;
@@ -277,10 +299,26 @@ void stub_zigbee_add_binding(uint16_t short_addr, uint8_t endpoint,
     bindings[binding_count].short_addr = short_addr;
     bindings[binding_count].endpoint   = endpoint;
     bindings[binding_count].cluster_id = cluster_id;
+    bindings[binding_count].group      = 0;
     binding_count++;
 
     io_log("ZIGBEE", "Added binding: addr=0x%04x, ep=%d, cluster=0x%04x",
            short_addr, endpoint, cluster_id);
+}
+
+void stub_zigbee_add_group_binding(uint8_t endpoint, uint16_t cluster_id, uint16_t group) {
+    stub_zigbee_add_binding(0, endpoint, cluster_id);
+    if (binding_count && bindings[binding_count - 1].endpoint == endpoint)
+        bindings[binding_count - 1].group = group;
+}
+
+uint16_t hal_zigbee_bound_group(uint8_t endpoint, uint16_t cluster_id) {
+    for (int i = 0; i < binding_count; i++) {
+        if (bindings[i].endpoint == endpoint && bindings[i].cluster_id == cluster_id &&
+            bindings[i].group)
+            return bindings[i].group;
+    }
+    return 0;
 }
 
 void stub_zigbee_clear_bindings(void) {
@@ -312,14 +350,85 @@ stub_zigbee_simulate_command_internal(uint8_t endpoint, uint16_t cluster_id,
             for (int j = 0; j < endpoints[i].cluster_count; j++) {
                 hal_zigbee_cluster *cluster = &endpoints[i].clusters[j];
                 if (cluster->cluster_id == cluster_id && cluster->cmd_callback) {
-                    return cluster->cmd_callback(endpoint, cluster_id, command_id,
-                                                 payload, payload_len);
+                    cmd_active  = 1;
+                    cmd_ep      = endpoint;
+                    cmd_cluster = cluster_id;
+                    hal_zigbee_cmd_result_t r = cluster->cmd_callback(endpoint, cluster_id,
+                                                                      command_id, payload,
+                                                                      payload_len);
+                    cmd_active = 0;
+                    return r;
                 }
             }
         }
     }
 
     return HAL_ZIGBEE_CMD_SKIPPED;
+}
+
+void hal_zigbee_send_response(uint8_t command_id, const uint8_t *payload, uint8_t payload_len) {
+    if (!cmd_active) {
+        io_log("ZIGBEE", "Error: response outside a command");
+        return;
+    }
+    if (cmd_to_group) {
+        io_log("ZIGBEE", "No response to a group command (cluster 0x%04x cmd 0x%02x)",
+               cmd_cluster, command_id);
+        return;
+    }
+    char buffer[payload_len * 2 + 1];
+    bytes_to_hexstr(payload, payload_len, buffer);
+    io_evt("zcl_cmd_resp ep=%u cluster=0x%04X cmd=0x%02X len=%u data_hex=%s", cmd_ep,
+           cmd_cluster, command_id, payload_len, buffer);
+}
+
+bool hal_zigbee_group_has_endpoint(uint16_t group_id, uint8_t endpoint) {
+    for (int i = 0; i < STUB_GROUPS; i++)
+        if (groups[i].endpoint == endpoint && groups[i].group_id == group_id)
+            return true;
+
+    return false;
+}
+
+void hal_zigbee_register_on_group_removed_callback(hal_group_removed_callback_t callback) {
+    group_removed_callback = callback;
+}
+
+int stub_zigbee_group_add(uint8_t endpoint, uint16_t group_id) {
+    if (hal_zigbee_group_has_endpoint(group_id, endpoint))
+        return 0;
+
+    for (int i = 0; i < STUB_GROUPS; i++) {
+        if (!groups[i].endpoint) {
+            groups[i].endpoint = endpoint;
+            groups[i].group_id = group_id;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+void stub_zigbee_group_remove(uint8_t endpoint, uint16_t group_id, bool all) {
+    if (group_removed_callback)
+        group_removed_callback(endpoint, group_id, all);
+    for (int i = 0; i < STUB_GROUPS; i++)
+        if (groups[i].endpoint == endpoint && (all || groups[i].group_id == group_id))
+            groups[i].endpoint = 0;
+}
+
+/* To every endpoint in the group, as the stack delivers a groupcast; the last result. */
+hal_zigbee_cmd_result_t stub_zigbee_simulate_group_command(uint16_t group_id, uint16_t cluster_id,
+                                                           uint8_t command_id, void *payload,
+                                                           uint16_t payload_len) {
+    hal_zigbee_cmd_result_t r = HAL_ZIGBEE_CMD_SKIPPED;
+
+    cmd_to_group = 1;
+    for (int i = 0; i < STUB_GROUPS; i++)
+        if (groups[i].endpoint && groups[i].group_id == group_id)
+            r = stub_zigbee_simulate_command_internal(groups[i].endpoint, cluster_id, command_id,
+                                                      payload, payload_len, true);
+    cmd_to_group = 0;
+    return r;
 }
 
 // Simulate receiving a ZCL command

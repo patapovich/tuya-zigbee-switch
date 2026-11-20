@@ -272,6 +272,9 @@ if __name__ == "__main__":
                 # power-on and wall switch gestures (shown per the device option
                 # open_dimmer_settings) and mcu_firmware.
                 "secondary_mcu_image": bool(device.get("secondary_mcu_image")),
+                # A dimmer-only build: the wall switches' own endpoints and their binding
+                # settings (DIMMER_BINDINGS).
+                "dimmer_only": bool(device.get("dimmer_only")),
             }
         )
 

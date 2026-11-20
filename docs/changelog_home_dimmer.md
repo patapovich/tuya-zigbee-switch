@@ -51,6 +51,31 @@ zdms16-py32 release notes.
   `src/telink/patch_sdk/ota_client_only.c` and `zcl_ota_client_only.c`, with the SDK's flags.
   A client-to-server OTA command (which only a server receives) is answered as unsupported.
   The OTA image is 2.3 KB smaller.
+- Zigbee Scenes on both channels (genScenes: Zigbee2MQTT's `scene_store`, `scene_add`,
+  `scene_recall`, `scene_remove`, also for groups). A scene keeps the channel's on/off state and
+  brightness; a recall fades in the scene's transition time, or with the channel's fade
+  settings when the scene has none (a stored scene, one added without a transition). 16 scenes
+  for the module, kept over power cuts; a group's scenes go when the channel leaves the group.
+  Zigbee2MQTT lists the Scenes cluster after a re-interview of the device. Other boards: no
+  change.
+- Direct control from the wall switch: each channel's wall switch has an endpoint of its own
+  (3 and 4, Dimmer Switch with On/Off and Level Control clients); lights or groups bound to it
+  in Zigbee2MQTT (Bind, source endpoint 3 / 4) follow it without the coordinator. Normal wall
+  switch mode: its on and off go out as On / Off, and a hold dims the bound lights along with
+  it: one move in the hold's direction at its measured speed (the module reports the level
+  every 0.5 s through a hold; Open Dimmer from 2.2.4), then a stop and a move to the level
+  the hold ended at. Detached mode (Open Dimmer): a press
+  toggles, a hold dims (up and down by turns, at DefaultMoveRate or 50 levels/s), a double
+  press sets full brightness. On, off, toggle and move-to-level are sent with an APS
+  acknowledgement, so a bound light that misses one gets it again; groups are sent without
+  one. Nothing is sent without a binding; the light entities stay as they were.
+- Settings for that, per channel (Open Dimmer settings in Zigbee2MQTT): `bind_mode` auto (as
+  above, by the wall switch mode), off, mirror (only following the wall switch) or remote (only
+  its gestures, also in the normal mode where the channel acts too); `double_press_action` and
+  `triple_press_action`: none, full, off, or scene_1 / scene_2 = Recall Scene 1 / 2 of the
+  group the wall switch's Scenes binding goes to (store the scene with Zigbee2MQTT's
+  scene_store). Defaults: auto, full, none. The wall switch endpoints also have a Scenes client
+  for that binding.
 
 ## 1.1.3-ab06b9a0 (2026-11-19), carries Open Dimmer 2.2.3
 

@@ -18,6 +18,10 @@ typedef enum {
     HAL_ZIGBEE_INVALID_VALUE,
     HAL_ZIGBEE_MALFORMED_COMMAND,
     HAL_ZIGBEE_ACTION_DENIED,
+#ifdef DIMMER_SCENES          /* (only there: other boards keep their builds byte for byte) */
+    HAL_ZIGBEE_NOT_FOUND,     /* ZCL NOT_FOUND (Scenes: no such scene) */
+    HAL_ZIGBEE_INVALID_FIELD, /* ZCL INVALID_FIELD (Scenes: the endpoint is not in the group) */
+#endif
 } hal_zigbee_cmd_result_t;
 
 /** Zigbee network connection state */
@@ -136,6 +140,9 @@ typedef struct {
     uint16_t               manufacturer_code;   // 0 if not manufacturer-specific
     const uint8_t *        payload;             // raw payload (little-endian encoded)
     uint8_t                payload_len;
+#ifdef DIMMER_BINDINGS
+    uint8_t                aps_ack;             // 1 = APS-acknowledged (the stack drops it for groups)
+#endif
 } hal_zigbee_cmd;
 
 /** Zigbee operation result codes (success or failure reasons) */
@@ -198,6 +205,33 @@ void hal_zigbee_set_poll_rate_ms(uint32_t poll_rate_ms);
  * Returns 0 for routers.
  */
 uint32_t hal_zigbee_get_poll_rate_ms(void);
+
+#ifdef DIMMER_SCENES
+/* ---- for the Scenes server (src/zigbee/scene_cluster.c) ---- */
+
+/**
+ * Answer the ZCL command being handled (call it from its cmd_callback): a cluster-specific
+ * command of the same cluster, server to client, to its sender, with its sequence number.
+ * Nothing goes out for a command sent to a group or as a broadcast (ZCL: no response then),
+ * and the stack sends no default response for an answered command.
+ */
+void hal_zigbee_send_response(uint8_t command_id, const uint8_t *payload, uint8_t payload_len);
+
+/** Whether the endpoint is in the group (the stack's group table). */
+bool hal_zigbee_group_has_endpoint(uint16_t group_id, uint8_t endpoint);
+
+/** Called before the stack takes a Remove Group (group_id) or Remove All Groups (all = true)
+ *  command of the Groups cluster on an endpoint. */
+typedef void (*hal_group_removed_callback_t)(uint8_t endpoint, uint16_t group_id, bool all);
+void hal_zigbee_register_on_group_removed_callback(hal_group_removed_callback_t callback);
+
+#endif
+
+#ifdef DIMMER_BINDINGS
+/** The group a binding of the endpoint's cluster goes to (the first such), 0 if none. */
+uint16_t hal_zigbee_bound_group(uint8_t endpoint, uint16_t cluster_id);
+
+#endif
 
 /** Find cluster definition by endpoint and cluster ID */
 static inline hal_zigbee_cluster *

@@ -37,7 +37,11 @@ typedef struct {
     hal_zigbee_attribute attr_infos[10];
     hal_zigbee_attribute multistate_attr_infos[4];  // wall switch gestures (own MCU)
     hal_zigbee_attribute ballast_attr_infos[3];     // min/max level, [start boost] (lightingBallastCfg)
+#ifdef DIMMER_BINDINGS
+    hal_zigbee_attribute switch_type_attr_infos[6]; // ..., bind mode, double / triple press action
+#else
     hal_zigbee_attribute switch_type_attr_infos[3]; // switch type, [wall switch mode, fast press] (genOnOffSwitchCfg)
+#endif
     hal_zigbee_attribute identify_attr_infos[1];    // [IdentifyTime] (genIdentify)
 
     /* Open Dimmer from OPEN_DIMMER_FEATURES_BUILD (2.2.0), as its dump and the answers to our
@@ -143,6 +147,28 @@ typedef struct {
     uint8_t              has_held_report;
     uint32_t             held_report_value;
     uint32_t             last_written_value;
+
+#ifdef DIMMER_BINDINGS
+    /* Its wall switch's own endpoint (dimmer_cluster_add_switch_endpoint; 0: none), for the
+     * lights bound to it; bind_hold_down: its next hold (detached mode) dims down. Following
+     * a wall switch hold (normal mode): bind_dir the Move they have (0 none, 1 up, 2 down),
+     * bind_reports its level reports so far (0: no hold, at most 2), bind_rate the levels/s
+     * of the last Move or measured (0: none yet), bind_after_on: switched on by the wall
+     * switch and no level since, bind_time the ms of the last report or of that on,
+     * bind_task the hold's end (no report for a while). */
+    uint8_t              bind_endpoint;
+    uint8_t              bind_hold_down;
+    uint8_t              bind_dir;
+    uint8_t              bind_reports;
+    uint8_t              bind_rate;
+    uint8_t              bind_after_on;
+    uint32_t             bind_time;
+    hal_task_t           bind_task;
+
+    /* Kept in NV (NV_ITEM_DIMMER_BIND): bind mode (DIMMER_BIND_*), double and triple press
+     * action (DIMMER_ACT_*). */
+    uint8_t              bind_cfg[3];
+#endif
 } zigbee_dimmer_cluster;
 
 void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
@@ -161,5 +187,26 @@ void dimmer_cluster_mcu_restarted(void);
 void dimmer_cluster_callback_attr_write_trampoline(uint8_t endpoint,
                                                    uint16_t cluster_id,
                                                    uint16_t attribute_id);
+
+#ifdef DIMMER_BINDINGS
+
+/** The endpoint of the dimmer's wall switch: On/Off and Level Control clients, for bindings of
+ *  other lights to it (Dimmer Switch). */
+void dimmer_cluster_add_switch_endpoint(zigbee_dimmer_cluster *cluster,
+                                        hal_zigbee_endpoint *endpoint);
+
+#endif
+
+#ifdef DIMMER_SCENES
+
+/** For Store Scene: the endpoint's state as scene flags (scene_cluster.h; the level only when
+ *  one is known) and level. */
+void dimmer_cluster_scene_state(uint8_t endpoint, uint8_t *flags, uint8_t *level);
+
+/** Recall Scene: flags and level as stored, transition in 1/10 s (0xFFFF: the fade settings). */
+void dimmer_cluster_scene_recall(uint8_t endpoint, uint8_t flags, uint8_t level,
+                                 uint16_t transition);
+
+#endif
 
 #endif

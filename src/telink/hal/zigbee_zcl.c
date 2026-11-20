@@ -7,6 +7,9 @@
 #include "zcl_multistate_input.h"
 #include "zcl_window_covering_custom.h"
 #include "zcl_onoff_configuration.h"
+#ifdef DIMMER_SCENES
+#include "zcl_scenes_custom.h"
+#endif
 #pragma pack(pop)
 
 #include "telink_size_t_hack.h"
@@ -81,6 +84,11 @@ static cluster_registerFunc_t get_register_func_by_cluster_id(u16 cluster_id) {
     if (cluster_id == ZCL_CLUSTER_GEN_POLL_CONTROL) {
         return zcl_pollCtrl_register;
     }
+#ifdef DIMMER_SCENES
+    if (cluster_id == ZCL_CLUSTER_GEN_SCENES) {
+        return zcl_scenes_custom_register;
+    }
+#endif
     return NULL;
 }
 
@@ -103,6 +111,13 @@ static status_t cmd_callback(u8 endpoint, u16 clusterId, u8 cmdId,
         } else if (status == HAL_ZIGBEE_CMD_SKIPPED) {
             return ZCL_STA_UNSUP_CLUSTER_COMMAND;
         }
+#ifdef DIMMER_SCENES
+        else if (status == HAL_ZIGBEE_NOT_FOUND) {
+            return ZCL_STA_NOT_FOUND;
+        } else if (status == HAL_ZIGBEE_INVALID_FIELD) {
+            return ZCL_STA_INVALID_FIELD;
+        }
+#endif
     }
     return(ZCL_STA_SUCCESS);
 }
@@ -158,6 +173,71 @@ static status_t cmd_callback_poll_control(zclIncomingAddrInfo_t *pAddrInfo,
                         pInMsg->pData, pInMsg->dataLen);
 }
 
+#ifdef DIMMER_SCENES
+
+/* The Scenes command being handled (hal_zigbee_send_response answers it) and whether it was
+ * answered (no default response then). */
+static zclIncoming_t *scene_in_msg;
+static u8             scene_answered;
+
+static status_t cmd_callback_scenes(zclIncomingAddrInfo_t *pAddrInfo, u8 cmdId,
+                                    void *cmdPayload) {
+    zclIncoming_t *pInMsg = cmd_incoming_from_addr_info(pAddrInfo);
+
+    scene_in_msg   = pInMsg;
+    scene_answered = 0;
+    status_t status = cmd_callback(pAddrInfo->dstEp, ZCL_CLUSTER_GEN_SCENES, cmdId,
+                                   pInMsg->pData, pInMsg->dataLen);
+    scene_in_msg = NULL;
+    return scene_answered && status == ZCL_STA_SUCCESS ? ZCL_STA_CMD_HAS_RESP : status;
+}
+
+void hal_zigbee_send_response(uint8_t command_id, const uint8_t *payload, uint8_t payload_len) {
+    zclIncoming_t *in = scene_in_msg;
+
+    if (in == NULL)
+        return;
+
+    scene_answered = 1;
+    if (!UNICAST_MSG(in->msg))
+        return; /* ZCL: a command to a group or a broadcast gets no response */
+
+    epInfo_t dst;
+    TL_SETSTRUCTCONTENT(dst, 0);
+    dst.dstAddrMode       = APS_SHORT_DSTADDR_WITHEP;
+    dst.dstAddr.shortAddr = in->addrInfo.srcAddr;
+    dst.dstEp             = in->addrInfo.srcEp;
+    dst.profileId         = in->addrInfo.profileId;
+    zcl_sendCmd(in->addrInfo.dstEp, &dst, ZCL_CLUSTER_GEN_SCENES, command_id, TRUE,
+                ZCL_FRAME_SERVER_CLIENT_DIR, TRUE, 0, in->addrInfo.seqNum, payload_len,
+                (u8 *)payload);
+}
+
+bool hal_zigbee_group_has_endpoint(uint16_t group_id, uint8_t endpoint) {
+    return aps_group_search(group_id, endpoint) != NULL;
+}
+
+static hal_group_removed_callback_t group_removed_callback = NULL;
+
+void hal_zigbee_register_on_group_removed_callback(hal_group_removed_callback_t callback) {
+    group_removed_callback = callback;
+}
+
+/* Remove Group (0x03) / Remove All Groups (0x04) of the Groups cluster, cluster-specific, client
+ * to server, not manufacturer-specific: told before the stack takes it. */
+static void scene_check_group_removal(apsdeDataInd_t *ind) {
+    if (group_removed_callback == NULL || ind->indInfo.cluster_id != ZCL_CLUSTER_GEN_GROUPS ||
+        ind->asduLen < 3 || (ind->asdu[0] & 0x0F) != ZCL_FRAME_TYPE_SPECIFIC_CMD)
+        return;
+
+    if (ind->asdu[2] == ZCL_CMD_GROUP_REMOVE_GROUP && ind->asduLen >= 5)
+        group_removed_callback(ind->indInfo.dst_ep, BUILD_U16(ind->asdu[3], ind->asdu[4]), false);
+    else if (ind->asdu[2] == ZCL_CMD_GROUP_REMOVE_ALL_GROUP)
+        group_removed_callback(ind->indInfo.dst_ep, 0, true);
+}
+
+#endif
+
 static cluster_forAppCb_t get_cmd_callback_by_cluster_id(u16 cluster_id) {
     if (cluster_id == ZCL_CLUSTER_GEN_LEVEL_CONTROL) { // Level Control cluster
         return cmd_callback_level_control;
@@ -176,6 +256,11 @@ static cluster_forAppCb_t get_cmd_callback_by_cluster_id(u16 cluster_id) {
     if (cluster_id == ZCL_CLUSTER_GEN_IDENTIFY) {
         return cmd_callback_identify;
     }
+#ifdef DIMMER_SCENES
+    if (cluster_id == ZCL_CLUSTER_GEN_SCENES) {
+        return cmd_callback_scenes;
+    }
+#endif
     return NULL;
 }
 
@@ -213,6 +298,9 @@ static void af_rx_callback(void *arg) {
     if (zcl_activity_callback != NULL) {
         zcl_activity_callback();
     }
+#ifdef DIMMER_SCENES
+    scene_check_group_removal((apsdeDataInd_t *)arg);
+#endif
     zcl_rx_handler(arg);
 }
 
@@ -329,6 +417,11 @@ hal_zigbee_status_t hal_zigbee_send_cmd_to_bindings(const hal_zigbee_cmd *cmd) {
 
     dstEpInfo.profileId   = HA_PROFILE_ID;
     dstEpInfo.dstAddrMode = APS_DSTADDR_EP_NOTPRESETNT;
+#ifdef DIMMER_BINDINGS
+    /* Each binding goes out as its own aps_data_request; a group's clears the ack bit. */
+    if (cmd->aps_ack)
+        dstEpInfo.txOptions = APS_TX_OPT_ACK_TX;
+#endif
     zcl_sendCmd(cmd->endpoint, &dstEpInfo, cmd->cluster_id, cmd->command_id,
                 cmd->cluster_specific,
                 cmd->direction == HAL_ZIGBEE_DIR_CLIENT_TO_SERVER
@@ -339,6 +432,20 @@ hal_zigbee_status_t hal_zigbee_send_cmd_to_bindings(const hal_zigbee_cmd *cmd) {
 
     return HAL_ZIGBEE_OK;
 }
+
+#ifdef DIMMER_BINDINGS
+__attribute__((optimize("Os"))) uint16_t hal_zigbee_bound_group(uint8_t endpoint,
+                                                                uint16_t cluster_id) {
+    for (u8 i = 0; i < APS_BINDING_TABLE_SIZE; i++) {
+        aps_binding_entry_t *b = &g_apsBindingTbl[i];
+        if (b->used && b->srcEp == endpoint && b->clusterId == cluster_id &&
+            b->dstAddrMode == APS_SHORT_GROUPADDR_NOEP)
+            return b->groupAddr;
+    }
+    return 0;
+}
+
+#endif
 
 hal_zigbee_status_t
 hal_zigbee_send_report_attr(uint8_t endpoint, uint16_t cluster_id,
