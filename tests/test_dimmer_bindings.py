@@ -1,16 +1,22 @@
 """The wall switch's bindings (DIMMER_BINDINGS, src/zigbee/dimmer_cluster.c): each dimmer's wall
 switch has an endpoint of its own after all others (3 / 4 on the ZDMS16-2, Dimmer Switch, On/Off
 and Level Control clients), and lights bound to it follow it. Normal mode (any MCU): the wall
-switch's on / off as On / Off, its level once settled (400 ms without a new one) as one
-MoveToLevelWithOnOff(level, 0.4 s); nothing for our commands, their answers, a query's answer,
-the first report after a boot or the countdown's end. Detached mode (Open Dimmer): single /
+switch's on / off as On / Off; its hold (the MCU reports the level on the way) as one Move
+(direction from the first report, from the second right after the wall switch's on; rate
+measured between the first two, again if the direction turns), at its end (Open Dimmer's
+release, else 0.8 s without a report) StopWithOnOff + MoveToLevelWithOnOff(level, 0.4 s);
+nothing for our commands, their answers, a query's answer, the first report after a boot or
+the countdown's end. Detached mode (Open Dimmer): single /
 press Toggle, hold MoveWithOnOff up and Move down by turns, release StopWithOnOff, double
 MoveToLevelWithOnOff(254, 0.4 s), triple nothing. Off mode: nothing. Not joined: nothing.
 On / Off / Toggle / MoveToLevel ask for an APS ack, Move / Stop not."""
+# A level report every 0.5 s through a hold, ~80 of 1000 a report: a house unit's factory MCU.
 import pytest
 from own_mcu import FEATURES_BUILD, own_mcu_contact
 from test_dimmer_mcu import (DP_LEVEL_L1, DP_ON_L1, DP_ON_L2, ack_writes, known_off, level, start,
                              tuya_to_zcl)
+
+STOP = (3, 0x0008, 0x07, b"")
 from tuya_mcu import TUYA_CMD_REPORT_PASSIVE, bool_dp, enum_dp, mcu_report, take_tx, value_dp
 
 ON_OFF, LEVEL = 0x0006, 0x0008
@@ -22,9 +28,15 @@ DP_ACTION = {1: 105, 2: 106}
 DP_ON = {1: 1, 2: 7}
 
 
+def flush(device) -> None:
+    """A task due at the end of the last step runs after that step's answer: one more command
+    (no time) brings its output in."""
+    device.read_zigbee_attr(1, ON_OFF, 0)
+
+
 def sent(device, eps=(3, 4)) -> list[tuple]:
     """The commands to bindings from the wall switches' endpoints so far (and forget them)."""
-    device.step_time(1)    # a task due at the end of the last step runs after its answer
+    flush(device)
     out = [(e.ep, e.cluster, e.cmd, e.data) for e in device.zcl_list_cmds() if e.ep in eps]
     device._events = [e for e in device._events if e.kind != "zcl_cmd_send"]
     return out
@@ -32,7 +44,7 @@ def sent(device, eps=(3, 4)) -> list[tuple]:
 
 def acks(device, eps=(3, 4)) -> list[tuple]:
     """(command, APS ack asked) of the commands to bindings so far (kept)."""
-    device.step_time(1)
+    flush(device)
     return [(int(e.payload["cmd"], 16), int(e.payload["ack"])) for e in device._events
             if e.kind == "zcl_cmd_send" and int(e.payload["ep"]) in eps]
 
@@ -177,47 +189,111 @@ def test_open_dimmer_normal_mode_mirrors_but_not_the_countdowns_end():
         proc.stop()
 
 
-def on_by_wall(proc, device) -> None:
+def report(proc, device, value: int, after_ms: int = 500) -> list[tuple]:
+    device.step_time(after_ms)
+    mcu_report(proc, value_dp(DP_LEVEL_L1, value))
+    return sent(device)
+
+
+def lit_at(proc, device, value: int) -> None:
+    """On by the wall switch a while ago, at that level (a query's answer: no hold)."""
     known_off(proc)
     mcu_report(proc, bool_dp(DP_ON_L1, 1))
     settle(proc, device)
-    assert acks(device) == [(ON, 1)]
+    mcu_report(proc, value_dp(DP_LEVEL_L1, value), cmd=TUYA_CMD_REPORT_PASSIVE)
+    device.step_time(2500)
     sent(device)
 
 
-def test_the_wall_switchs_level_goes_out_once_settled(stock):
-    proc, device = stock
-    on_by_wall(proc, device)
-    for v in (300, 450, 600):                                  # a hold, reported on the way
-        mcu_report(proc, value_dp(DP_LEVEL_L1, v))
-        device.step_time(200)
-    assert sent(device) == []
-    device.step_time(250)
-    assert acks(device) == [(MOVE_TO_LEVEL_WITH_ONOFF, 1)]
-    assert sent(device) == [(3, LEVEL, MOVE_TO_LEVEL_WITH_ONOFF, bytes([tuya_to_zcl(600), 4, 0]))]
-    mcu_report(proc, value_dp(DP_LEVEL_L1, 600))               # the same level again
-    device.step_time(500)
-    assert sent(device) == []
+def end_of(level_value: int) -> list[tuple]:
+    return [STOP, (3, LEVEL, MOVE_TO_LEVEL_WITH_ONOFF, bytes([tuya_to_zcl(level_value), 4, 0]))]
 
 
-def test_levels_not_by_the_wall_switch_are_not_mirrored(stock):
+def test_a_wall_switch_hold_goes_out_as_one_move(stock):
     proc, device = stock
-    on_by_wall(proc, device)
+    lit_at(proc, device, 200)
+    assert report(proc, device, 300, 0) == [(3, LEVEL, MOVE_WITH_ONOFF, bytes([0, 50]))]
+    assert report(proc, device, 500) == [(3, LEVEL, MOVE_WITH_ONOFF, bytes([0, 102]))]  # measured
+    assert report(proc, device, 700) == []
+    assert report(proc, device, 500) == [(3, LEVEL, MOVE, bytes([1, 102]))]   # it turned
+    assert report(proc, device, 300) == []
+    device.step_time(700)
+    assert sent(device) == []
+    device.step_time(100)                                      # 0.8 s without a report
+    assert acks(device) == [(STOP_WITH_ONOFF, 0), (MOVE_TO_LEVEL_WITH_ONOFF, 1)]
+    assert sent(device) == end_of(300)
+    assert report(proc, device, 400, 2000) == [(3, LEVEL, MOVE_WITH_ONOFF, bytes([0, 102]))]
+    # the next hold: the last one's rate
+
+
+def test_a_hold_right_after_the_wall_switchs_on_sets_out_from_its_first_report(stock):
+    """The level known before is the one before the off: a hold from dark rises from the
+    minimum, so the first report only gives where it set out."""
+    proc, device = stock
+    known_off(proc)
+    mcu_report(proc, value_dp(DP_LEVEL_L1, 800), cmd=TUYA_CMD_REPORT_PASSIVE)
+    mcu_report(proc, bool_dp(DP_ON_L1, 1))
+    settle(proc, device)
+    assert sent(device) == [(3, ON_OFF, ON, b"")]
+    assert report(proc, device, 300, 900) == []
+    assert report(proc, device, 500) == [(3, LEVEL, MOVE_WITH_ONOFF, bytes([0, 102]))]
+    device.step_time(800)
+    assert sent(device) == end_of(500)
+
+
+def test_a_single_level_change_moves_and_ends(stock):
+    """An MCU that reports a hold's level only at its end (Open Dimmer before 2.2.4)."""
+    proc, device = stock
+    lit_at(proc, device, 200)
+    assert report(proc, device, 600, 0) == [(3, LEVEL, MOVE_WITH_ONOFF, bytes([0, 50]))]
+    device.step_time(800)
+    assert sent(device) == end_of(600)
+
+
+def test_levels_not_by_the_wall_switch_are_not_followed(stock):
+    proc, device = stock
+    lit_at(proc, device, 200)
     mcu_report(proc, value_dp(DP_LEVEL_L1, 700), cmd=TUYA_CMD_REPORT_PASSIVE)   # a query's answer
-    device.step_time(500)
     device.call_zigbee_cmd(1, LEVEL, MOVE_TO_LEVEL_WITH_ONOFF, bytes([100, 0, 0]))   # ours
-    ack_writes(proc, device)
-    mcu_report(proc, value_dp(DP_LEVEL_L1, 300))               # the MCU's fade to it
-    device.step_time(500)
-    assert sent(device) == []
-    mcu_report(proc, value_dp(DP_LEVEL_L1, 500))               # dimmed, then off within 400 ms
-    device.step_time(100)
+    for _ in range(4):
+        settle(proc, device)                                   # the MCU answers its writes
+    assert report(proc, device, 300, 100) == []                # the MCU's fade to it
+    device.step_time(3500)
+    assert sent(device) == [] and ack_writes(proc, device) == []
+    assert report(proc, device, 500, 0) != []                  # a hold, then off under it
     mcu_report(proc, bool_dp(DP_ON_L1, 0))
-    device.step_time(500)
     assert sent(device) == [(3, ON_OFF, OFF, b"")]
-    mcu_report(proc, value_dp(DP_LEVEL_L1, 800))               # while off
-    device.step_time(500)
-    assert sent(device) == []
+    device.step_time(1000)
+    assert sent(device) == []                                  # no Stop after the Off
+    assert report(proc, device, 800) == []                     # while off
+
+
+@pytest.mark.parametrize("mode", [0, 1])
+def test_open_dimmer_hold_followed_in_the_normal_mode_its_release_ends_it(mode):
+    proc, device, mcu = od(mode)
+    try:
+        wall(mcu, 1)
+        device.step_time(2500)
+        sent(device)
+        out = []
+        for v in (520, 440):                                   # a hold down, every 0.5 s
+            mcu.ch[0]["level"] = v
+            mcu.send([mcu._report([mcu._dp(2)], passive=False)])
+            mcu.serve()
+            out += sent(device)
+            device.step_time(500)
+        mcu_report(proc, enum_dp(DP_ACTION[1], RELEASE))       # at once, no 0.8 s
+        device.step_time(50)
+        out += sent(device)
+        want = [(3, LEVEL, MOVE, bytes([1, 50])), None,
+                STOP, (3, LEVEL, MOVE_TO_LEVEL_WITH_ONOFF, bytes([level(device), 4, 0]))]
+        if mode == 0:
+            assert out[0] == want[0] and out[-2:] == want[2:]
+            assert len(out) in (3, 4)                          # a second Move if the rate differs
+        else:
+            assert out == [STOP]                               # detached: its release's own Stop
+    finally:
+        proc.stop()
 
 
 def test_aps_acks_for_switching_not_for_moving():
@@ -228,22 +304,5 @@ def test_aps_acks_for_switching_not_for_moving():
             device.step_time(50)
         assert acks(device) == [(TOGGLE, 1), (MOVE_WITH_ONOFF, 0), (STOP_WITH_ONOFF, 0),
                                 (MOVE_TO_LEVEL_WITH_ONOFF, 1)]
-    finally:
-        proc.stop()
-
-
-@pytest.mark.parametrize("mode", [0, 1])
-def test_open_dimmer_level_mirrored_in_the_normal_mode_only(mode):
-    proc, device, mcu = od(mode)
-    try:
-        mcu.ch[0]["on"] = 1
-        mcu.send([mcu._report([mcu._dp(1)], passive=False)])
-        mcu.serve()
-        sent(device)
-        mcu.ch[0]["level"] = 640                               # a hold's end
-        mcu.send([mcu._report([mcu._dp(2)], passive=False)])
-        mcu.serve(500)
-        want = [(3, LEVEL, MOVE_TO_LEVEL_WITH_ONOFF, bytes([level(device), 4, 0]))]
-        assert sent(device) == (want if mode == 0 else [])
     finally:
         proc.stop()

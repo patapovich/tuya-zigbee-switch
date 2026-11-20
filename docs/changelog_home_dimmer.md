@@ -51,8 +51,10 @@ zdms16-py32 release notes.
 - Direct control from the wall switch: each channel's wall switch has an endpoint of its own
   (3 and 4, Dimmer Switch with On/Off and Level Control clients); lights or groups bound to it
   in Zigbee2MQTT (Bind, source endpoint 3 / 4) follow it without the coordinator. Normal wall
-  switch mode: its on and off go out as On / Off, and its brightness once it has settled (no
-  new level for 0.4 s) as one move to that level. Detached mode (Open Dimmer): a press
+  switch mode: its on and off go out as On / Off, and a hold dims the bound lights along with
+  it: one move in the hold's direction at its measured speed (the module reports the level
+  every 0.5 s through a hold; Open Dimmer from 2.2.4), then a stop and a move to the level
+  the hold ended at. Detached mode (Open Dimmer): a press
   toggles, a hold dims (up and down by turns, at DefaultMoveRate or 50 levels/s), a double
   press sets full brightness. On, off, toggle and move-to-level are sent with an APS
   acknowledgement, so a bound light that misses one gets it again; groups are sent without

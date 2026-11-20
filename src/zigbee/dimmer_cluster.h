@@ -146,10 +146,19 @@ typedef struct {
 
 #ifdef DIMMER_BINDINGS
     /* Its wall switch's own endpoint (dimmer_cluster_add_switch_endpoint; 0: none), for the
-     * lights bound to it; bind_hold_down: its next hold (detached mode) dims down; bind_task:
-     * the wall switch's level, once settled, to them (normal mode). */
+     * lights bound to it; bind_hold_down: its next hold (detached mode) dims down. Following
+     * a wall switch hold (normal mode): bind_dir the Move they have (0 none, 1 up, 2 down),
+     * bind_reports its level reports so far (0: no hold, at most 2), bind_rate the levels/s
+     * of the last Move or measured (0: none yet), bind_after_on: switched on by the wall
+     * switch and no level since, bind_time the ms of the last report or of that on,
+     * bind_task the hold's end (no report for a while). */
     uint8_t              bind_endpoint;
     uint8_t              bind_hold_down;
+    uint8_t              bind_dir;
+    uint8_t              bind_reports;
+    uint8_t              bind_rate;
+    uint8_t              bind_after_on;
+    uint32_t             bind_time;
     hal_task_t           bind_task;
 #endif
 } zigbee_dimmer_cluster;
