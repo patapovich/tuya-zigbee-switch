@@ -14,6 +14,10 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
 
 ## Next
 
+## 1.1.3-796e77e9 (2026-11-20), carries Open Dimmer 2.2.4
+
+- Rebuilt, nothing new; carries Open Dimmer 2.2.4.
+
 ## 1.1.3-c47efc61 (2026-11-20), carries Open Dimmer 2.2.4
 
 - The two-wire install is on by default: a module whose stored config has no SWD token (written
