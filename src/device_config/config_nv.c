@@ -46,6 +46,61 @@ void device_config_write_to_nv() {
     }
 }
 
+#ifdef SECONDARY_MCU_IMAGE
+
+/* A board that carries an MCU image installs it over two soldered wires (the SW token,
+ * src/zigbee/mcu_flasher.c): soldering them is the consent, on by default (user decision
+ * 2026-11-20). A config stored before the board's default had the token gets the default's SW
+ * token once; NV_ITEM_CONFIG_SWD_DEFAULT marks that done, so a token removed later by hand
+ * stays removed. Before the config is parsed: it counts from this start-up on. */
+#define SWD_DEFAULT_DONE    0xA5u
+
+/* Where the SW token of the config s (n characters) starts, 0 if it has none (a config never
+ * starts with one). No strstr in the Telink build. */
+static uint16_t swd_token_at(const uint8_t *s, uint16_t n) {
+    for (uint16_t i = 0; i + 2 < n; i++) {
+        if (s[i] == ';' && s[i + 1] == 'S' && s[i + 2] == 'W')
+            return (uint16_t)(i + 1);
+    }
+    return 0;
+}
+
+static void device_config_swd_default(uint8_t stored) {
+    const uint8_t *def  = (const uint8_t *)default_config_data;
+    uint16_t       dn   = (uint16_t)(sizeof(default_config_data) - 1);
+    uint16_t       at   = swd_token_at(def, dn);
+    uint16_t       s    = device_config_str.size;
+    uint8_t        done = 0;
+
+    if (hal_nvm_read(NV_ITEM_CONFIG_SWD_DEFAULT, 1, &done) == HAL_NVM_SUCCESS &&
+        done == SWD_DEFAULT_DONE)
+        return;
+
+    if (stored && at && s > 0 && s < sizeof(device_config_str.data) &&
+        !swd_token_at(device_config_str.data, s)) {
+        uint16_t n   = 0;
+        uint8_t  sep = device_config_str.data[s - 1] != ';';
+        while (at + n < dn && def[at + n] != ';')
+            n++;
+        if (at + n < dn)
+            n++;                                  /* with its ';' */
+        if (s + sep + n < sizeof(device_config_str.data)) {
+            if (sep)
+                device_config_str.data[s++] = ';';
+            memcpy(device_config_str.data + s, def + at, n);
+            s += n;
+            device_config_str.data[s] = 0;
+            device_config_str.size    = s;
+            printf("Config: the board's SWD token added\r\n");
+            device_config_write_to_nv();
+        }
+    }
+    done = SWD_DEFAULT_DONE;
+    hal_nvm_write(NV_ITEM_CONFIG_SWD_DEFAULT, 1, &done);
+}
+
+#endif
+
 void device_config_read_from_nv() {
     hal_nvm_status_t st = 0;
 
@@ -60,6 +115,9 @@ void device_config_read_from_nv() {
                sizeof(default_config_data));
         device_config_str.size = strlen((const char *)default_config_data);
     }
+#ifdef SECONDARY_MCU_IMAGE
+    device_config_swd_default(st == HAL_NVM_SUCCESS);
+#endif
 
     printf("Using config: %d chars from\r\n%s\r\n", device_config_str.size,
            device_config_str.data);

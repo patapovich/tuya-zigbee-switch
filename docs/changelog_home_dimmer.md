@@ -14,6 +14,13 @@ zdms16-py32 release notes.
 
 ## Next
 
+- The two-wire install is on by default: a module whose stored config has no SWD token (written
+  before the board default had it, e.g. by hand) gets the board's `SWD3D7;` once with this
+  update. Soldering the two wires then installs Open Dimmer at the next power-up; a module
+  without the wires only reads one pin at start-up. A token removed by hand later stays removed.
+- Every change of home-dimmer gets its module firmware built (the OTA images on
+  home-dimmer_build), not only a new Open Dimmer release.
+
 ## 1.1.3-8bf3a03c (2026-11-20), carries Open Dimmer 2.2.4
 
 - Scenes are forgotten when the module leaves its network (group 0's too, which no group

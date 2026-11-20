@@ -67,3 +67,22 @@ jobs:
           key: ${{ steps.apt.outputs.key }}
       - name: Run tests
         run: make tests
+
+  # patapovich fork, home-dimmer: a pushed change gets its module firmware (the OTA images on
+  # home-dimmer_build) at once. py32-bump (on the default branch: dispatched workflows run from
+  # there) builds when home-dimmer_build is older than home-dimmer, with its own lint and tests;
+  # its hourly run does the same. Not for the build's own changelog stamp (no new firmware).
+  module-build:
+    needs: [lint, test]
+    if: >-
+      github.repository == 'patapovich/tuya-zigbee-switch' && github.event_name == 'push' &&
+      github.ref == 'refs/heads/home-dimmer' &&
+      !startsWith(github.event.head_commit.message, 'Changelog: build')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Start the module firmware build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run py32-bump.yml --repo "$GITHUB_REPOSITORY" --ref main

@@ -63,4 +63,8 @@
  * actions, 3 bytes): 61..64. */
 #define NV_ITEM_DIMMER_BIND(dimmer_idx)    (61 + (dimmer_idx))
 
+/* Boards that carry an MCU image: the board default's SW token (two-wire install) added once
+ * to a config stored before the default had it (config_nv.c). */
+#define NV_ITEM_CONFIG_SWD_DEFAULT    65
+
 #endif /* DEVICE_CONFIG_NVM_ITEMS_H_ */
