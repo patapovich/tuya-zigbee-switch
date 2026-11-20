@@ -14,6 +14,8 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
 
 ## Next
 
+## 1.1.3-09a180fa (2026-11-20), carries Open Dimmer 2.2.6
+
 - Open Dimmer updates wait for the light to be off: the MCU's bootloader keeps the light dark
   for the few seconds it writes, so an update while the light was on made it go off and on
   again. The update now goes a minute after the light was switched off (at once if it was off
