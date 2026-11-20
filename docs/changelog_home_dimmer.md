@@ -14,6 +14,10 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
 
 ## Next
 
+## 1.1.3-69efbba2 (2026-11-20), carries Open Dimmer 2.2.5
+
+- Carries Open Dimmer 2.2.5.
+
 ## 1.1.3-aa9ab5d4 (2026-11-20), carries Open Dimmer 2.2.4
 
 - A wall switch hold from dark is followed in real time: the module ends its 3 s level holdoff
