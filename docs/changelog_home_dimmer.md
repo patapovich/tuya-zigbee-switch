@@ -14,6 +14,10 @@ zdms16-py32 release notes.
 
 ## Next
 
+## 1.1.3-b9e411c1 (2026-11-20), carries Open Dimmer 2.2.4
+
+- Carries Open Dimmer 2.2.4.
+
 ## 1.1.3-ee5a9c9f (2026-11-20), carries Open Dimmer 2.2.3
 
 - Open Dimmer without a probe: solder two wires from the module's free pads D3 and D7 to the
