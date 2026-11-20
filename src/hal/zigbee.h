@@ -175,6 +175,14 @@ hal_zigbee_send_report_attr(uint8_t endpoint, uint16_t cluster_id,
                             uint16_t attr_id, uint8_t zcl_type_id,
                             const void *value, uint8_t value_len);
 
+/**
+ * Hold the stack's attribute reporting (configured reporting) at startup, while a state is not
+ * known yet: a secondary MCU tells the light's state only after the boot, and the stack would
+ * otherwise report the defaults (off, level 0) at once, which a hub takes as the light going off.
+ * hold = 0 releases at once; a hold ends by itself after timeout_ms anyway.
+ */
+void hal_zigbee_hold_reports(uint8_t hold, uint32_t timeout_ms);
+
 /** Send Zigbee "announce" command to notify other devices of our presence
  * @return HAL_ZIGBEE_OK on success, error code otherwise
  */

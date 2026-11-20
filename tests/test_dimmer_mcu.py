@@ -790,6 +790,33 @@ def known_off(proc: StubProc) -> None:
     take_tx(proc)
 
 
+def reports_released(device: Device) -> int:
+    level(device)                                       # flush: events come with the next answer
+    return sum(1 for e in device._events
+               if e.kind == "zcl_reports_hold" and e.payload.get("hold") == "0")
+
+
+def test_reports_wait_until_every_dimmer_knows_its_state():
+    """After a restart the stack would report the defaults (off, level 0) before the MCU told
+    the light's state, which a hub takes as the light going off. The reports wait until both
+    channels are known, and 300 ms more for the rest of the MCU's dump (the level)."""
+    proc, device = start()
+    try:
+        mcu_report(proc, bool_dp(DP_ON_L1, 1))
+        device.step_time(1000)
+        assert reports_released(device) == 0          # channel 2 not known yet
+        mcu_report(proc, bool_dp(DP_ON_L2, 0))
+        device.step_time(200)
+        assert reports_released(device) == 0          # the rest of the dump first
+        device.step_time(200)
+        assert reports_released(device) == 1
+        mcu_report(proc, bool_dp(DP_ON_L1, 0))         # later changes: nothing more to release
+        device.step_time(500)
+        assert reports_released(device) == 1
+    finally:
+        proc.stop()
+
+
 def set_on_level(device: Device, lvl: int) -> None:
     device.write_zigbee_attr(1, ZCL_CLUSTER_LEVEL_CONTROL, ZCL_ATTR_ON_LEVEL, lvl)
 

@@ -29,6 +29,7 @@ static const uint8_t  dimmer_gesture_flags          = 0;
 
 #define DIMMER_MAX_ENDPOINTS    10
 static zigbee_dimmer_cluster *dimmer_cluster_by_endpoint[DIMMER_MAX_ENDPOINTS];
+static void dimmer_reports_known(void);
 
 static zigbee_dimmer_cluster *dimmer_by_endpoint(uint8_t endpoint) {
     return endpoint < DIMMER_MAX_ENDPOINTS ? dimmer_cluster_by_endpoint[endpoint]
@@ -1276,7 +1277,10 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
             if (!value[0])
                 dimmer_stop_move(cluster);
             dimmer_set_on(cluster, value[0]);
-            cluster->state_known = 1;
+            if (!cluster->state_known) {
+                cluster->state_known = 1;
+                dimmer_reports_known();
+            }
 
             /* Go to the wall switch's OnLevel (else OnLevel) at once, with
             * no round trip through the network: the MCU is fading in to
@@ -1464,8 +1468,37 @@ static void dimmer_add_cluster(hal_zigbee_endpoint *endpoint, uint16_t cluster_i
     c->cmd_callback    = cmd_callback;
 }
 
+/* After a restart the stack would report the defaults (off, level 0) at once, before the MCU
+ * has told the light's state: a hub takes that as the light going off (and e.g. Adaptive
+ * Lighting drops a level set by hand). The reports are held from the start until every dimmer
+ * knows its state, plus DIMMER_REPORTS_SETTLE_MS for the rest of the MCU's dump (the level after
+ * the on/off), or DIMMER_REPORTS_HOLD_MS at most (an MCU that does not answer). */
+#define DIMMER_REPORTS_HOLD_MS      10000
+#define DIMMER_REPORTS_SETTLE_MS    300
+static hal_task_t dimmer_reports_task;
+
+static void dimmer_reports_release(void *arg) {
+    (void)arg;
+    hal_zigbee_hold_reports(0, 0);
+}
+
+static void dimmer_reports_known(void) {
+    for (int i = 0; i < DIMMER_MAX_ENDPOINTS; i++)
+        if (dimmer_cluster_by_endpoint[i] && !dimmer_cluster_by_endpoint[i]->state_known)
+            return;
+
+    hal_tasks_unschedule(&dimmer_reports_task);
+    hal_tasks_schedule(&dimmer_reports_task, DIMMER_REPORTS_SETTLE_MS);
+}
+
 void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
                                     hal_zigbee_endpoint *endpoint) {
+    if (!dimmer_reports_task.handler) {
+        dimmer_reports_task.handler = dimmer_reports_release;
+        dimmer_reports_task.arg     = NULL;
+        hal_tasks_init(&dimmer_reports_task);
+        hal_zigbee_hold_reports(1, DIMMER_REPORTS_HOLD_MS);
+    }
     cluster->endpoint = endpoint->endpoint;
     if (endpoint->endpoint < DIMMER_MAX_ENDPOINTS)
         dimmer_cluster_by_endpoint[endpoint->endpoint] = cluster;

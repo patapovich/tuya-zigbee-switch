@@ -14,6 +14,7 @@
 
 #include "telink_size_t_hack.h"
 
+#include "hal/timer.h"
 #include "hal/zigbee.h"
 #include "telink_zigbee_hal.h"
 #include "zigbee/battery_cluster.h"
@@ -418,9 +419,31 @@ void telink_zigbee_hal_zcl_init(hal_zigbee_endpoint *endpoints,
     }
 }
 
+/* The stack's restored reporting table compares with 0xFF after a restart, so it reports every
+ * attribute at once: held until the app knows its state (hal_zigbee_hold_reports). */
+static uint8_t  g_reports_held;
+static uint32_t g_reports_held_until;
+
+void hal_zigbee_hold_reports(uint8_t hold, uint32_t timeout_ms) {
+    g_reports_held       = hold;
+    g_reports_held_until = hal_millis() + timeout_ms;
+    if (!hold)
+        report_handler();
+}
+
+void telink_zigbee_report_handler(void) {
+    if (g_reports_held) {
+        if ((int32_t)(hal_millis() - g_reports_held_until) < 0)
+            return;
+
+        g_reports_held = 0;
+    }
+    report_handler();
+}
+
 void hal_zigbee_notify_attribute_changed(uint8_t endpoint, uint16_t cluster_id,
                                          uint16_t attribute_id) {
-    report_handler(); // Trigger reporting if needed
+    telink_zigbee_report_handler(); // Trigger reporting if needed
 }
 
 hal_zigbee_status_t hal_zigbee_send_cmd_to_bindings(const hal_zigbee_cmd *cmd) {

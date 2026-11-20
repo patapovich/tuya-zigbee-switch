@@ -211,6 +211,11 @@ uint32_t hal_zigbee_get_poll_rate_ms(void) {
     return poll_rate_ms;
 }
 
+void hal_zigbee_hold_reports(uint8_t hold, uint32_t timeout_ms) {
+    io_log("ZIGBEE", "Reports %s (%u ms)", hold ? "held" : "released", (unsigned)timeout_ms);
+    io_evt("zcl_reports_hold hold=%u", hold);
+}
+
 void hal_zigbee_notify_attribute_changed(uint8_t endpoint, uint16_t cluster_id,
                                          uint16_t attribute_id) {
     io_log("ZIGBEE", "Attribute changed: ep=%d, cluster=0x%04x, attr=0x%04x",

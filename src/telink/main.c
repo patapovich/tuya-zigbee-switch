@@ -86,7 +86,7 @@ int real_main(startup_state_e state) {
         drv_wd_clear();
         app_task();
         drv_wd_clear();
-        report_handler();
+        telink_zigbee_report_handler();
         drv_wd_clear();
 
 #if PM_ENABLE

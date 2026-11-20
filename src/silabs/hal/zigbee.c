@@ -340,6 +340,11 @@ hal_zigbee_send_report_attr(uint8_t endpoint, uint16_t cluster_id,
     return (st == SL_STATUS_OK) ? HAL_ZIGBEE_OK : HAL_ZIGBEE_ERR_SEND_FAILED;
 }
 
+void hal_zigbee_hold_reports(uint8_t hold, uint32_t timeout_ms) {
+    (void)hold; /* the secondary MCU dimmers are Telink boards; nothing to hold here */
+    (void)timeout_ms;
+}
+
 hal_zigbee_status_t hal_zigbee_send_announce(void) {
     if (sl_zigbee_send_device_announcement() != SL_STATUS_OK) {
         return HAL_ZIGBEE_ERR_SEND_FAILED;
