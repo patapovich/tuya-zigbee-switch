@@ -19,6 +19,9 @@ zdms16-py32 release notes.
 - `brightness_fade_time` shows 2 (s) when unset instead of nothing ("unknown" in Home
   Assistant), and a written 2 is stored as unset: the module's default is the whole range in
   2 s; the preset default sets it.
+
+## 1.1.3-3a64905e (2026-11-20), carries Open Dimmer 2.2.4
+
 - The module firmware is built for size (its own code; the Zigbee SDK as before): about 5 KB
   more room in the OTA image for later features. A build check refuses a switch the Telink
   compiler would turn into a wrong jump (it made the Scenes commands restart the module).
