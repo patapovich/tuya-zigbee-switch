@@ -18,7 +18,8 @@
 
 /* Gestures of Open Dimmer (DP 105 / 106): 1 single, 2 double, 3 triple, 4 hold, 5 release,
  * 6 press (from 2.2.0: the fast press, in the detached mode at once, no multi-taps). */
-#define DIMMER_GESTURE_MAX    6
+#define DIMMER_GESTURE_MAX     6
+#define DIMMER_GESTURE_HOLD    4
 
 #ifdef SECONDARY_MCU_IMAGE
 static const uint16_t dimmer_gesture_states         = DIMMER_GESTURE_MAX + 1; /* and none */
@@ -999,7 +1000,6 @@ static uint8_t dimmer_own_mcu(const zigbee_dimmer_cluster *cluster) {
 #define DIMMER_GESTURE_SINGLE     1
 #define DIMMER_GESTURE_DOUBLE     2
 #define DIMMER_GESTURE_TRIPLE     3
-#define DIMMER_GESTURE_HOLD       4
 #define DIMMER_GESTURE_RELEASE    5
 #define DIMMER_GESTURE_PRESS      6
 #define DIMMER_INPUT_NORMAL       0
@@ -1343,6 +1343,13 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
         } else if (dp_type == TUYA_DP_TYPE_ENUM && cluster->action_dpid &&
                    tuya_mcu_app_mcu_is_own() && dpid == cluster->action_dpid &&
                    value[0] >= 1 && value[0] <= DIMMER_GESTURE_MAX) {
+            /* A hold: the finger is in control (Open Dimmer ignores level writes under it), so
+             * a holdoff of ours (e.g. the wall switch's OnLevel write before a hold from
+             * dark) ends now and the hold's level reports go out as they come. */
+            if (value[0] == DIMMER_GESTURE_HOLD && cluster->level_holdoff) {
+                hal_tasks_unschedule(&cluster->holdoff_task);
+                dimmer_holdoff_done(cluster);
+            }
             cluster->action_seq   = (uint8_t)((cluster->action_seq + 1) & 0x0F);
             cluster->action_state = (uint16_t)((cluster->action_seq << 4) | value[0]);
             hal_zigbee_notify_attribute_changed(cluster->endpoint,

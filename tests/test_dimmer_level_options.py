@@ -23,7 +23,7 @@ from test_dimmer_mcu import (
     set_on_level,
     start,
 )
-from tuya_mcu import bool_dp, mcu_report, pump, take_tx
+from tuya_mcu import bool_dp, enum_dp, mcu_report, pump, take_tx
 
 LEVEL, ON_OFF = 0x0008, 0x0006
 ATTR_OPTIONS, ATTR_ON_LEVEL_LOCAL = 0x000F, 0xFF11
@@ -232,6 +232,33 @@ def test_the_wall_switch_and_the_network_have_their_own_on_levels():
         device.call_zigbee_cmd(1, ON_OFF, CMD_ON)
         mcu.serve()
         assert mcu.writes == [(DP_ON_L1, 1), (DP_LEVEL_L1, scaled_to_tuya(60, OD_MIN, OD_MAX))]
+    finally:
+        proc.stop()
+
+
+DP_ACTION_L1, GESTURE_HOLD = 105, 4
+
+
+def od_level_report(mcu, value: int) -> None:
+    mcu.ch[0]["level"] = value
+    mcu.send([mcu._report([mcu._dp(DP_LEVEL_L1)], passive=False)])
+    mcu.serve()
+
+
+def test_a_hold_after_the_wall_switchs_on_level_reports_its_level_at_once():
+    """A hold from dark: Open Dimmer ignores the OnLevel write under the finger and rises
+    from its minimum. Its hold reports go out as they come, not after our 3 s holdoff."""
+    proc, device, mcu = od()
+    try:
+        set_on_level(device, 200)
+        od_wall_on(proc, device, mcu)
+        assert level(device) == 200                    # at once, no round trip
+        od_level_report(mcu, 300)                      # within the holdoff, no hold: held back
+        assert level(device) == 200
+        mcu_report(proc, enum_dp(DP_ACTION_L1, GESTURE_HOLD))
+        assert level(device) == 33                     # the hold ends the holdoff: 300 now
+        od_level_report(mcu, 340)
+        assert level(device) == 45                     # and every hold report after it
     finally:
         proc.stop()
 
