@@ -1,0 +1,56 @@
+name: OTA download counts
+
+# patapovich fork only. build.yml on home-dimmer_build publishes every ZDMS16-2 module firmware
+# build as a release (tag zdms16-2-<build>) and points the public Zigbee2MQTT OTA index at its
+# assets. This reads their download counts every hour and writes them to the ota-downloads
+# branch: README.md (totals, per build) and history.csv (a row whenever a total changed), see
+# .github/ci/ota_downloads.py. A commit only when something changed. It lives on the default
+# branch because scheduled workflows only run from there.
+
+on:
+  schedule:
+    - cron: "41 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ota-downloads
+
+jobs:
+  counts:
+    if: github.repository == 'patapovich/tuya-zigbee-switch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: main
+
+      - name: Counts to the ota-downloads branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          cd main
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[]' |
+            python3 -c 'import json,sys; print(json.dumps([json.loads(l) for l in sys.stdin if l.strip()]))' \
+            > "$RUNNER_TEMP/releases.json"
+          if git fetch -q --depth 1 origin ota-downloads; then
+            git worktree add -q "$RUNNER_TEMP/out" FETCH_HEAD
+            git -C "$RUNNER_TEMP/out" switch -q -c ota-downloads
+          else
+            git worktree add -q --orphan -b ota-downloads "$RUNNER_TEMP/out"
+          fi
+          python3 .github/ci/ota_downloads.py "$RUNNER_TEMP/releases.json" "$RUNNER_TEMP/out" \
+            --repo "$GITHUB_REPOSITORY" | tee -a "$GITHUB_STEP_SUMMARY"
+          cd "$RUNNER_TEMP/out"
+          git add README.md history.csv
+          if git diff --cached --quiet; then
+            echo "no change"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -qm "Download counts"
+          git push -q origin HEAD:ota-downloads
