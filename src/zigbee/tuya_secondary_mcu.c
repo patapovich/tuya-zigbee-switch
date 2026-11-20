@@ -358,8 +358,17 @@ static void tx_dp_note_set(tx_dp_note_t *note, uint8_t dpid, uint8_t dp_type,
 static void tx_timer_fired(void *arg) {
     (void)arg;
     if (g_tx_busy) {
-        tuya_mcu_diag.tx_timeout++;
-        tuya_mcu_diag_log(TUYA_MCU_DIAG_ACK_TIMEOUT, tx_item_id(&g_tx_in_flight), 0);
+#ifdef TUYA_MCU_SLOW_VALUE_ANSWERS
+        /* A dimmer's factory MCU answers a brightness write to a lit channel only after its
+         * fade (~1 s, TX_LATE_ANSWER_MS): no answer in time is its way, not a lost frame, so
+         * neither counted nor logged (it would fill the log at every wall switch on). */
+        if (g_fast_acks || g_tx_in_flight.cmd != TUYA_MCU_CMD_WRITE ||
+            g_tx_in_flight.dp_type != TUYA_DP_TYPE_VALUE)
+#endif
+        {
+            tuya_mcu_diag.tx_timeout++;
+            tuya_mcu_diag_log(TUYA_MCU_DIAG_ACK_TIMEOUT, tx_item_id(&g_tx_in_flight), 0);
+        }
         g_tx_busy = 0;
         if (g_fast_acks && g_tx_in_flight.cmd == TUYA_MCU_CMD_WRITE) {
             /* Our MCU answers at once: no answer means the frame was lost

@@ -90,7 +90,7 @@ DEVICE_DEFS := \
 	-DDEFAULT_CONFIG="$(CONFIG_STR)" \
 	-DDEFAULT_DP_CONFIG="$(DP_CONFIG_STR)" \
 	$(if $(SECONDARY_MCU_IMAGE),-DSECONDARY_MCU_IMAGE) \
-	$(if $(DIMMER_ONLY),-DDIMMER_ONLY -DDIMMER_SCENES -DDIMMER_BINDINGS) \
+	$(if $(DIMMER_ONLY),-DDIMMER_ONLY -DDIMMER_SCENES -DDIMMER_BINDINGS -DTUYA_MCU_SLOW_VALUE_ANSWERS) \
 	-DIMAGE_TYPE=$(IMAGE_TYPE) \
 	-DHAL_TELINK \
 	$(TEL_CHIP) 
@@ -254,6 +254,15 @@ $(BIN_FILE): $(ELF_FILE)
 # structures have the layout the SDK's other objects and libraries expect.
 $(BUILD_DIR)/telink/patch_sdk/ota_client_only.o $(BUILD_DIR)/telink/patch_sdk/zcl_ota_client_only.o: GCC_FLAGS += -fpack-struct
 
+# Dimmer-only boards (the ZDMS16-2, whose OTA image carries the PY32 images and is near the SDK's
+# limit): the project's own objects for size, ~5 KB less; the SDK's objects stay -O2.
+# -fno-jump-tables is required: tc32-gcc lays out a switch's jump table as for -Os (bytes or
+# halfwords in .text) but dispatches it as for -O2 (32-bit loads), so every switch would jump to
+# garbage. check-jump-tables refuses such an ELF (helper_scripts/check_jump_tables.py).
+ifneq ($(DIMMER_ONLY),)
+$(ALL_APP_OBJS): GCC_FLAGS += -Os -fno-jump-tables
+endif
+
 # Compile Telink-specific C files
 $(BUILD_DIR)/telink/%.o: %.c
 	@echo "Compiling $<"
@@ -283,8 +292,13 @@ check-dimmer-only: $(ELF_FILE)
 	@python3 $(PROJECT_ROOT)/helper_scripts/check_dimmer_only_symbols.py --nm $(NM) \
 	  $(if $(DIMMER_ONLY),--dimmer-only) $(ELF_FILE)
 
+# No switch jump table inside .text: tc32-gcc's -Os layout with an -O2 dispatch (see the
+# -fno-jump-tables above; also a per-function optimize level does it). Every board build.
+check-jump-tables: $(ELF_FILE)
+	@python3 $(PROJECT_ROOT)/helper_scripts/check_jump_tables.py --objdump $(OBJDUMP) $(ELF_FILE)
+
 # Build with tools check
-build: all check-open-dimmer check-dimmer-only
+build: all check-open-dimmer check-dimmer-only check-jump-tables
 
 ifdef OTA_VERSION
 OTA_VERSION_ARG := --file-version $(OTA_VERSION)
@@ -309,7 +323,7 @@ OTA_MAX_SIZE_EXPR = printf '\#include "tl_common.h"\nFLASH_OTA_IMAGE_MAX_SIZE\n'
 # Make an ota file. It links the ELF again (sdk-build is phony), so the
 # symbol checks run on that link too: an OTA file made without the board's
 # DIMMER_ONLY / SECONDARY_MCU_IMAGE fails here (board.mk OTA_LINK_VARS).
-ota: $(BIN_FILE) check-open-dimmer check-dimmer-only
+ota: $(BIN_FILE) check-open-dimmer check-dimmer-only check-jump-tables
 	@if [ -z "$(OTA_MANUFACTURER_ID)" ] || [ "$(OTA_MANUFACTURER_ID)" = "null" ] || \
       [ -z "$(OTA_IMAGE_TYPE)" ]      || [ "$(OTA_IMAGE_TYPE)" = "null" ]; then \
         echo "Skipping OTA file generation: missing arguments"; \

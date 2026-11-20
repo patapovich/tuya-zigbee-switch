@@ -185,3 +185,29 @@ def test_control_2_sends_query_all():
         assert int(device.read_zigbee_attr(1, BASIC, ATTR_CONTROL)) == 0
     finally:
         proc.stop()
+
+
+def test_a_brightness_write_answered_after_the_fade_is_no_timeout():
+    """The factory MCU answers a brightness write to a lit channel only after its fade (~1 s):
+    no answer within the ack wait is its way (TUYA_MCU_SLOW_VALUE_ANSWERS), neither counted nor
+    logged; an on/off write without an answer still is."""
+    proc, device = start()
+    try:
+        mcu_report(proc, bool_dp(DP_ON_L1, 1))
+        take_tx(proc)
+        device.write_zigbee_attr(1, BASIC, ATTR_CONTROL, 1)
+        device.call_zigbee_cmd(1, ZCL_CLUSTER_LEVEL_CONTROL, 0x00, bytes([200, 0, 0]))  # MoveToLevel
+        pump(proc)
+        device.step_time(500)
+        pump(proc)
+        assert ("TX_DP", DP_LEVEL_L1) in [(e["kind"], e["id"]) for e in log(device)]
+        assert counters(device)["tx_timeout"] == 0
+        assert "ACK_TIMEOUT" not in [e["kind"] for e in log(device)]
+        device.call_zigbee_cmd(1, 0x0006, 0x00)                                  # Off
+        pump(proc)
+        device.step_time(500)
+        pump(proc)
+        assert counters(device)["tx_timeout"] == 1
+        assert ("ACK_TIMEOUT", DP_ON_L1) in [(e["kind"], e["id"]) for e in log(device)]
+    finally:
+        proc.stop()

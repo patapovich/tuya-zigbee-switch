@@ -14,6 +14,12 @@ zdms16-py32 release notes.
 
 ## Next
 
+- The module firmware is built for size (its own code; the Zigbee SDK as before): about 5 KB
+  more room in the OTA image for later features. A build check refuses a switch the Telink
+  compiler would turn into a wrong jump (it made the Scenes commands restart the module).
+- MCU link diagnostics: a factory MCU's late answer to a brightness write (it answers after its
+  fade, ~1 s) is no longer logged as an ACK timeout.
+
 ## 1.1.3-a1b1d4ec (2026-11-20), carries Open Dimmer 2.2.4
 
 - Rebuilt, nothing new; carries Open Dimmer 2.2.4.
