@@ -257,7 +257,8 @@ console.log(JSON.stringify({
 """))
     expose = {"type": "text", "name": "mcu_firmware", "label": "MCU firmware", "access": 1, "endpoint": None,
               "category": "diagnostic",
-              "description": "Firmware of the secondary MCU (the chip that drives the outputs): Open Dimmer or the stock Tuya firmware"}
+              "description": "Firmware of the secondary MCU (the chip that drives the outputs): Open Dimmer or the stock Tuya "
+                             "firmware; while not Open Dimmer, also an Open Dimmer install that waits for a power cycle, runs or failed"}
     assert out["firmware"] == [[[expose], [expose]], [[]], [[]]]
     text_args = {"name": "mcu_version", "access": "STATE_GET", "cluster": "genBasic",   # device level
                  "attribute": {"ID": 0xFF12, "type": 0x42},
@@ -290,7 +291,8 @@ const configure = async (versions) => {
     const reads = h.log.filter((l) => l[0] === "read");
     return {
         versionReads: reads.filter((l) => l[2] === "genBasic" && l[3][0] === 0xff12).length,
-        ownReads: reads.filter((l) => l[2] === "genBasic" && l[3][0] !== 0xff12).map((l) => l[3][0].toString(16)),
+        // Open Dimmer's settings (not the SWD master's status 0xff50: test_converter_mcu_flasher)
+        ownReads: reads.filter((l) => l[2] === "genBasic" && l[3][0] !== 0xff12 && l[3][0] !== 0xff50).map((l) => l[3][0].toString(16)),
         dimmerReads: reads.filter((l) => l[2] !== "genBasic").map((l) => `${l[1]}:${l[2]}:${l[3].join("+")}`),
         reporting: h.log.filter((l) => l[0] === "report").map((l) => [l[1], l[2], ...(l[3].map ? l[3].map((r) => [r.attribute.ID ?? r.attribute, r.minimumReportInterval, r.maximumReportInterval]) : [l[3]])]),
         delays: [...h.delays],

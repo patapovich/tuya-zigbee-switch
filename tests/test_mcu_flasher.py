@@ -559,6 +559,41 @@ def test_auto_install_waits_for_the_wires(stock, monkeypatch):
         check_installed(proc, run_until_settled(proc, Device(proc), passes=4000))
 
 
+
+def status_reports(device: Device) -> int:
+    return sum(1 for e in device._events if e.kind == "zcl_report_send"
+               and int(e.payload["attr"], 16) == ATTR_STATUS)
+
+
+def test_auto_armed_status_goes_out_once_on_the_network(stock, monkeypatch):
+    """Armed at start-up, before the network: the status is reported when the module is on
+    the network, then every 10 min while it waits (the converter's mcu_firmware tells the
+    user to power-cycle it)."""
+    monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "1500")
+    monkeypatch.setenv("SWD_TARGET_CONNECT", "0")
+    with StubProc(device_config=WITH_TOKEN) as proc:            # the stock MCU runs on
+        Device(proc)
+        proc.exec("step_time 2000")
+    monkeypatch.setenv("SWD_TARGET_CONNECT", "1")
+    with StubProc(device_config=WITH_TOKEN, joined=False) as proc:
+        device = Device(proc)
+
+        def after(ms: int) -> int:
+            proc.exec(f"step_time {ms}")
+            proc.exec("step_time 1")    # an event of a task due at the end comes after the RES
+            return status_reports(device)
+
+        assert after(5000) == 0                                  # not on the network yet
+        assert status(device)["state"] == STATE_ARMED
+        proc.exec("net 1")
+        assert after(1000) == 1
+        assert after(590000) == 1
+        assert after(15000) == 2                                 # 10 min later
+        proc.exec("net 0")
+        assert after(1000) == 2
+        proc.exec("net 1")                                       # back on the network: at once
+        assert after(1000) == 3
+
 def test_auto_leaves_an_open_dimmer_mcu_running():
     """Wires on a unit that runs Open Dimmer already (read protection level 0): told before
     the core is touched, nothing written, never again."""

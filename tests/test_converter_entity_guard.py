@@ -189,8 +189,12 @@ console.log(JSON.stringify({
 
 # What configure does for a module with the stock MCU (the house units), as the deployed
 # converter of 4c3558a1 does it: the version read, then per dimmer bind, reporting, the reads.
+# Since the SWD master: one read of its status (Basic 0xff50) after the version; a module
+# without the master (no SW token) does not have it, so no genBasic bind follows
+# (test_converter_mcu_flasher: with the master the Basic cluster is bound).
 STOCK_CONFIGURE = [
     ["read", 1, "genBasic", [0xFF12]],
+    ["read", 1, "genBasic", [0xFF50]],
     *[call for ep in (1, 2) for call in (
         ["bind", ep, ["genOnOff", "genLevelCtrl"]],
         ["report", ep, "genOnOff", {"min": 0, "max": 65000, "change": 1}],
@@ -209,7 +213,8 @@ STOCK_CONFIGURE = [
 
 
 def test_configure_of_a_stock_unit_stays():
-    """No genBasic bind, no Open Dimmer read: exactly the deployed converter's calls."""
+    """No genBasic bind, no Open Dimmer read: the deployed converter's calls (and the
+    SWD master's status read)."""
     import json
 
     from generated_converter import run_node
