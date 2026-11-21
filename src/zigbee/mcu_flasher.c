@@ -176,6 +176,11 @@ enum {
  * erased the flash): the install goes on at every power-up until it is done. */
 #define RESUME_ALWAYS       0xFFu
 
+/* g_resumed of an install taken up at level 0 with Open Dimmer's option bytes
+ * (at a power-up, the chip not identified in this run): the identity, the ROM
+ * and sector 0 are read before sector 0 is written. */
+#define RESUMED_AT_0        2u
+
 /* Start-ups that found the pins held at once (a restart of the module alone, the
  * MCU running on) do not count as power-ups; this many of them count as one, so
  * a pin held low at every real power-up (a short, a firmware that takes it at
@@ -203,7 +208,7 @@ static uint32_t       g_last_report;
 static uint8_t        g_was_joined; /* ARMED: on the network at the last pass */
 static uint8_t        g_page;       /* STEP_PROGRAM: next page, 1..31 then 0 */
 static uint8_t        g_rewrites;   /* STEP_OB_CHECK / STEP_VERIFY: written again */
-static uint8_t        g_resumed;    /* an install taken up after its option bytes */
+static uint8_t        g_resumed;    /* an install taken up after its option bytes (or RESUMED_AT_0) */
 static uint8_t        g_keep;       /* this install stays armed when it stops: see finish() */
 static uint32_t       g_confirm_at;
 static uint32_t       g_step_at;    /* when the current wait step began */
@@ -843,6 +848,7 @@ void mcu_flasher_early(void) {
     if (err == SWD_OK && (uint8_t)optr == 0xAAu && resumed) {
         g_status.optr = optr;
         g_step_at     = hal_millis();
+        g_resumed     = RESUMED_AT_0;
         next_step(STEP_REATTACH);   /* the link is up: the checks, then the bootloader */
         return;
     }
@@ -1046,13 +1052,14 @@ void mcu_flasher_task(void) {
             fail = MCU_FLASHER_ERR_WRONG_TARGET;
             break;
         }
-        if (err == SWD_OK && complete && rom && is_install()) {
+        if (err == SWD_OK && complete && rom && is_install() && g_resumed != RESUMED_AT_0) {
             g_rewrites = 0;
             next_step(STEP_OB);
             break;
         }
-        if (err == SWD_OK && complete && !rom && is_update()) {
-            /* the carried bootloader there already: nothing to write */
+        if (err == SWD_OK && complete && !rom && g_status.job >= MCU_FLASHER_JOB_UPDATE_BOOT) {
+            /* the carried bootloader there already: nothing to write (an
+             * install taken up at level 0 ends here, the core never touched) */
             if (g_status.sector0_crc == secondary_mcu_boot_crc &&
                 g_status.job != MCU_FLASHER_JOB_UPDATE_FORCE) {
                 g_status.boot_version = secondary_mcu_boot_version;
@@ -1285,9 +1292,13 @@ void mcu_flasher_task(void) {
                            (word[2] & 0xFFFFu) == OB_WRPR;
             if (ours && (g_resumed || word[3] == 0xFFFFFFFFu)) {
                 /* right after the reload the flash must be blank (the mass
-                 * erase); taken up later, a part of the bootloader may be there */
+                 * erase): the bootloader as update_bootloader writes it. Taken
+                 * up at a power-up (no ROM CRC of this run yet), a part of it
+                 * or all may be there, behind these wires or others: the
+                 * identity, the ROM and sector 0 are read first (STEP_SECTOR0
+                 * goes on), the core untouched. */
                 g_rewrites = 0;
-                next_step(STEP_HALT);           /* the bootloader as update_bootloader writes it */
+                next_step(g_resumed == RESUMED_AT_0 ? STEP_IDENTITY : STEP_HALT);
             } else if (g_resumed && (uint8_t)word[1] != 0xCCu) {
                 /* not the state after the change: the install from its start
                  * (level 0 with other option bytes too: written again, no erase) */

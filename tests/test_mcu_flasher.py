@@ -942,3 +942,83 @@ def test_abort_of_an_install_taken_up_at_level_1_keeps_it_while_the_mcu_is_silen
         assert (st["state"], st["error"], st["page"]) == (STATE_ARMED, ERR_KEPT, 3), st
         assert JOB_ITEM.read_bytes() == job_item(PHASE_RETAKEN_, 3)
         assert target(proc, "stats")["option_programs"] == "0"
+
+
+# -- an install taken up at level 0: the chip identified before sector 0 is touched
+
+@pytest.fixture
+def unprotected(monkeypatch, tmp_path):
+    """An MCU at level 0 with Open Dimmer's option bytes, kept over the stub's restarts."""
+    monkeypatch.setenv("SWD_TARGET_STATE", str(tmp_path / "py32.state"))
+    return tmp_path
+
+
+def test_a_taken_up_install_leaves_an_mcu_that_has_the_bootloader_alone(unprotected, monkeypatch):
+    """The job left in NV, the MCU brought up by other means: the carried bootloader is there,
+    so nothing is written and the core is never stopped or reset."""
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        load_flash(proc, unprotected, carried_boot())
+        target(proc, "save")
+    power_up_with_job(monkeypatch)
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        st = run_until_settled(proc, device, passes=400)
+        assert (st["state"], st["error"], st["job"]) == (STATE_DONE, ERR_NONE, JOB_INSTALL), st
+        assert st["sector0_crc"] == crc(sector(carried_boot())) and st["rom_crc"] == crc(ROM)
+        assert st["boot_version"] == carried_boot()[0x14]
+        stats = target(proc, "stats")
+        assert int(stats["mem_writes"]) == 0 and int(stats["sys_resets"]) == 0
+        assert int(stats["erases"]) == 0 and stats["core"] == "running"
+        assert stats["powered"] == "0" and int(stats["contention"]) == 0
+        assert not JOB_ITEM.exists()
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        assert status(Device(proc))["state"] == STATE_IDLE
+
+
+def test_a_taken_up_install_never_writes_a_chip_it_cannot_identify(unprotected, monkeypatch):
+    """The same marker, another ROM behind the wires: read, refused, kept armed; nothing
+    written, the core never stopped."""
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        load_flash(proc, unprotected, carried_boot()[:-1] + b"\x00")
+        target(proc, "poke32", "0x1FFF0100", "0x12345678")
+        target(proc, "save")
+    power_up_with_job(monkeypatch)
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        st = run_until_settled(proc, device, passes=400)
+        assert (st["state"], st["error"], st["page"]) == (
+            STATE_ARMED, ERR_WRONG_TARGET, RESUME_ALWAYS), st
+        stats = target(proc, "stats")
+        assert int(stats["mem_writes"]) == 0 and int(stats["sys_resets"]) == 0
+        assert int(stats["erases"]) == 0 and stats["option_programs"] == "0"
+        assert stats["core"] == "running"
+
+
+def test_a_taken_up_install_replaces_another_bootloader_after_identifying_the_chip(unprotected, monkeypatch):
+    old = bytearray(carried_boot())
+    old[0x200] ^= 0xFF
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        load_flash(proc, unprotected, bytes(old))
+        target(proc, "save")
+    power_up_with_job(monkeypatch)
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        st = run_until_settled(proc, device, passes=4000)
+        assert st["rom_crc"] == crc(ROM) and st["idcode"] == 0x60001000   # read in this session
+        check_written(proc, st)
+        assert not JOB_ITEM.exists()
+
+
+def test_a_power_cut_while_the_bootloader_is_written_is_identified_then_taken_up(stock, monkeypatch):
+    """Sector 0 partly written (its vectors blank, the core in lockup): the identity, the ROM
+    and sector 0 are read first, then the bootloader is written."""
+    monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "0")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        install_until(proc, Device(proc), STEP_PROGRAM_, 6)
+    monkeypatch.setenv("SWD_TARGET_POWER_CYCLE", "1")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        proc.exec("step_time 3000")
+        st = run_until_settled(proc, device, passes=4000)
+        assert st["rom_crc"] == crc(ROM) and st["cpuid"] == 0x410CC601
+        check_installed(proc, st, reloaded=False)
