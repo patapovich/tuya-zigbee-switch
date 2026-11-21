@@ -74,13 +74,16 @@ typedef struct {
     uint8_t              lamp_comp_mcu;
 
     /* Open Dimmer 2.2.8's custom curve (lightingBallastCfg 0xff12, octet string: 17 little-endian
-     * u16, 0..10000 at 0, 1/16 .. 1 of min..max; length 0: none), kept in NV and written to the
-     * MCU (DPs 174 + 3 * channel ..) at each contact and when changed. The buffer takes any
-     * octet string: the SDK copies a written one without checking its length. */
+     * u16, 0..10000 at 0, 1/16 .. 1 of min..max; length 0: none). The MCU keeps it (saved with
+     * its settings): shown as its dump and its answers tell (DPs 174 + 3 * channel .., three
+     * parts, custom_mcu once all came: custom_parts), a write passed on in three parts. The
+     * buffer takes any octet string: the SDK copies a written one without checking its length. */
     struct {
         uint8_t len;
         uint8_t data[255];
     }                    custom_curve;
+    uint8_t              custom_mcu[36];
+    uint8_t              custom_parts;
     uint8_t              input_mode;
     uint8_t              input_mode_mcu;
     uint8_t              fast_press;     /* DP 170 / 171: detached momentary press at once (6) */

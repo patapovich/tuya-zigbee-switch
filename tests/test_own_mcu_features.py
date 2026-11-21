@@ -564,10 +564,10 @@ def curve_attr(device, ep: int) -> str:
     return device.read_zigbee_attr(ep, BALLAST, ATTR_CUSTOM_CURVE).lower()
 
 
-def test_the_custom_curve_is_kept_and_written_in_three_parts():
+def test_the_custom_curve_is_written_in_three_parts_and_shown_as_the_mcu_has_it():
     """lightingBallastCfg 0xff12: 17 little-endian points; to the MCU as DPs 174 + 3 * channel
-    + part, 6 big-endian points each (the last part's sixth: 0). A falling table or a wrong
-    length is refused: the one kept stays, nothing is sent."""
+    + part, 6 points each as they are (the last part's sixth: 0); shown as its answers tell. A
+    falling table or a wrong length is refused: the MCU's one is shown again, nothing sent."""
     proc, device, mcu = own(build=LAMP_COMP_BUILD)
     try:
         assert curve_attr(device, 2) == "-"                 # none (the stub shows an empty one so)
@@ -588,28 +588,29 @@ def test_the_custom_curve_is_kept_and_written_in_three_parts():
         proc.stop()
 
 
-def test_the_custom_curve_is_given_again_after_an_mcu_restart_and_a_module_restart():
+def test_the_mcu_keeps_its_custom_curve_and_its_dump_shows_it():
+    """Saved on the MCU: after its restart and after the module's, nothing is written again;
+    the dump fills the attribute."""
     proc, device, mcu = own(build=LAMP_COMP_BUILD)
     try:
         write(device, mcu, 1, BALLAST, ATTR_CUSTOM_CURVE, le_hex(CURVE))
-        out = mcu_restarts(device, mcu, 300)            # its RAM table is gone with it
-        assert [d for d, _ in out if 174 <= d < 180] == [174, 175, 176]
-        assert mcu.custom[0] == CURVE and mcu.custom_ok(0)
+        out = mcu_restarts(device, mcu, 300)
+        assert [d for d, _ in out if 174 <= d < 180] == []
+        assert curve_attr(device, 1) == le_hex(CURVE)
     finally:
         proc.stop()
-    proc, device, mcu = own(build=LAMP_COMP_BUILD)        # the module restarts: kept in its NV
+    proc, device, mcu = own(build=LAMP_COMP_BUILD, prepare=lambda m: m.custom.__setitem__(0, list(CURVE)))
     try:
-        assert curve_attr(device, 1) == le_hex(CURVE)
-        assert mcu.custom[0] == CURVE and mcu.custom_ok(0)
+        assert curve_attr(device, 1) == le_hex(CURVE) and curve_attr(device, 2) == "-"
     finally:
         proc.stop()
 
 
 @pytest.mark.parametrize("build", [FEATURES_BUILD, LAMP_COMP_BUILD - 1])
-def test_an_open_dimmer_without_the_custom_curve_gets_none_but_keeps_it(build):
+def test_an_open_dimmer_without_the_custom_curve_gets_none(build):
     proc, device, mcu = own(build=build)
     try:
         assert write(device, mcu, 1, BALLAST, ATTR_CUSTOM_CURVE, le_hex(CURVE)) == []
-        assert curve_attr(device, 1) == le_hex(CURVE)  # kept for an update to 2.2.8
+        assert curve_attr(device, 1) == "-"                 # it has none
     finally:
         proc.stop()

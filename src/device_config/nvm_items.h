@@ -67,8 +67,4 @@
  * to a config stored before the default had it (config_nv.c). */
 #define NV_ITEM_CONFIG_SWD_DEFAULT    65
 
-/* Open Dimmer 2.2.8's custom curve of a dimmer (17 little-endian u16, as its attribute):
- * 66..69. The MCU keeps it in RAM only: written again from here after every start. */
-#define NV_ITEM_DIMMER_CUSTOM_CURVE(dimmer_idx)    (66 + (dimmer_idx))
-
 #endif /* DEVICE_CONFIG_NVM_ITEMS_H_ */
