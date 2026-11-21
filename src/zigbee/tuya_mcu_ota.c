@@ -1,4 +1,5 @@
 #include "zigbee/tuya_mcu_ota.h"
+#include "zigbee/crc32_nibble.h"
 #include "device_config/config_parser.h"
 #include "hal/printf_selector.h"
 #include "hal/tasks.h"
@@ -105,15 +106,10 @@ static hal_task_t g_offer_task;
 static hal_task_t g_pause_timer;
 static uint8_t    g_pause_timer_ready;
 
+/* zlib's CRC-32 update (as tools/mkimage.py and the bootloader compute the image's): the one
+ * CRC implementation (crc32_nibble.c) with the inversions zlib adds. */
 static uint32_t crc32_update(uint32_t crc, const uint8_t *p, uint32_t n) {
-    crc = ~crc;
-    while (n--) {
-        crc ^= *p++;
-        for (uint8_t k = 0; k < 8; k++) {
-            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
-        }
-    }
-    return ~crc;
+    return ~(uint32_t)xcrc32(p, (int)n, ~crc);
 }
 
 #ifdef SECONDARY_MCU_IMAGE

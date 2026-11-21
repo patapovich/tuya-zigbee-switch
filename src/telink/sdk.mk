@@ -175,8 +175,20 @@ sdk-clean:
 
 # Special compiler flags for specific SDK files
 $(BUILD_DIR)/sdk/proj/drivers/drv_nv.o: GCC_FLAGS += -Dnv_resetToFactoryNew=nv_resetToFactoryNew__sdk
+# The SDK's xcrc32 and its 1 KB table renamed away (unreferenced: dropped by --gc-sections): its
+# NV and OTA code call src/zigbee/crc32_nibble.c's, the same CRC in 64 bytes.
+$(BUILD_DIR)/sdk/proj/common/utility.o: GCC_FLAGS += -Dxcrc32=xcrc32__sdk
 
 $(SDK_OBJS): GCC_FLAGS += -fpack-struct
+# Dimmer-only boards (near the OTA limit): the SDK's logic for size, as the project's own objects
+# (src/telink/Makefile: -Os with -fno-jump-tables, which tc32-gcc's -Os needs; check-jump-tables
+# checks the ELF). The radio, flash, clock and timer drivers (zigbee/mac, platform/, proj/drivers)
+# keep -O2 for their timing, and the NV driver its tested code. ~2 KB.
+ifneq ($(DIMMER_ONLY),)
+SDK_OS_OBJS := $(filter $(addprefix $(BUILD_DIR)/sdk/,zigbee/zcl/% zigbee/aps/% zigbee/af/% \
+                 zigbee/bdb/% zigbee/zdo/% zigbee/common/% proj/os/% proj/common/%),$(SDK_OBJS))
+$(SDK_OS_OBJS): GCC_FLAGS += -Os -fno-jump-tables
+endif
 
 # Compile SDK C files
 $(BUILD_DIR)/sdk/%.o: $(SDK_PATH)/%.c

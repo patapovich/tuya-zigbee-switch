@@ -55,6 +55,7 @@ source:
 - {path: ../../zigbee/tuya_mcu_diag.c}
 - {path: ../../zigbee/tuya_mcu_app.c}
 - {path: ../../zigbee/tuya_mcu_ota.c}
+- {path: ../../zigbee/crc32_nibble.c}
 - {path: ../../zigbee/secondary_mcu_image.c}
 - {path: ../../zigbee/dimmer_cluster.c}
 - {path: ../../zigbee/battery_cluster.c}
