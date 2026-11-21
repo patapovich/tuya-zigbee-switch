@@ -14,6 +14,8 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
 
 ## Next
 
+## 1.1.3-d983b68a (2026-11-21), carries Open Dimmer 2.2.6
+
 - A wall switch hold with Open Dimmer is followed from its hold gesture to its release: a level
   command that arrives during the hold (a hub's periodic brightness update) no longer holds
   the hold's level back for 3 s, a Move command stops for the hold, and lights bound to the
