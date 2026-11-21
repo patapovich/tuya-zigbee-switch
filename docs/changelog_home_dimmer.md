@@ -14,6 +14,11 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
 
 ## Next
 
+- The dimmer chip's health report reaches the hub seconds after a restart of the module or of
+  the chip (Open Dimmer 2.2.7 sends it 3 s after the two made contact; it came up to 2 min
+  after the module's start). A report made while the module is not on a network is not
+  counted as the one sent.
+
 ## 1.1.3-d983b68a (2026-11-21), carries Open Dimmer 2.2.6
 
 - A wall switch hold with Open Dimmer is followed from its hold gesture to its release: a level

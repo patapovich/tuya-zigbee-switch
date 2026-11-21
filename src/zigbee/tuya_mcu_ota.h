@@ -200,7 +200,9 @@ uint16_t tuya_mcu_ota_own_build(void);
  * and, at the first report after the module's or the MCU's start (the MCU's own restart: an
  * update, a watchdog reset; the report tells the reset cause) and every HEALTH_REPORT_EVERY-th
  * after it, sent as an attribute report to the Basic cluster's bindings (the converter binds it
- * to the coordinator). */
+ * to the coordinator). Rounds while the module is not on a network are not counted. Open
+ * Dimmer 2.2.7 sends a round 3 s after every identity question (before: a minute after its
+ * start, then every 2 min), so that first report follows a restart of either side at once. */
 #define HEALTH_REPORT_EVERY             5 /* health reports per one sent: ~10 min */
 
 typedef struct __attribute__((packed)) {

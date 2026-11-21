@@ -1719,6 +1719,30 @@ def test_the_first_health_report_after_an_mcu_restart_goes_out_at_once():
         proc.stop()
 
 
+def test_a_health_round_off_the_network_is_not_counted():
+    """Open Dimmer 2.2.7 reports its health 3 s after the first contact: a module still
+    pairing then must not count that round as the one sent."""
+    proc, device = start()
+    try:
+        contact_as_own(proc, device, VERSION, build=500, boot=2)
+        device.set_network(0)
+        proc.exec(health_frame(RING_HIGH | RING_MOVED, uptime=0))
+        proc.exec(temperature_frame(30))
+        cmds_after(proc, device, 100)
+        assert reports_sent(device) == 0
+        assert health_attr(device)["temperature"] == 30               # kept for a read
+        device.set_network(1)
+        sent = []
+        for k in range(6):
+            proc.exec(health_frame(RING_HIGH | RING_MOVED, uptime=2 + 2 * k))
+            proc.exec(temperature_frame(30))
+            cmds_after(proc, device, 100)
+            sent.append(reports_sent(device))
+        assert sent == [1, 1, 1, 1, 1, 2]
+    finally:
+        proc.stop()
+
+
 def test_the_health_dps_of_a_factory_mcu_are_not_taken():
     proc, device = start()
     try:

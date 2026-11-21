@@ -559,6 +559,9 @@ static void health_round_done(void) {
     g_health.format = HEALTH_FORMAT;
     hal_zigbee_notify_attribute_changed(endpoints[0].endpoint, ZCL_CLUSTER_BASIC,
                                         ZCL_ATTR_BASIC_MCU_HEALTH);
+    if (hal_zigbee_get_network_status() != HAL_ZIGBEE_NETWORK_JOINED) {
+        return;     /* nobody to tell: not counted, the first round on the network is sent */
+    }
     if (g_health_rounds++ % HEALTH_REPORT_EVERY == 0) {
         hal_zigbee_send_report_attr(endpoints[0].endpoint, ZCL_CLUSTER_BASIC,
                                     ZCL_ATTR_BASIC_MCU_HEALTH, ZCL_DATA_TYPE_OCTET_STR,
