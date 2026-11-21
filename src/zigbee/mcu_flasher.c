@@ -118,6 +118,12 @@ typedef char   ob_user_byte_is_open_dimmers[(((OB_OPTR >> 8) & 0xFFu) == 0xF9u) 
 #define ADDR_BOOT_WORD           0x20000BF8u
 #define ADDR_BOOT_WORD_INV       0x20000BFCu
 
+/* A fresh boot word (tag 0xB2) with the probe request (bit 7, BOOT_PROBE_REQ): what the app's
+ * link watchdog leaves before its reset. Left by update_bootloader for the new bootloader, so
+ * that it asks for the carried image at once (newer build only, as a power-on probe): an app
+ * that cannot take an image the new bootloader can (v3: over 14 KB) needs no power cycle. */
+#define BOOT_WORD_PROBE          0xB2000080u
+
 #define BOOT_ID_MAGIC            0x4C42444Fu /* "ODBL" */
 #define APP_MAGIC                0x5A445041u /* "APDZ" */
 
@@ -674,6 +680,8 @@ static swd_err_t run_new(uint8_t *halted) {
         return err;
     }
     err = gates_low();
+    if (err == SWD_OK) err = swd_mem_write32(ADDR_BOOT_WORD, BOOT_WORD_PROBE);
+    if (err == SWD_OK) err = swd_mem_write32(ADDR_BOOT_WORD_INV, ~BOOT_WORD_PROBE);
     if (err == SWD_OK) err = swd_mem_read_block(ADDR_FLASH, vec, 2);
     if (err == SWD_OK) err = write_core_reg(REG_MSP, vec[0]);
     if (err == SWD_OK) err = write_core_reg(REG_PC, vec[1] & ~1u);

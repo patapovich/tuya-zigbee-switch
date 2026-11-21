@@ -336,7 +336,10 @@ def check_written(proc, st):
     assert stats["core"] == "running"
     assert int(stats["pc"], 16) == struct.unpack_from("<I", boot, 4)[0] & ~1
     assert stats["iwdg_frozen"] == "1" and stats["gates_low"] == "1"
-    assert int(target(proc, "peek32", "0x20000BF8")["value"], 16) == 0  # the boot word
+    # the boot word: fresh with the probe request (bit 7), so the new bootloader asks for the
+    # carried image at once; its complement makes it valid
+    assert int(target(proc, "peek32", "0x20000BF8")["value"], 16) == 0xB2000080
+    assert int(target(proc, "peek32", "0x20000BFC")["value"], 16) == 0x4DFFFF7F
     return log
 
 
