@@ -5,7 +5,7 @@ from| / range, in the channel's MCU values (DP 160 / 161 before the level, Open 
 build 400). From dark, to off, a given time, unset: as before. Any other MCU: nothing sent."""
 import pytest
 from own_mcu import own_mcu_contact
-from test_dimmer_mcu import ack_writes, scaled_to_tuya, set_level, start
+from test_dimmer_mcu import ack_writes, level, scaled_to_tuya, scaled_to_zcl, set_level, start
 from tuya_mcu import take_tx
 
 LEVEL, ON_OFF = 0x0008, 0x0006
@@ -196,3 +196,112 @@ def send_now(device, mcu, payload: bytes) -> list[tuple[int, int]]:
     device.call_zigbee_cmd(1, LEVEL, MOVE_TO_LEVEL, payload)
     mcu.serve(step_ms=10)
     return list(mcu.writes)
+
+
+# ---- Stop, Move and Step during a timed move: from where the light is ------------------------
+MOVE, STOP = 0x01, 0x03
+UP = 0x00
+SLOW = 300                                 # 30 s, the timed move of these tests: 254 -> 10
+
+
+def slow_move(build=500):
+    """Lit at 254, then a MoveToLevel to 10 in 30 s. Returns the uptime of that command."""
+    proc, device, mcu = od(build)
+    lit_at(device, mcu, 254)
+    t0 = uptime(device)
+    send_now(device, mcu, bytes([10]) + tt(SLOW))
+    return proc, device, mcu, t0
+
+
+def slow_at(ms: int) -> int:
+    """The level the light is at that long into the slow move."""
+    a, b = scaled_to_tuya(254, MN, MX), scaled_to_tuya(10, MN, MX)
+    return scaled_to_zcl(a - (a - b) * ms // (SLOW * 100), MN, MX)
+
+
+def test_a_stop_during_a_timed_move_stops_the_light_where_it_is():
+    """The MCU has the whole move: without a write it would go on to its end, and CurrentLevel
+    showed that end from the start. A Stop writes the level the light is at, at once."""
+    proc, device, mcu, t0 = slow_move()
+    try:
+        assert level(device) == 10                                # the move's end, as before
+        device.step_time(t0 + 5000 - uptime(device))
+        mcu.writes.clear()
+        device.call_zigbee_cmd(1, LEVEL, STOP, b"")
+        mcu.serve()
+        at = slow_at(5000)
+        assert 200 < at < 230                                     # a sixth of the way down
+        assert mcu.writes == [(DP_TIME, 1), (DP_LEVEL, scaled_to_tuya(at, MN, MX))]
+        assert level(device) == at
+        device.step_time(4000)
+        mcu.writes.clear()
+        device.call_zigbee_cmd(1, LEVEL, STOP, b"")               # nothing runs: nothing
+        mcu.serve()
+        assert mcu.writes == [] and level(device) == at
+    finally:
+        proc.stop()
+
+
+def test_a_stop_after_the_timed_move_ended_sends_nothing():
+    proc, device, mcu, t0 = slow_move()
+    try:
+        device.step_time(t0 + SLOW * 100 - uptime(device))
+        mcu.writes.clear()
+        device.call_zigbee_cmd(1, LEVEL, STOP, b"")
+        mcu.serve()
+        assert mcu.writes == [] and level(device) == 10
+    finally:
+        proc.stop()
+
+
+def test_a_step_during_a_timed_move_steps_from_where_the_light_is():
+    proc, device, mcu, t0 = slow_move()
+    try:
+        device.step_time(t0 + 5000 - uptime(device))
+        mcu.writes.clear()
+        device.call_zigbee_cmd(1, LEVEL, STEP, bytes([UP, 20]) + tt(0))
+        mcu.serve()
+        to = slow_at(5000) + 20
+        assert mcu.writes == [(DP_TIME, 1), (DP_LEVEL, scaled_to_tuya(to, MN, MX))]
+        assert level(device) == to
+    finally:
+        proc.stop()
+
+
+def test_a_move_during_a_timed_move_sets_out_from_where_the_light_is():
+    proc, device, mcu, t0 = slow_move()
+    try:
+        device.step_time(t0 + 5000 - uptime(device))
+        mcu.writes.clear()
+        device.call_zigbee_cmd(1, LEVEL, MOVE, bytes([UP, 10]))   # 3 levels a step
+        device.step_time(300)                                     # its first step
+        mcu.serve()
+        to = slow_at(5300) + 3
+        assert mcu.writes[:2] == [(DP_TIME, 300), (DP_LEVEL, scaled_to_tuya(to, MN, MX))]
+        device.call_zigbee_cmd(1, LEVEL, STOP, b"")               # the ramp's end, no timed move
+        mcu.serve()
+        assert [v for dp, v in mcu.writes if dp == DP_TIME and v == 1] == []
+    finally:
+        proc.stop()
+
+
+@pytest.mark.parametrize("build", [300, "stock"])
+def test_a_stop_sends_nothing_to_an_mcu_without_timed_moves(build):
+    """An Open Dimmer before build 400 and a factory MCU get no time, so no timed move runs."""
+    proc, device = start()
+    try:
+        if build == "stock":
+            set_level(proc, device, 254)
+        else:
+            mcu = own_mcu_contact(proc, device, build=build)
+            lit_at(device, mcu, 254)
+        take_tx(proc)
+        device.call_zigbee_cmd(1, LEVEL, MOVE_TO_LEVEL, bytes([10]) + tt(SLOW))
+        ack_writes(proc, device)
+        device.step_time(5000)
+        take_tx(proc)
+        device.call_zigbee_cmd(1, LEVEL, STOP, b"")
+        device.step_time(200)
+        assert take_tx(proc) == b"" and level(device) == 10
+    finally:
+        proc.stop()

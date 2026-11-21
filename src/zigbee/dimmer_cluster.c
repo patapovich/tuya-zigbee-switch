@@ -352,6 +352,20 @@ static uint32_t dimmer_fade_position(const zigbee_dimmer_cluster *cluster, uint3
                                 : dimmer_level_to_value(cluster, cluster->current_level);
 }
 
+/* During a timed move (see above; Open Dimmer only) CurrentLevel is the move's end from its
+ * start. A Stop, Move or Step in it acts on where the light is: CurrentLevel becomes that
+ * level. Returns 1 while such a move runs. */
+static uint8_t dimmer_fade_settle(zigbee_dimmer_cluster *cluster) {
+    uint32_t now = hal_millis();
+
+    if (!cluster->fade_ms || now - cluster->fade_at >= cluster->fade_ms)
+        return 0;
+
+    dimmer_set_current_level(cluster,
+                             dimmer_value_to_level(cluster, dimmer_fade_position(cluster, now)));
+    return 1;
+}
+
 /* A lit-to-lit level change without a time with a brightness fade time set: that time for the
  * whole range, so a part of it for this change (ms = time * |to - from| / range in MCU values,
  * from where the light is, dimmer_fade_position(); the range is the channel's min..max as the
@@ -736,6 +750,7 @@ static void dimmer_cluster_ramp_step(void *arg) {
     int      step = (int)(acc / 1000u);
 
     cluster->move_acc = (uint16_t)(acc % 1000u);
+    dimmer_fade_settle(cluster); /* a Move during a timed move sets out from where the light is */
 
     int     next     = cluster->current_level + (cluster->move_direction ? step : -step);
     uint8_t level    = dimmer_clamp_level(next);
@@ -906,7 +921,9 @@ static hal_zigbee_cmd_result_t dimmer_cluster_level_callback(zigbee_dimmer_clust
 
         uint8_t with_onoff = command_id == ZCL_CMD_LEVEL_STEP_WITH_ON_OFF;
         uint8_t up         = payload[0] == ZCL_LEVEL_MOVE_UP;
-        int     base       = cluster->current_level;
+
+        dimmer_fade_settle(cluster); /* during a timed move: from where the light is */
+        int base = cluster->current_level;
 
         dimmer_stop_move(cluster);
         if (!cluster->on && !with_onoff) {
@@ -942,6 +959,11 @@ static hal_zigbee_cmd_result_t dimmer_cluster_level_callback(zigbee_dimmer_clust
     case ZCL_CMD_LEVEL_STOP:
     case ZCL_CMD_LEVEL_STOP_WITH_ON_OFF:
         dimmer_stop_move(cluster);
+        /* A timed move of the MCU's stops too: the level the light is at, at once. */
+        if (dimmer_fade_settle(cluster)) {
+            dimmer_send_time(cluster, 1);
+            dimmer_write_level(cluster, cluster->current_level);
+        }
         break;
 
     default:
