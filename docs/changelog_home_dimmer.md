@@ -29,6 +29,9 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
   to off can take 65.5 s) and it also runs from the module's start when the light is off then.
   An update is offered only to a running Open Dimmer, not while the chip sits in its
   bootloader.
+- The dimmer chip's health report (uptime, reset cause, temperature) is sent to the hub at
+  the first round after the chip restarted alone (an update, a watchdog reset), then every
+  10 min as before. It could wait up to 10 min for its turn.
 - Two-wire install: `abort` after the read protection was removed keeps the install armed
   while the dimmer chip is silent (status error 16; it goes on at the next power-up, and
   abort drops it once the chip answers), and `install` is refused while such an install waits.

@@ -233,6 +233,7 @@ static uint8_t    g_own_running;            /* its version byte, whether it said
 static uint8_t    g_own_has_build;
 static uint8_t    g_own_offerable;          /* its update protocol is ours */
 static uint8_t    g_ring_moved;             /* its last health report said DP 137 bit 25 */
+static uint8_t    g_health_rounds;          /* health reports since the module's or the MCU's start */
 
 /* The ring gate (tuya_mcu_ota.h): an image this MCU may get. */
 static uint8_t ring_gate_open(const image_info_t *img) {
@@ -286,6 +287,7 @@ uint16_t tuya_mcu_ota_own_build(void) {
 }
 
 void tuya_mcu_ota_mcu_restarted(void) {
+    g_health_rounds = 0;        /* its first health report of the new run is sent: the reset cause */
     g_ident_gave_up = 0;
     if (g_ident_waiting) {
         g_ident_waiting = 0;
@@ -551,7 +553,6 @@ static void answer_block(uint16_t seq, const uint8_t *data, uint16_t len) {
 #define BOOT_WORD_RING_MOVED     (1u << 25)
 
 static tuya_mcu_health_t g_health;
-static uint8_t           g_health_rounds;
 
 static void health_round_done(void) {
     g_health.len    = (uint8_t)(sizeof(g_health) - 1);

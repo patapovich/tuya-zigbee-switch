@@ -1694,6 +1694,31 @@ def test_the_health_report_goes_out_at_the_first_round_and_every_fifth():
         proc.stop()
 
 
+def test_the_first_health_report_after_an_mcu_restart_goes_out_at_once():
+    """The MCU restarted alone (an update, a watchdog reset): the first report of its new run
+    tells the reset cause, so it does not wait for its turn (up to 10 min)."""
+    proc, device = start()
+    try:
+        contact_as_own(proc, device, VERSION, build=500, boot=2)
+        for k in range(2):
+            proc.exec(health_frame(RING_HIGH | RING_MOVED, uptime=61 + 2 * k))
+            proc.exec(temperature_frame(30))
+            cmds_after(proc, device, 100)
+        assert reports_sent(device) == 1
+        proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_QUERY_NETWORK, seq=0)}")   # it restarts
+        cmds_after(proc, device, 200)
+        contact_as_own(proc, device, VERSION, build=500, boot=2, off_wait=False)
+        sent = []
+        for k in range(6):
+            proc.exec(health_frame(RING_HIGH | RING_MOVED, uptime=1 + 2 * k))
+            proc.exec(temperature_frame(30))
+            cmds_after(proc, device, 100)
+            sent.append(reports_sent(device))
+        assert sent == [2, 2, 2, 2, 2, 3]
+    finally:
+        proc.stop()
+
+
 def test_the_health_dps_of_a_factory_mcu_are_not_taken():
     proc, device = start()
     try:

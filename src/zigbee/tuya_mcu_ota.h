@@ -197,8 +197,10 @@ uint16_t tuya_mcu_ota_own_build(void);
  * identified Open Dimmer (a round ends with DP 139 from build 500, with 137 before) is kept
  * in Basic 0xff48 (octet string,
  * tuya_mcu_health_t without its length byte, little endian; empty until the first report)
- * and, at the first report and every HEALTH_REPORT_EVERY-th after it, sent as an attribute
- * report to the Basic cluster's bindings (the converter binds it to the coordinator). */
+ * and, at the first report after the module's or the MCU's start (the MCU's own restart: an
+ * update, a watchdog reset; the report tells the reset cause) and every HEALTH_REPORT_EVERY-th
+ * after it, sent as an attribute report to the Basic cluster's bindings (the converter binds it
+ * to the coordinator). */
 #define HEALTH_REPORT_EVERY             5 /* health reports per one sent: ~10 min */
 
 typedef struct __attribute__((packed)) {
