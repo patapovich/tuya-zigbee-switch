@@ -900,7 +900,10 @@ static hal_zigbee_cmd_result_t dimmer_cluster_level_callback(zigbee_dimmer_clust
             (with_onoff || !dimmer_execute_if_off(cluster, payload, cmd_payload_len, 2))) {
             if (!(with_onoff && up))
                 break; /* nothing to move while off */
-            /* ZCL: start from the minimum level when switching on by moving. */
+
+            /* ZCL: start from the minimum level when switching on by moving (in no earlier
+             * command's time). */
+            dimmer_send_time(cluster, DIMMER_TIME_NONE);
             dimmer_turn_on_at(cluster, ZCL_LEVEL_MIN);
         }
         cluster->move_direction  = up;
@@ -1363,6 +1366,9 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
             * the level it remembers and turns towards this one instead. */
             uint8_t on_at = switched_on ? dimmer_local_on_level(cluster, pending) : 0;
             if (on_at) {
+                /* Not in the time of a command just before: Open Dimmer would take it for
+                 * this level (up to 2.2.6 for the wall switch's own on as well). */
+                dimmer_send_time(cluster, DIMMER_TIME_NONE);
                 dimmer_set_current_level(cluster, on_at);
                 dimmer_write_level(cluster, on_at);
             }

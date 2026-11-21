@@ -14,6 +14,7 @@ from test_dimmer_mcu import (
     ZCL_CMD_LEVEL_STEP_WITH_ON_OFF,
     ZCL_LEVEL_MOVE_DOWN,
     ack_writes,
+    scaled_to_tuya,
     start,
 )
 from tuya_mcu import take_tx
@@ -231,3 +232,73 @@ def test_a_factory_mcu_gets_the_same_frames_for_none_zero_and_a_time():
         finally:
             proc.stop()
     assert frames[0] == frames[1] == frames[2] and frames[0]
+
+
+# ---- a time sent just before is taken back for a change that has none of its own -------------
+ZCL_ATTR_ON_LEVEL = 0x0011
+MOVE_WITH_ONOFF, MOVE_UP = 0x05, 0x00
+OD_MIN, OD_MAX = 200, 1000                               # OwnMcu's range
+
+
+def timed_off(build):
+    """Open Dimmer lit a while ago, OnLevel 200, then off in 10 s: the time is at the MCU."""
+    proc, device = start()
+    mcu = own_mcu_contact(proc, device, build=build)
+    device.write_zigbee_attr(1, ZCL_CLUSTER_LEVEL_CONTROL, ZCL_ATTR_ON_LEVEL, 200)
+    to_level(device, 254, NONE)
+    mcu.serve(2000)
+    mcu.writes.clear()
+    to_level(device, 0, 100)
+    mcu.serve()
+    assert mcu.writes[-1] == (DP_ON_L1, 0)
+    mcu.writes.clear()
+    return proc, device, mcu
+
+
+def wall_on(mcu) -> None:
+    mcu.ch[0]["on"] = 1
+    mcu.send([mcu._report([mcu._dp(DP_ON_L1)], passive=False)])
+    mcu.serve()
+
+
+@pytest.mark.parametrize("after_ms, takes_back", [(300, True), (1600, False)])
+def test_the_wall_switchs_on_level_does_not_take_an_earlier_commands_time(after_ms, takes_back):
+    """The wall switch right after a timed command: the OnLevel write that follows its on would
+    go in that command's time (10 s here)."""
+    proc, device, mcu = timed_off(500)
+    try:
+        device.step_time(after_ms - 100)                 # the answers took 100 ms
+        wall_on(mcu)
+        on_level = (DP_LEVEL_L1, scaled_to_tuya(200, OD_MIN, OD_MAX))
+        assert mcu.writes == ([(DP_TRANSITION_L1, 0)] if takes_back else []) + [on_level]
+    finally:
+        proc.stop()
+
+
+def test_a_move_up_from_off_does_not_take_an_earlier_commands_time():
+    proc, device, mcu = timed_off(400)
+    try:
+        device.step_time(200)
+        device.call_zigbee_cmd(1, ZCL_CLUSTER_LEVEL_CONTROL, MOVE_WITH_ONOFF, bytes([MOVE_UP, 10]))
+        mcu.serve()
+        assert mcu.writes[:3] == [(DP_TRANSITION_L1, 0), (DP_ON_L1, 1), (DP_LEVEL_L1, OD_MIN)]
+        mcu.serve(1700)                                  # its steps, each in the step period
+        mcu.writes.clear()
+        device.call_zigbee_cmd(1, ZCL_CLUSTER_ON_OFF, ONOFF_OFF, b"")
+        mcu.serve(2000)
+        mcu.writes.clear()
+        device.call_zigbee_cmd(1, ZCL_CLUSTER_LEVEL_CONTROL, MOVE_WITH_ONOFF, bytes([MOVE_UP, 10]))
+        mcu.serve()                                      # long after any time: nothing to take back
+        assert mcu.writes[:2] == [(DP_ON_L1, 1), (DP_LEVEL_L1, OD_MIN)]
+    finally:
+        proc.stop()
+
+
+def test_an_open_dimmer_without_the_time_gets_nothing_more_for_them():
+    proc, device, mcu = timed_off(300)
+    try:
+        device.step_time(200)
+        wall_on(mcu)
+        assert mcu.writes == [(DP_LEVEL_L1, scaled_to_tuya(200, OD_MIN, OD_MAX))]
+    finally:
+        proc.stop()
