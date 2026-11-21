@@ -209,7 +209,7 @@ static uint8_t first_contact(uint8_t source) {
     g_contact = source;
     g_mcu_own = 0;
     tuya_secondary_mcu_set_fast_acks(0, NULL);
-    dimmer_cluster_mcu_restarted();      /* a countdown or a blink of an earlier run is gone */
+    dimmer_cluster_mcu_restarted();      /* a blink of an earlier run is gone, a countdown lost */
     tuya_dp_apply_inits();
     g_version_retries = 0;
     version_ask();

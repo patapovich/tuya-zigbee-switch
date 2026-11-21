@@ -51,9 +51,12 @@ typedef struct {
      * (StartUpCurrentLevel, 164 / 165; startup_value: the MCU's value, 0 = the last level),
      * IdentifyTime (166 / 167, counted down here: the MCU does not report the end), the
      * start boost in ms (168 / 169) and the fast press (170 / 171, genOnOffSwitchCfg 0xff11:
-     * in the detached mode a momentary switch's press is reported at once as gesture 6). */
+     * in the detached mode a momentary switch's press is reported at once as gesture 6).
+     * countdown_lost: the MCU restarted with a countdown running (it comes back on without
+     * one): written again when its countdown is next reported 0 with the channel on. */
     uint32_t             countdown;
     uint32_t             countdown_end;  /* hal_millis() when it ends (countdown != 0) */
+    uint8_t              countdown_lost;
     uint16_t             startup_value;
 
     /* The last StartUpCurrentLevel written and the MCU value that write leaves (0xFFFF:
@@ -179,8 +182,8 @@ typedef struct {
 void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
                                     hal_zigbee_endpoint *endpoint);
 
-/** The MCU (re)starts or makes contact again: what only lived in it (a countdown, an
- *  identify blink) is gone. */
+/** The MCU (re)starts or makes contact again: what only lived in it is gone (an identify
+ *  blink) or to be written again (a countdown). */
 void dimmer_cluster_mcu_restarted(void);
 
 

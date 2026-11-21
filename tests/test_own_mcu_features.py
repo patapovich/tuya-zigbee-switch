@@ -201,22 +201,73 @@ def test_a_bogus_countdown_from_the_mcu_is_its_longest():
         proc.stop()
 
 
-def test_an_mcu_restart_ends_the_countdown_and_the_identify():
+def mcu_restarts(device, mcu, down_ms: int = 0) -> list[tuple[int, int]]:
+    """The MCU restarts alone (a watchdog reset, an update), silent for that long: its light
+    comes back as it was, its countdown and identify do not. Returns the module's writes."""
+    mcu.writes.clear()
+    mcu.restart()
+    device.step_time(down_ms)
+    mcu.query_network()
+    mcu.serve(1000)
+    return list(mcu.writes)
+
+
+def test_an_mcu_restart_ends_the_identify_and_the_countdown_is_written_again():
+    """The MCU comes back with the light on and no countdown: it would stay on for good. The
+    module writes what is left of the countdown again."""
     proc, device, mcu = own()
     try:
         cmd(device, mcu, 1, ON_OFF, CMD_ON_WITH_TIMED_OFF, timed_off(0, 600))
         cmd(device, mcu, 2, IDENTIFY, CMD_IDENTIFY, (100).to_bytes(2, "little"))
         assert attr(device, 1, ON_OFF, ATTR_COUNTDOWN) == 60
+        device.step_time(20000)
         device.clear_events()
-        mcu.restart()                                   # e.g. a watchdog reset or an update
-        mcu.query_network()
-        mcu.serve(1000)
-        assert attr(device, 1, ON_OFF, ATTR_COUNTDOWN) == 0
+        w = mcu_restarts(device, mcu)
+        again = [v for dp, v in w if dp == DP_COUNTDOWN[1]]
+        assert len(again) == 1 and 38 <= again[0] <= 40            # the 40 s left, its start in it
+        assert [dp for dp, _ in w if dp in (DP_ON[1], DP_ON[2], DP_COUNTDOWN[2])] == []
+        assert attr(device, 1, ON_OFF, ATTR_COUNTDOWN) == again[0] == mcu.ch[0]["countdown"]
+        assert attr(device, 1, ON_OFF, ATTR_ONOFF) == 1
         assert attr(device, 2, IDENTIFY, ATTR_IDENTIFY_TIME) == 0
         changed = {(int(e.payload["ep"]), int(e.payload["cluster"], 16), int(e.payload["attr"], 16))
                    for e in device._events if e.kind == "zcl_attr_change"}
         assert (1, ON_OFF, ATTR_COUNTDOWN) in changed                  # both reported
         assert (2, IDENTIFY, ATTR_IDENTIFY_TIME) in changed
+        assert [dp for dp, _ in mcu_restarts(device, mcu, 3000) if dp == DP_COUNTDOWN[1]] == \
+            [DP_COUNTDOWN[1]]                                          # and at the next restart
+    finally:
+        proc.stop()
+
+
+def test_a_countdown_that_ended_while_the_mcu_restarted_switches_the_light_off():
+    proc, device, mcu = own()
+    try:
+        cmd(device, mcu, 1, ON_OFF, CMD_ON_WITH_TIMED_OFF, timed_off(0, 50))        # 5 s
+        cmd(device, mcu, 2, ON_OFF, CMD_ON)
+        w = mcu_restarts(device, mcu, 6000)
+        assert [(dp, v) for dp, v in w if dp in (*DP_ON.values(), *DP_COUNTDOWN.values())] == \
+            [(DP_ON[1], 0)]
+        assert attr(device, 1, ON_OFF, ATTR_ONOFF) == 0 == mcu.ch[0]["on"]
+        assert attr(device, 1, ON_OFF, ATTR_COUNTDOWN) == 0
+        assert attr(device, 2, ON_OFF, ATTR_ONOFF) == 1                # no countdown: left alone
+    finally:
+        proc.stop()
+
+
+def test_an_mcu_that_restarts_with_the_light_off_gets_no_countdown():
+    """A restart that leaves the channel off (a power cut with the power-on state off): the
+    countdown ended with the light, nothing is written."""
+    proc, device, mcu = own()
+    try:
+        cmd(device, mcu, 1, ON_OFF, CMD_ON_WITH_TIMED_OFF, timed_off(0, 600))
+        mcu.ch[0]["on"] = 0
+        w = mcu_restarts(device, mcu)
+        assert [dp for dp, _ in w if dp in (DP_ON[1], DP_COUNTDOWN[1])] == []
+        assert attr(device, 1, ON_OFF, ATTR_ONOFF) == 0
+        assert attr(device, 1, ON_OFF, ATTR_COUNTDOWN) == 0
+        cmd(device, mcu, 1, ON_OFF, CMD_ON)                            # a later on: no countdown
+        assert [dp for dp, _ in mcu_restarts(device, mcu) if dp == DP_COUNTDOWN[1]] == []
+        assert attr(device, 1, ON_OFF, ATTR_COUNTDOWN) == 0
     finally:
         proc.stop()
 

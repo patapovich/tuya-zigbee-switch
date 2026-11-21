@@ -991,6 +991,20 @@ static void dimmer_on_od_value(zigbee_dimmer_cluster *cluster, uint8_t dpid, uin
     uint16_t v = (uint16_t)(number > 0xFFFF ? 0xFFFF : number);
 
     if (dpid == dimmer_countdown_dp(cluster)) {
+        uint8_t lost = cluster->countdown_lost;
+
+        cluster->countdown_lost = 0;
+        if (lost && number == 0 && cluster->on && cluster->countdown) {
+            /* The MCU restarted, its light is on again and its countdown gone: what is left
+             * of it again, or off when its time has passed meanwhile. */
+            uint32_t left = dimmer_countdown_left(cluster);
+
+            if (left)
+                dimmer_write_countdown(cluster, left);
+            else
+                dimmer_turn_off(cluster);
+            return;
+        }
         /* 0 also when it ran out; a bogus huge one is the MCU's longest. */
         dimmer_countdown_set(cluster,
                              number > DIMMER_COUNTDOWN_MAX ? DIMMER_COUNTDOWN_MAX : number);
@@ -1872,11 +1886,9 @@ void dimmer_cluster_mcu_restarted(void) {
         if (cluster == NULL)
             continue;
 
-        if (cluster->countdown) {
-            cluster->countdown = 0;
-            hal_zigbee_notify_attribute_changed(cluster->endpoint, ZCL_CLUSTER_ON_OFF,
-                                                ZCL_ATTR_ONOFF_COUNTDOWN);
-        }
+        /* The MCU lost a running countdown: dimmer_on_od_value() writes its rest again. */
+        if (cluster->countdown)
+            cluster->countdown_lost = 1;
 #ifdef SECONDARY_MCU_IMAGE
         hal_tasks_unschedule(&cluster->identify_task);
         if (cluster->identify_time) {
