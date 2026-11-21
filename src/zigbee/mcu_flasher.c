@@ -19,6 +19,7 @@
 #include "zigbee/consts.h"
 #include "zigbee/secondary_mcu_boot.h"
 #include "zigbee/tuya_mcu_app.h"
+#include "zigbee/tuya_mcu_diag.h"
 #include "zigbee/tuya_mcu_ota.h"
 
 /* The ZDMS16-2's PY32F002A as read with an external probe (the identity gate:
@@ -203,6 +204,7 @@ static uint8_t        g_resumed;    /* an install taken up after its option byte
 static uint8_t        g_past_ob;    /* this install started its option bytes (or was taken up) */
 static uint32_t       g_confirm_at;
 static uint32_t       g_step_at;    /* when the current wait step began */
+static uint16_t       g_rx_mark;    /* the MCU's UART frames so far when a job was armed */
 
 /* Confirm attribute (Basic 0xff52, char string): a writing job's own name.
  * The SDK copies a written string without checking its length against the
@@ -284,11 +286,11 @@ static void report(void) {
 static void arm(uint8_t phase, uint8_t boots_left);
 
 static void finish(uint8_t state, uint8_t error, swd_err_t swd_err) {
-    if (g_status.job == MCU_FLASHER_JOB_INSTALL && state == MCU_FLASHER_STATE_FAILED &&
-        g_past_ob) {
+    if (g_status.job == MCU_FLASHER_JOB_INSTALL && g_past_ob && state != MCU_FLASHER_STATE_DONE) {
         /* past the option bytes the factory firmware may be erased: a failure
-         * here keeps the job, it goes on at the next power-up */
-        g_status.error   = error;
+         * here keeps the job, it goes on at the next power-up; an abort only
+         * stops the run (armed, it can be dropped: mcu_flasher_on_write) */
+        g_status.error   = state == MCU_FLASHER_STATE_FAILED ? error : MCU_FLASHER_ERR_KEPT;
         g_status.swd_err = (uint8_t)swd_err;
         arm(PHASE_OB_WRITTEN, RESUME_ALWAYS);
         return;
@@ -328,6 +330,7 @@ static void arm(uint8_t phase, uint8_t boots_left) {
         swd_power_down();   /* best effort: the link may be gone */
     }
     swd_end();
+    g_rx_mark            = tuya_mcu_diag.rx_frames;
     g_status.state       = MCU_FLASHER_STATE_ARMED;
     g_status.page        = boots_left;     /* shown as the power-ups left */
     g_status.duration_ms = sat16(hal_millis() - g_started);
@@ -367,8 +370,17 @@ void mcu_flasher_on_write(uint16_t attribute_id) {
     if (job == MCU_FLASHER_JOB_ABORT) {
         g_abort = g_status.state == MCU_FLASHER_STATE_RUNNING;
         if (g_status.state == MCU_FLASHER_STATE_ARMED) {
-            hal_nvm_delete(NV_ITEM_MCU_FLASHER_JOB);
-            g_status.state = MCU_FLASHER_STATE_ABORTED;
+            /* A job past its option bytes is dropped only when the MCU has
+             * sent a frame on the UART since the job was armed: then it runs
+             * and nothing is lost. What it sent before does not tell (the
+             * factory firmware tells its version before an install erases it);
+             * a cleared or wrapped count reads as silent. */
+            if (g_past_ob && tuya_mcu_diag.rx_frames <= g_rx_mark) {
+                g_status.error = MCU_FLASHER_ERR_KEPT;
+            } else {
+                hal_nvm_delete(NV_ITEM_MCU_FLASHER_JOB);
+                g_status.state = MCU_FLASHER_STATE_ABORTED;
+            }
             report();
         }
         return;

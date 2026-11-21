@@ -763,3 +763,100 @@ def test_held_starts_count_as_one_power_up_per_twenty(stock, monkeypatch):
         with StubProc(device_config=WITH_TOKEN) as proc:
             pages.append(status(Device(proc))["page"])
     assert pages[:19] == [3] * 19 and pages[19] == 2 and pages[20] == 2, pages
+
+
+# ---- review 2026-11-21: an abort, a second power cut and a marker left behind -----------------
+
+ERR_KEPT = 16
+PHASE_ARMED_, PHASE_OB_WRITTEN_ = 1, 2
+STEP_ROM_ = 4
+
+
+def job_item(phase: int, boots: int) -> bytes:
+    return bytes([0xA7, phase, boots, 0x00])
+
+
+def power_up_with_job(monkeypatch, phase: int = PHASE_OB_WRITTEN_, boots: int = RESUME_ALWAYS) -> None:
+    """The next start of the stub is a power-up of both chips with this job in NV."""
+    JOB_ITEM.write_bytes(job_item(phase, boots))
+    monkeypatch.setenv("SWD_TARGET_POWER_CYCLE", "1")
+
+
+# -- abort: past the option bytes it only stops the run; armed, an MCU that answers lets the job go
+
+def test_abort_past_the_option_bytes_keeps_the_job_of_a_silent_mcu(stock, monkeypatch):
+    """The bootloader half written, then abort: the MCU told its version before the install
+    erased it, which does not count. The run stops, the job stays, the next power-up installs."""
+    monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "0")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        install_until(proc, device, STEP_PROGRAM_, 3)
+        start_job(device, JOB_ABORT)
+        st = run_until_settled(proc, device, passes=50)
+        assert (st["state"], st["error"], st["page"]) == (STATE_ARMED, ERR_KEPT, RESUME_ALWAYS), st
+        assert JOB_ITEM.read_bytes() == job_item(PHASE_OB_WRITTEN_, RESUME_ALWAYS)
+        start_job(device, JOB_ABORT)                         # armed now: the same answer
+        st = status(device)
+        assert (st["state"], st["error"]) == (STATE_ARMED, ERR_KEPT), st
+        assert JOB_ITEM.exists()
+    monkeypatch.setenv("SWD_TARGET_POWER_CYCLE", "1")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        proc.exec("step_time 3000")
+        check_installed(proc, run_until_settled(proc, device, passes=4000), reloaded=False)
+
+
+def test_abort_past_the_option_bytes_drops_the_job_of_an_mcu_that_answers(monkeypatch, tmp_path):
+    """The job left in NV, the wires off, the MCU repaired by other means: it answers on the
+    UART, so abort drops the job; until it answers, abort keeps it."""
+    monkeypatch.setenv("SWD_TARGET_STATE", str(tmp_path / "py32.state"))
+    monkeypatch.setenv("SWD_TARGET_CONNECT", "0")
+    power_up_with_job(monkeypatch)
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        assert status(device)["state"] == STATE_ARMED
+        start_job(device, JOB_ABORT)
+        st = status(device)
+        assert (st["state"], st["error"]) == (STATE_ARMED, ERR_KEPT), st
+        assert JOB_ITEM.exists()
+        mcu_tells(proc, 0x86)
+        start_job(device, JOB_ABORT)
+        assert status(device)["state"] == STATE_ABORTED
+        assert not JOB_ITEM.exists()
+
+
+def test_abort_of_a_running_install_past_the_option_bytes_only_stops_it(monkeypatch, tmp_path):
+    """Taken up at a power-up with an MCU that runs: what it sent before the job was armed does
+    not let the job go, a frame after that does."""
+    monkeypatch.setenv("SWD_TARGET_STATE", str(tmp_path / "py32.state"))
+    power_up_with_job(monkeypatch)
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        mcu_tells(proc, 0x86)
+        assert status(device)["state"] == STATE_RUNNING
+        start_job(device, JOB_ABORT)
+        st = run_until_settled(proc, device, passes=50)
+        assert (st["state"], st["error"], st["page"]) == (STATE_ARMED, ERR_KEPT, RESUME_ALWAYS), st
+        assert JOB_ITEM.read_bytes() == job_item(PHASE_OB_WRITTEN_, RESUME_ALWAYS)
+        start_job(device, JOB_ABORT)                         # nothing from the MCU since
+        assert status(device)["state"] == STATE_ARMED and JOB_ITEM.exists()
+        mcu_tells(proc, 0x86)
+        start_job(device, JOB_ABORT)
+        assert status(device)["state"] == STATE_ABORTED
+        assert not JOB_ITEM.exists()
+
+
+def test_abort_before_the_option_bytes_drops_the_job_as_before(stock, monkeypatch):
+    monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "1500")
+    power_up_with_job(monkeypatch, PHASE_ARMED_, 3)
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        proc.exec("s")
+        st = status(device)
+        assert (st["state"], st["step"]) == (STATE_RUNNING, STEP_ROM_), st
+        start_job(device, JOB_ABORT)
+        st = run_until_settled(proc, device, passes=50)
+        assert (st["state"], st["error"]) == (STATE_ABORTED, ERR_NONE), st
+        assert not JOB_ITEM.exists()
+        assert target(proc, "stats")["option_programs"] == "0"
+

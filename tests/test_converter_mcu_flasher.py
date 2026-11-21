@@ -165,6 +165,12 @@ def test_install_and_its_armed_state():
                         "(the install goes on at every power-up); 1.2 s"}]
     wrong = decode(status(state=0, job=5, step=0, error=12))
     assert "not a factory MCU" in wrong[0]["mcu_flasher_status"]
+    # abort past the option bytes with a silent MCU: the job stays armed, and the status says so
+    kept = decode(status(state=5, job=5, step=11, error=16, page=255))
+    assert kept == [{"mcu_flasher_status": "armed install; power-cycle the module now "
+                     "(the install goes on at every power-up); error: not dropped: the MCU may be "
+                     "without firmware, so its install stays armed until the MCU answers (abort again "
+                     "then); 1.2 s"}]
 
 
 FIRMWARE = FLASHER + """

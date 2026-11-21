@@ -58,6 +58,7 @@ enum {
     MCU_FLASHER_ERR_OB_VERIFY,     /* install: the option bytes did not read back as written */
     MCU_FLASHER_ERR_NO_ATTACH,     /* install: no attach in its armed power-ups */
     MCU_FLASHER_ERR_RELOAD,        /* install: after the option reload not RDP 0 / not erased */
+    MCU_FLASHER_ERR_KEPT,          /* install: abort with a silent MCU past the option bytes: still armed */
 };
 
 /* Status attribute (Basic 0xff50, octet string), little-endian. At most 48
