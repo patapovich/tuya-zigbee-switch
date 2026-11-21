@@ -85,13 +85,15 @@ static uint8_t  g_failures;                 /* failed update results since the l
 static uint16_t g_pause_min;                /* not served for this long after failures, 0: served */
 static uint8_t  g_offers;                   /* offers since the last result */
 
-/* An offer waits while the light is lit, OFFER_OFF_WAIT_MS after it went off (someone who just
- * switched it off may switch it on again), OFFER_WAIT_MAX_MS at most. */
-#define OFFER_OFF_WAIT_MS    60000u
+/* An offer waits while the light is lit, OFFER_OFF_WAIT_MS after it went off or was first seen
+ * off (someone who just switched it off may switch it on again; longer than the longest
+ * transition, 65.5 s, as the light counts as off from the start of its fade out),
+ * OFFER_WAIT_MAX_MS at most. */
+#define OFFER_OFF_WAIT_MS    70000u
 #define OFFER_WAIT_MAX_MS    86400000u       /* a day */
 static uint8_t    g_light_lit;               /* lit, or the dimmers' state not known yet */
-static uint8_t    g_light_known;             /* the dimmers have told once */
-static uint32_t   g_light_off_at;            /* when it went off (0: off from the start) */
+static uint32_t   g_light_off_at;            /* when it went off or was first seen off (0: never) */
+static uint8_t    g_mcu_in_boot;             /* it asked for a block since its app last showed */
 static uint8_t    g_offer_waits;             /* 1: an offer waits, 2: a gated_only one */
 static uint32_t   g_offer_wait_since;
 static hal_task_t g_offer_task;
@@ -330,6 +332,7 @@ static void on_ident(const uint8_t *data, uint16_t len) {
     }
     g_ident_waiting = 0;
     g_ident_gave_up = 0;
+    g_mcu_in_boot   = 0;
     hal_tasks_unschedule(&g_ident_timer);
 
     uint8_t  running   = data[5];
@@ -360,6 +363,12 @@ static void on_ident(const uint8_t *data, uint16_t len) {
 static void offer_update(uint8_t gated_only) {
     image_info_t img;
 
+    /* Only to an app that is there to answer: not while it restarts or sits in its bootloader
+     * (a rescue or link window), where an offer is lost and counted. Its next identity answer
+     * offers again; a wait that runs keeps its start. */
+    if (g_mcu_in_boot || !tuya_mcu_app_mcu_is_own()) {
+        return;
+    }
     if (!g_own_offerable || !image_info(&img) || !ring_gate_open(&img) ||
         (gated_only && img.size <= IMAGE_LIMIT_LEGACY) ||
         (g_own_has_build ? img.build <= g_own_build : img.version <= g_own_running)) {
@@ -473,6 +482,7 @@ static void answer_block(uint16_t seq, const uint8_t *data, uint16_t len) {
     if (len < 6) {
         return;
     }
+    g_mcu_in_boot = 1;
     note_request(data, len);
     uint32_t off  = be32(data);
     uint16_t want = (uint16_t)((data[4] << 8) | data[5]);
@@ -561,6 +571,7 @@ static void health_on_dp(uint8_t dpid, uint8_t dp_type, const uint8_t *value,
         value_len != 4 || !tuya_mcu_app_mcu_is_own()) {
         return;
     }
+    g_mcu_in_boot = 0;              /* only its app reports these: it runs */
     uint32_t v = be32(value);
 
     switch (dpid) {
@@ -608,20 +619,19 @@ static void offer_task(void *arg) {
 }
 
 void tuya_mcu_ota_set_light(uint8_t lit) {
-    uint8_t was_known = g_light_known;
-
     if (lit == TUYA_MCU_OTA_LIGHT_UNKNOWN) {
         g_light_lit = 1;
         return;
     }
-    lit           = lit ? 1 : 0;
-    g_light_known = 1;
+    lit = lit ? 1 : 0;
     if (lit == g_light_lit)
         return;
 
-    if (!lit && was_known) {
+    if (!lit) {
+        /* Also when first seen off (after a restart of the module alone, which is when a new
+         * image arrives): it may have been switched off seconds ago. */
         uint32_t now = hal_millis();
-        g_light_off_at = now ? now : 1u;         /* switched off now (0: off from the start) */
+        g_light_off_at = now ? now : 1u;
     }
     g_light_lit = lit;
     if (g_offer_waits)

@@ -58,6 +58,7 @@ RING_MOVER_BUILD = 400              # 2.1.14: the first app whose health report 
 # bootloader takes at most 12 KB), and an MCU to offer it to identifies itself and reports
 # its ring moved first (ready_own() below).
 GATED = SIZE > 12 * 1024
+OFF_WAIT_MS = 70_000                # an offer waits this after the light went off, or was first seen off
 FETCH_MODE = MODE_NO_APP if GATED else None
 
 
@@ -197,9 +198,10 @@ def lights_off(proc) -> None:
 
 
 def contact_as_own(proc, device, running: int, build: int | None = None,
-                   boot: int | None = None, lit: int = 0):
+                   boot: int | None = None, lit: int = 0, off_wait: bool = True):
     """Version answered; once the module asks who it is, our firmware answers.
-    Returns (commands up to the identity query, frames after the answer)."""
+    Returns (commands up to the identity query, frames after the answer). With the light off
+    the frames go on until an offer no longer waits for it (off_wait: OFF_WAIT_MS)."""
     device.step_time(2100)
     pump(proc)
     take_tx(proc)
@@ -215,6 +217,8 @@ def contact_as_own(proc, device, running: int, build: int | None = None,
     frames = []
     for _ in range(8):
         frames += cmds_after(proc, device, 200)
+    if off_wait and not lit:
+        frames += cmds_after(proc, device, OFF_WAIT_MS)
     return cmds, frames
 
 
@@ -239,11 +243,13 @@ def contact_as_updatable_own(proc, device, running: int, lit: int = 0):
     ring mover (2.1.14, build 400), which then reports its ring moved (the ring gate: the
     offer comes with the run's first such report, or at the identity once it came)."""
     if not GATED:
-        return contact_as_own(proc, device, running, lit=lit)
-    assert IMAGE_BUILD > RING_MOVER_BUILD
-    cmds, frames = contact_as_own(proc, device, running, build=RING_MOVER_BUILD, boot=2,
-                                  lit=lit)
-    return cmds, frames + ring_report(proc, device)
+        cmds, frames = contact_as_own(proc, device, running, lit=lit)
+    else:
+        assert IMAGE_BUILD > RING_MOVER_BUILD
+        cmds, frames = contact_as_own(proc, device, running, build=RING_MOVER_BUILD, boot=2,
+                                      lit=lit)
+        frames += ring_report(proc, device)
+    return cmds, frames
 
 
 def ready_own(proc, device) -> None:
@@ -271,9 +277,10 @@ def offers_in(frames) -> list[bytes]:
     return [data for cmd, data in frames if cmd == OTA_NOTIFY]
 
 
-def test_an_offer_waits_while_the_light_is_on_and_a_minute_after_the_off():
+def test_an_offer_waits_while_the_light_is_on_and_70_s_after_the_off():
     """The bootloader keeps the light dark while it writes: an update waits for the light to
-    be off, and a minute more (whoever just switched it off may switch it on again)."""
+    be off, and 70 s more (whoever just switched it off may switch it on again; the longest
+    transition to off, 65.5 s, has ended by then)."""
     proc, device = start()
     try:
         _, frames = contact_as_updatable_own(proc, device, older_version(), lit=1)
@@ -281,10 +288,46 @@ def test_an_offer_waits_while_the_light_is_on_and_a_minute_after_the_off():
         assert offers_in(cmds_after(proc, device, 3_600_000)) == []    # an hour: still lit
         lights(proc, 0)                                               # switched off
         assert offers_in(cmds_after(proc, device, 30_000)) == []
-        lights(proc, 1)                                               # on again within the minute
-        lights(proc, 0)                                               # and off: a new minute
-        assert offers_in(cmds_after(proc, device, 59_000)) == []
+        lights(proc, 1)                                               # on again within the wait
+        lights(proc, 0)                                               # and off: the wait anew
+        assert offers_in(cmds_after(proc, device, OFF_WAIT_MS - 1_000)) == []
         assert offers_in(cmds_after(proc, device, 2_000)) == [offer()]
+    finally:
+        proc.stop()
+
+
+def test_a_light_first_seen_off_waits_too():
+    """After a restart of the module alone (when a new image arrives) the light may have been
+    switched off seconds ago: no offer at once."""
+    proc, device = start()
+    try:
+        cmds, frames = contact_as_own(proc, device, older_version(),
+                                      build=RING_MOVER_BUILD if GATED else None,
+                                      boot=2 if GATED else None, off_wait=False)
+        if GATED:
+            frames += ring_report(proc, device)
+        assert offers_in(frames) == []
+        assert offers_in(cmds_after(proc, device, OFF_WAIT_MS - 5_000)) == []
+        assert offers_in(cmds_after(proc, device, 6_000)) == [offer()]
+    finally:
+        proc.stop()
+
+
+def test_no_offer_to_an_mcu_in_its_bootloader_or_restarting():
+    """An offer that waited for the light goes only to an app that is there to answer: not
+    while the MCU sits in its bootloader (a rescue or link window asks for the header only),
+    and not after a restart until it has said who it is. Such an offer would be lost and
+    counted."""
+    proc, device = start()
+    try:
+        _, frames = contact_as_updatable_own(proc, device, older_version(), lit=1)
+        assert offers_in(frames) == []
+        lights(proc, 0)
+        assert offers_in(cmds_after(proc, device, OFF_WAIT_MS - 10_000)) == []
+        header = tuya_frame(OTA_BLOCK, block_request(0xC0, 16, MODE_LINK))
+        proc.exec(f"uart_rx {header}")                   # its bootloader asks: it has restarted
+        assert offers_in(cmds_after(proc, device, 20_000)) == []       # the wait is over: no offer
+        assert offers_in(cmds_after(proc, device, 600_000)) == []
     finally:
         proc.stop()
 

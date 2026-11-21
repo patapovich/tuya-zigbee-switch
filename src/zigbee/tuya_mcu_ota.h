@@ -137,7 +137,7 @@ void tuya_mcu_ota_mcu_restarted(void);
 
 /** The dimmers' light: lit = 1 while any channel is on or its state is not known yet. An
  *  update makes the light go dark for the few seconds the MCU's bootloader writes, so an offer
- *  waits while it is lit (and a minute after it went off), a day at most. */
+ *  waits while it is lit (and 70 s after it went off or was first seen off), a day at most. */
 void tuya_mcu_ota_set_light(uint8_t lit);
 
 /** For tuya_mcu_ota_set_light: the dimmers exist, their state is not known yet (as lit). A board
