@@ -14,6 +14,28 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
 
 ## Next
 
+- A wall switch hold with Open Dimmer is followed from its hold gesture to its release: a level
+  command that arrives during the hold (a hub's periodic brightness update) no longer holds
+  the hold's level back for 3 s, a Move command stops for the hold, and lights bound to the
+  switch end at the level the hold ended at.
+- Stop stops a transition (a level command with a time) where the light is, and a Move or
+  Step during one starts from there instead of from the transition's end (Open Dimmer 2.1.14
+  or newer; lit-to-lit transitions).
+- A wall switch on, or a MoveWithOnOff up from off, right after a command with a transition
+  time no longer runs in that command's time.
+- An auto-off countdown survives a restart of the dimmer chip (its update, a watchdog reset):
+  the rest of the time is written again, or the light goes off if the time has passed.
+- Open Dimmer updates: the wait after the light went off is 70 s (was a minute; a transition
+  to off can take 65.5 s) and it also runs from the module's start when the light is off then.
+  An update is offered only to a running Open Dimmer, not while the chip sits in its
+  bootloader.
+- Two-wire install: `abort` after the read protection was removed keeps the install armed
+  while the dimmer chip is silent (status error 16; it goes on at the next power-up, and
+  abort drops it once the chip answers), and `install` is refused while such an install waits.
+  An install taken up after a power cut during the option bytes keeps its relaxed checks over
+  three more power-ups. An install taken up later identifies the chip before it writes, and
+  ends at once when the bootloader is already in place.
+
 ## 1.1.3-09a180fa (2026-11-20), carries Open Dimmer 2.2.6
 
 - Open Dimmer updates wait for the light to be off: the MCU's bootloader keeps the light dark
