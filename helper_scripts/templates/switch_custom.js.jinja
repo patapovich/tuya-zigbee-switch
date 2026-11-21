@@ -1275,7 +1275,7 @@ const romasku = {
                         "the option bytes did not read back as written (not loaded; try again)",
                         "no attach in the armed power-ups",
                         "after the option reload not unprotected and erased",
-                        "not dropped: the MCU may be without firmware, so its install stays armed until the MCU answers (abort again then)"];
+                        "kept: the MCU may be without firmware, so its install stays armed (it goes on at the next power-up; abort drops it once the MCU answers)"];
         const exposes = [
             e.enum("mcu_flasher", ea.SET, Object.keys(jobs)).withLabel("MCU flasher")
                 .withDescription("Start a job of the module's SWD link to the dimming MCU: survey_dp reads the debug port's id, survey_full the MCU's identity, option bytes and firmware checksums (both only read); update_bootloader writes the module's bootloader into the MCU if it differs (_force: always); install takes a factory MCU to Open Dimmer (ERASES its firmware and settings; then power-cycle the module when the status says so). Writing jobs need mcu_flasher_confirm first. Needs the SW token in device_config")

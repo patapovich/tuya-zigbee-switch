@@ -854,6 +854,36 @@ def test_abort_of_a_running_install_past_the_option_bytes_only_stops_it(monkeypa
         assert not JOB_ITEM.exists()
 
 
+def test_a_second_install_does_not_drop_one_armed_past_its_option_bytes(stock, monkeypatch):
+    """The bootloader half written, the run stopped, and install sent again instead of a power
+    cycle: refused with nothing driven, the job stays, the next power-up installs."""
+    monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "0")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        install_until(proc, device, STEP_PROGRAM_, 3)
+        target(proc, "connect", 0)                           # a wire comes off
+        st = run_until_settled(proc, device, passes=4000)
+        assert (st["state"], st["page"]) == (STATE_ARMED, RESUME_ALWAYS), st
+        target(proc, "connect", 1)
+        edges = target(proc, "stats")["edges"]
+        confirm(device, "install")
+        start_job(device, JOB_INSTALL)
+        st = run_until_settled(proc, device, passes=50)
+        assert (st["state"], st["error"], st["page"]) == (STATE_ARMED, ERR_KEPT, RESUME_ALWAYS), st
+        assert JOB_ITEM.read_bytes() == job_item(PHASE_OB_WRITTEN_, RESUME_ALWAYS)
+        assert target(proc, "stats")["edges"] == edges
+        start_job(device, 1)                                 # a survey in between changes nothing
+        assert run_until_settled(proc, device)["state"] == STATE_DONE
+        confirm(device, "install")
+        start_job(device, JOB_INSTALL)
+        assert status(device)["error"] == ERR_KEPT and JOB_ITEM.exists()
+    monkeypatch.setenv("SWD_TARGET_POWER_CYCLE", "1")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        proc.exec("step_time 3000")
+        check_installed(proc, run_until_settled(proc, device, passes=4000), reloaded=False)
+
+
 def test_abort_before_the_option_bytes_drops_the_job_as_before(stock, monkeypatch):
     monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "1500")
     power_up_with_job(monkeypatch, PHASE_ARMED_, 3)

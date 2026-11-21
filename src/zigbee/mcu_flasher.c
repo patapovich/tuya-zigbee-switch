@@ -412,10 +412,19 @@ void mcu_flasher_on_write(uint16_t attribute_id) {
 
     /* install: only an MCU that told a factory version (1.x) on the UART in
      * this run; a silent one is refused too */
-    if (job == MCU_FLASHER_JOB_INSTALL && !tuya_mcu_app_mcu_is_stock()) {
-        g_status.error = MCU_FLASHER_ERR_WRONG_CLASS;
-        report();
-        return;
+    if (job == MCU_FLASHER_JOB_INSTALL) {
+        armed_t a;
+
+        /* nor while an install past its option bytes waits in NV for the next
+         * power-up: a new one would fail on what it finds and drop that record */
+        uint8_t kept = hal_nvm_read(NV_ITEM_MCU_FLASHER_JOB, sizeof(a), (uint8_t *)&a) ==
+                       HAL_NVM_SUCCESS && a.magic == ARMED_MAGIC && a.phase != PHASE_ARMED;
+
+        if (kept || !tuya_mcu_app_mcu_is_stock()) {
+            g_status.error = kept ? MCU_FLASHER_ERR_KEPT : MCU_FLASHER_ERR_WRONG_CLASS;
+            report();
+            return;
+        }
     }
     uint8_t len = g_status.len, format = g_status.format;
 
