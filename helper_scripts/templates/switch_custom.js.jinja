@@ -1187,7 +1187,7 @@ const romasku = {
     dimmerLampCompensation: (endpointName) => {
         const expose = e.numeric("lamp_compensation", ea.ALL).withEndpoint(endpointName)
             .withValueMin(0).withValueMax(63).withValueStep(1)
-            .withDescription("For LED lamps that are brighter dimmed down than switched on at the same level: this many levels less at the minimum after the light came down (less higher up, none from a quarter of the range). Set it so a dim-down to the minimum looks like the minimum switched on from dark (0 = off; Open Dimmer 2.2.8)")
+            .withDescription("For LED lamps that are brighter dimmed down than switched on at the same level: this many levels less at the minimum after the light came down (less higher up, none from 40 % of the range). Set it so a dim-down to the minimum looks like the minimum switched on from dark (0 = off; Open Dimmer 2.2.8)")
             .withCategory("config");
         return romasku.dimmerOwnAttr({
             expose, endpointName, cluster: "lightingBallastCfg", attr: {ID: 0xff11}, type: Zcl.DataType.UINT8,
