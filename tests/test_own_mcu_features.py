@@ -551,35 +551,43 @@ def test_an_open_dimmer_without_the_lamp_compensation_gets_no_write(build):
         proc.stop()
 
 
-# ---- a long press from off (2.2.8) --------------------------------------------
+# ---- the wall switch options (2.2.8) -------------------------------------------
 ATTR_DARK_HOLD = 0xFF15
-DP_DARK_HOLD = {1: 180, 2: 181}
+ATTR_DOUBLE_FULL = 0xFF16
+DP_SWITCH_OPTS = 180
 
 
-def test_the_long_press_from_off_is_read_from_the_dump_and_written():
-    """Open Dimmer 2.2.8: DP 180 / 181 (1 rises from the min, the default; 0 on at its level),
-    genOnOffSwitchCfg 0xff15 per channel endpoint."""
+def test_the_switch_options_are_read_from_the_dump_and_written_by_their_bit():
+    """Open Dimmer 2.2.8: DP 180, both channels' options, bits set = off (0 / 1 the long press
+    from off's rise, 2 / 3 the double tap to full), written as mask << 8 | bits; per channel
+    genOnOffSwitchCfg 0xff15 (rise) and 0xff16 (double tap), 1 = on."""
     proc, device, mcu = own(build=LAMP_COMP_BUILD, prepare=lambda m: m.ch[1].update(dark_hold=0))
     try:
         assert [attr(device, ep, SWITCH_CFG, ATTR_DARK_HOLD) for ep in (1, 2)] == [1, 0]
-        assert write(device, mcu, 1, SWITCH_CFG, ATTR_DARK_HOLD, 0) == [(DP_DARK_HOLD[1], 0)]
-        assert mcu.ch[0]["dark_hold"] == 0
+        assert [attr(device, ep, SWITCH_CFG, ATTR_DOUBLE_FULL) for ep in (1, 2)] == [1, 1]
+        assert write(device, mcu, 1, SWITCH_CFG, ATTR_DARK_HOLD, 0) == [(DP_SWITCH_OPTS, 0x0101)]
+        assert mcu.ch[0]["dark_hold"] == 0 and mcu.ch[1]["dark_hold"] == 0
         assert attr(device, 1, SWITCH_CFG, ATTR_DARK_HOLD) == 0
-        assert write(device, mcu, 2, SWITCH_CFG, ATTR_DARK_HOLD, 1) == [(DP_DARK_HOLD[2], 1)]
+        assert write(device, mcu, 2, SWITCH_CFG, ATTR_DOUBLE_FULL, 0) == [(DP_SWITCH_OPTS, 0x0808)]
+        assert mcu.ch[1]["double_full"] == 0 and mcu.ch[0]["double_full"] == 1
+        assert attr(device, 2, SWITCH_CFG, ATTR_DOUBLE_FULL) == 0
+        assert attr(device, 1, SWITCH_CFG, ATTR_DOUBLE_FULL) == 1        # its own bit only
+        assert write(device, mcu, 2, SWITCH_CFG, ATTR_DARK_HOLD, 1) == [(DP_SWITCH_OPTS, 0x0200)]
         assert attr(device, 2, SWITCH_CFG, ATTR_DARK_HOLD) == 1
     finally:
         proc.stop()
 
 
 @pytest.mark.parametrize("build", [FEATURES_BUILD, LAMP_COMP_BUILD - 1])
-def test_an_open_dimmer_without_the_long_press_setting_gets_no_write(build):
-    """Its dump has no DP 180 / 181: the attribute stays "none" (0xFF) and a write of it sends
-    nothing and sets it back."""
+def test_an_open_dimmer_without_the_switch_options_gets_no_write(build):
+    """Its dump has no DP 180: the attributes stay "none" (0xFF) and a write of one sends nothing
+    and sets it back."""
     proc, device, mcu = own(build=build)
     try:
-        assert attr(device, 1, SWITCH_CFG, ATTR_DARK_HOLD) == 0xFF
-        assert write(device, mcu, 1, SWITCH_CFG, ATTR_DARK_HOLD, 0) == []
-        assert attr(device, 1, SWITCH_CFG, ATTR_DARK_HOLD) == 0xFF
+        for a in (ATTR_DARK_HOLD, ATTR_DOUBLE_FULL):
+            assert attr(device, 1, SWITCH_CFG, a) == 0xFF
+            assert write(device, mcu, 1, SWITCH_CFG, a, 0) == []
+            assert attr(device, 1, SWITCH_CFG, a) == 0xFF
     finally:
         proc.stop()
 

@@ -38,9 +38,9 @@ typedef struct {
     hal_zigbee_attribute multistate_attr_infos[4];  // wall switch gestures (own MCU)
     hal_zigbee_attribute ballast_attr_infos[5];     // min/max level, [start boost, lamp compensation, custom curve] (lightingBallastCfg)
 #ifdef DIMMER_BINDINGS
-    hal_zigbee_attribute switch_type_attr_infos[7]; // ..., bind mode, double / triple press action
+    hal_zigbee_attribute switch_type_attr_infos[8]; // ..., bind mode, double / triple press action
 #else
-    hal_zigbee_attribute switch_type_attr_infos[4]; // switch type, [wall switch mode, fast press, long press from off] (genOnOffSwitchCfg)
+    hal_zigbee_attribute switch_type_attr_infos[5]; // switch type, [wall switch mode, fast press, long press from off, double tap] (genOnOffSwitchCfg)
 #endif
     hal_zigbee_attribute identify_attr_infos[1];    // [IdentifyTime] (genIdentify)
 
@@ -89,11 +89,14 @@ typedef struct {
     uint8_t              fast_press;     /* DP 170 / 171: detached momentary press at once (6) */
     uint8_t              fast_press_mcu;
 
-    /* Open Dimmer 2.2.8's DP 180 / 181: 1 a long press from off rises from the min, 0 the light
-     * comes on at its level; dark_hold_mcu as the MCU last said (0xFF: not said: an older MCU,
-     * or since its restart), and only then written */
+    /* Open Dimmer 2.2.8's DP 180 (both channels' switch options, bits set = off): dark_hold 1 a
+     * long press from off rises from the min, 0 the light comes on at its level; double_full 1
+     * a double tap takes it to full. _mcu as the MCU last said (0xFF: not said: an older MCU, or
+     * since its restart), and only then written */
     uint8_t              dark_hold;
     uint8_t              dark_hold_mcu;
+    uint8_t              double_full;
+    uint8_t              double_full_mcu;
     uint8_t              startup_level;
     hal_task_t           identify_task;
     uint8_t              current_level;

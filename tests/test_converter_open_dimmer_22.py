@@ -37,7 +37,8 @@ OWN_2_1 = ["dimming_curve_l1", "power_on_behavior_l1", "fade_on_time_l1",
 STOCK = ["power_on_behavior", "mcu_firmware"]
 FADE = ["brightness_fade_time_l1", "brightness_fade_time_l2"]   # from 2.1.14
 LAMP = ["lamp_compensation_l1", "lamp_compensation_l2",         # from 2.2.8
-        "custom_curve_l1", "custom_curve_l2", "long_press_from_off_l1", "long_press_from_off_l2"]
+        "custom_curve_l1", "custom_curve_l2", "long_press_from_off_l1", "long_press_from_off_l2",
+        "double_tap_full_l1", "double_tap_full_l2"]
 
 
 def test_the_new_exposes_follow_the_open_dimmer_version():
@@ -260,7 +261,7 @@ def test_configure_binds_basic_for_open_dimmer_and_reads_the_new_settings_of_2_2
     assert own["ownReads"] == [f"ff{a:02x}" for a in range(0x30, 0x3C)] + ["ff48"]
     assert "1:genBasic" in own["binds"]
     new_reads = [f"{ep}:{cluster}" for ep in (1, 2) for cluster in
-                 ("genOnOff:65296", "genOnOffSwitchCfg:65296+65297+65301",
+                 ("genOnOff:65296", "genOnOffSwitchCfg:65296+65297+65301+65302",
                   "genLevelCtrl:startUpCurrentLevel+options+65297", "lightingBallastCfg:65296+65297+65298",
                   "genOnOffSwitchCfg:65298+65299+65300")]       # the binding settings
     assert [r for r in own["dimmerReads"] if r in new_reads] == new_reads

@@ -423,26 +423,29 @@ static void dimmer_send_level_transition(zigbee_dimmer_cluster *cluster, const u
  * 162 + 2 * k + channel: k 0 wall switch mode, 1 level after a power cut, 2 identify, 3 start
  * boost, 4 fast press; all values. Written only to such an MCU: to any other one a write of their
  * attributes sends nothing and sets them back to "none". */
-#define DIMMER_OD_INPUT             0
-#define DIMMER_OD_POWER_LEVEL       1
-#define DIMMER_OD_IDENTIFY          2
-#define DIMMER_OD_BOOST             3
-#define DIMMER_OD_FAST_PRESS        4
-#define DIMMER_OD_LAMP_COMP         5   /* 2.2.8: known from its dump (lamp_comp_mcu) */
-#define DIMMER_LAMP_COMP_MAX        63  /* levels (the MCU: up to 252 of 1000, steps of 4) */
-#define DIMMER_LAMP_COMP_NONE       0xFF
-#define DIMMER_CUSTOM_POINTS        17
-#define DIMMER_CUSTOM_LEN           (2 * DIMMER_CUSTOM_POINTS)
-#define DIMMER_CUSTOM_DP_BASE       174 /* + 3 * channel + part (6 big-endian u16 each) */
-#define DIMMER_DARK_HOLD_DP_BASE    180 /* + channel: a long press from off (2.2.8) */
-#define DIMMER_DARK_HOLD_NONE       0xFF
+#define DIMMER_OD_INPUT          0
+#define DIMMER_OD_POWER_LEVEL    1
+#define DIMMER_OD_IDENTIFY       2
+#define DIMMER_OD_BOOST          3
+#define DIMMER_OD_FAST_PRESS     4
+#define DIMMER_OD_LAMP_COMP      5      /* 2.2.8: known from its dump (lamp_comp_mcu) */
+#define DIMMER_LAMP_COMP_MAX     63     /* levels (the MCU: up to 252 of 1000, steps of 4) */
+#define DIMMER_LAMP_COMP_NONE    0xFF
+#define DIMMER_CUSTOM_POINTS     17
+#define DIMMER_CUSTOM_LEN        (2 * DIMMER_CUSTOM_POINTS)
+#define DIMMER_CUSTOM_DP_BASE    174    /* + 3 * channel + part (6 big-endian u16 each) */
+
+/* Both channels' switch options (2.2.8), bits set = off: 0 / 1 the long press from off's rise,
+ * 2 / 3 the double tap to full; written as mask << 8 | bits. */
+#define DIMMER_SWITCH_OPTS_DP    180
+#define DIMMER_DARK_HOLD_NONE    0xFF
 typedef char dimmer_custom_curve_takes_any_octet_string[
         (sizeof(((zigbee_dimmer_cluster *) 0)->custom_curve) == 256) ? 1 : -1];
-#define DIMMER_COUNTDOWN_MAX        86400u /* s */
-#define DIMMER_INPUT_MODE_MAX       2      /* 0 normal, 1 detached, 2 off */
-#define DIMMER_INPUT_NORMAL         0
-#define DIMMER_IDENTIFY_MAX         255    /* s */
-#define DIMMER_BOOST_MAX            750    /* ms */
+#define DIMMER_COUNTDOWN_MAX     86400u    /* s */
+#define DIMMER_INPUT_MODE_MAX    2         /* 0 normal, 1 detached, 2 off */
+#define DIMMER_INPUT_NORMAL      0
+#define DIMMER_IDENTIFY_MAX      255       /* s */
+#define DIMMER_BOOST_MAX         750       /* ms */
 
 #ifdef SECONDARY_MCU_IMAGE
 static uint8_t dimmer_od_dp(const zigbee_dimmer_cluster *cluster, uint8_t k) {
@@ -1062,13 +1065,18 @@ static void dimmer_on_custom_part(zigbee_dimmer_cluster *cluster, uint8_t dpid,
 static void dimmer_on_od_value(zigbee_dimmer_cluster *cluster, uint8_t dpid, uint32_t number) {
     uint16_t v = (uint16_t)(number > 0xFFFF ? 0xFFFF : number);
 
-    if (dpid == DIMMER_DARK_HOLD_DP_BASE + cluster->dimmer_idx) {
-        if (number <= 1) {
-            cluster->dark_hold     = (uint8_t)number;
-            cluster->dark_hold_mcu = (uint8_t)number;
+    if (dpid == DIMMER_SWITCH_OPTS_DP) {
+        if (number <= 0x0F) {
+            cluster->dark_hold       = (uint8_t) !(number >> cluster->dimmer_idx & 1u);
+            cluster->dark_hold_mcu   = cluster->dark_hold;
+            cluster->double_full     = (uint8_t) !(number >> (2 + cluster->dimmer_idx) & 1u);
+            cluster->double_full_mcu = cluster->double_full;
             hal_zigbee_notify_attribute_changed(cluster->endpoint,
                                                 ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG,
                                                 ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_DARK_HOLD);
+            hal_zigbee_notify_attribute_changed(cluster->endpoint,
+                                                ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG,
+                                                ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_DOUBLE_FULL);
         }
         return;
     }
@@ -1740,6 +1748,8 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
     cluster->fast_press_mcu  = 0;
     cluster->dark_hold       = DIMMER_DARK_HOLD_NONE;
     cluster->dark_hold_mcu   = DIMMER_DARK_HOLD_NONE;
+    cluster->double_full     = DIMMER_DARK_HOLD_NONE;
+    cluster->double_full_mcu = DIMMER_DARK_HOLD_NONE;
 #ifdef SECONDARY_MCU_IMAGE
     cluster->identify_task.handler = dimmer_identify_tick;
     cluster->identify_task.arg     = cluster;
@@ -1799,6 +1809,9 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
     SETUP_ATTR_FOR_TABLE(cluster->switch_type_attr_infos, 3,
                          ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_DARK_HOLD,
                          ZCL_DATA_TYPE_BOOLEAN, ATTR_WRITABLE, cluster->dark_hold);
+    SETUP_ATTR_FOR_TABLE(cluster->switch_type_attr_infos, 4,
+                         ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_DOUBLE_FULL,
+                         ZCL_DATA_TYPE_BOOLEAN, ATTR_WRITABLE, cluster->double_full);
     SETUP_ATTR_FOR_TABLE(cluster->identify_attr_infos, 0, ZCL_ATTR_IDENTIFY_TIME,
                          ZCL_DATA_TYPE_UINT16, ATTR_WRITABLE, cluster->identify_time);
 #endif
@@ -1810,13 +1823,13 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
     dimmer_add_cluster(endpoint, ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG, 2 + 3 * DIMMER_OD_ATTRS,
                        cluster->ballast_attr_infos, NULL);
 #ifdef DIMMER_BINDINGS
-    dimmer_bind_setup(cluster, 1 + 3 * DIMMER_OD_ATTRS);
+    dimmer_bind_setup(cluster, 1 + 4 * DIMMER_OD_ATTRS);
 #define DIMMER_BIND_ATTRS    3
 #else
 #define DIMMER_BIND_ATTRS    0
 #endif
     dimmer_add_cluster(endpoint, ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG,
-                       1 + 3 * DIMMER_OD_ATTRS + DIMMER_BIND_ATTRS,
+                       1 + 4 * DIMMER_OD_ATTRS + DIMMER_BIND_ATTRS,
                        cluster->switch_type_attr_infos, NULL);
 
 #ifdef SECONDARY_MCU_IMAGE
@@ -1990,15 +2003,19 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
             }
             dimmer_write_tuya_value(dimmer_od_dp(cluster, DIMMER_OD_FAST_PRESS),
                                     cluster->fast_press ? 1 : 0);
-        } else if (attribute_id == ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_DARK_HOLD) {
-            /* only to an MCU that has said it (its dump): an older one would not take it */
-            if (!dimmer_od_features(cluster) || cluster->dark_hold_mcu == DIMMER_DARK_HOLD_NONE ||
-                cluster->dark_hold > 1) {
-                cluster->dark_hold = cluster->dark_hold_mcu;
+        } else if (attribute_id == ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_DARK_HOLD ||
+                   attribute_id == ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_DOUBLE_FULL) {
+            /* only to an MCU that has said it (its dump): an older one would not take it. Its
+             * bit of DP 180 alone (the mask), set for "off". */
+            uint8_t  dbl = attribute_id == ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_DOUBLE_FULL;
+            uint8_t *val = dbl ? &cluster->double_full : &cluster->dark_hold;
+            uint8_t  mcu = dbl ? cluster->double_full_mcu : cluster->dark_hold_mcu;
+            uint8_t  bit = (uint8_t)(1u << (cluster->dimmer_idx + (dbl ? 2u : 0u)));
+            if (!dimmer_od_features(cluster) || mcu == DIMMER_DARK_HOLD_NONE || *val > 1) {
+                *val = mcu;
                 break;
             }
-            dimmer_write_tuya_value(DIMMER_DARK_HOLD_DP_BASE + cluster->dimmer_idx,
-                                    cluster->dark_hold);
+            dimmer_write_tuya_value(DIMMER_SWITCH_OPTS_DP, (uint32_t)bit << 8 | (*val ? 0u : bit));
         }
 #endif
 #ifdef DIMMER_BINDINGS
@@ -2040,7 +2057,11 @@ void dimmer_cluster_mcu_restarted(void) {
                                                 ZCL_ATTR_BALLAST_CUSTOM_CURVE);
         }
         if (cluster->dark_hold != DIMMER_DARK_HOLD_NONE) {
-            cluster->dark_hold = cluster->dark_hold_mcu = DIMMER_DARK_HOLD_NONE;
+            cluster->dark_hold   = cluster->dark_hold_mcu = DIMMER_DARK_HOLD_NONE;
+            cluster->double_full = cluster->double_full_mcu = DIMMER_DARK_HOLD_NONE;
+            hal_zigbee_notify_attribute_changed(cluster->endpoint,
+                                                ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG,
+                                                ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_DOUBLE_FULL);
             hal_zigbee_notify_attribute_changed(cluster->endpoint,
                                                 ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG,
                                                 ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_DARK_HOLD);

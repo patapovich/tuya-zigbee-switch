@@ -66,7 +66,8 @@ TRANSITION_BUILD = 400
 FEATURES_BUILD = 500
 LAMP_COMP_BUILD = 1300    # 2.2.8: the lamp compensation, DP 172 / 173 (in its dump)
 DP_CUSTOM_BASE = 174      # 2.2.8: custom curve, + 3 * channel + part, raw 6 little-endian u16 (saved, in the dump)
-DP_DARK_HOLD_BASE = 180   # 2.2.8: + channel, a long press from off rises from the min (1, default) or not (0)
+DP_SWITCH_OPTS = 180      # 2.2.8: both channels' switch options, bits set = off: 0 / 1 the long press
+                          # from off's rise, 2 / 3 the double tap; written as mask << 8 | bits
 COUNTDOWN_MAX = 86400
 UART_C = Path(__file__).resolve().parent.parent / "src/telink/hal/uart.c"
 
@@ -89,7 +90,7 @@ def channel(power_on: int) -> dict:
             "countdown": 0, "curve": 2, "power_on": power_on, "fade_on": 950,
             "fade_off": 950, "soft_end": 12, "hold": 3300, "hold_end": 20, "transition": 0,
             "input": 0, "power_level": 0, "identify": 0, "boost": 0, "fast_press": 0,
-            "lamp_comp": 0, "dark_hold": 1}
+            "lamp_comp": 0, "dark_hold": 1, "double_full": 1}
 
 
 class OwnMcu:
@@ -129,8 +130,8 @@ class OwnMcu:
         return t[0] == 0 and t[16] == 10000 and all(b >= a for a, b in zip(t, t[1:]))
 
     def _dp(self, dpid: int) -> bytes:
-        if DP_DARK_HOLD_BASE <= dpid < DP_DARK_HOLD_BASE + 2:
-            v = self.ch[dpid - DP_DARK_HOLD_BASE]["dark_hold"]
+        if dpid == DP_SWITCH_OPTS:
+            v = sum((1 - c["dark_hold"]) << i | (1 - c["double_full"]) << (2 + i) for i, c in enumerate(self.ch))
             return dp_payload(dpid, TUYA_TYPE_VALUE, v.to_bytes(4, "big"))
         if DP_CUSTOM_BASE <= dpid < DP_CUSTOM_BASE + 6:          # the part as kept
             ch, part = divmod(dpid - DP_CUSTOM_BASE, 3)
@@ -164,7 +165,8 @@ class OwnMcu:
 
     def dump(self) -> list[str]:
         """dimmer_report_all(): the 5 frames of a full dump."""
-        frames = [self._report([self._dp(DP_POWER_ON)])]
+        frames = [self._report([self._dp(DP_POWER_ON)] +
+                               ([self._dp(DP_SWITCH_OPTS)] if self.has(LAMP_COMP_BUILD) else []))]
         for ch in range(2):
             base = ch * 6 + 1
             fast = [self._dp(DP_EXTRA_BASE + 8 + ch)] if self.has(FEATURES_BUILD) else []
@@ -177,8 +179,7 @@ class OwnMcu:
             if self.has(LAMP_COMP_BUILD):        # the frame was full: in frames of their own
                 frames.append(self._report([self._dp(DP_EXTRA_BASE + 10 + ch)] +
                                            [self._dp(DP_CUSTOM_BASE + 3 * ch + k) for k in range(2)]))
-                frames.append(self._report([self._dp(DP_CUSTOM_BASE + 3 * ch + 2),
-                                            self._dp(DP_DARK_HOLD_BASE + ch)]))
+                frames.append(self._report([self._dp(DP_CUSTOM_BASE + 3 * ch + 2)]))
         return frames
 
     def health(self, uptime_min: int = 61, reset: int = 0x08, zc_losses: int = 0,
@@ -213,10 +214,15 @@ class OwnMcu:
                 if 6 * part + i < 17:
                     self.custom[ch][6 * part + i] = int.from_bytes(data[4 + 2 * i:6 + 2 * i], "little")
             return True
-        if DP_DARK_HOLD_BASE <= dpid < DP_DARK_HOLD_BASE + 2:
-            if not self.has(LAMP_COMP_BUILD) or vlen != 4 or value > 1:
+        if dpid == DP_SWITCH_OPTS:
+            if not self.has(LAMP_COMP_BUILD) or vlen != 4 or value > 0x0F0F:
                 return False
-            self.ch[dpid - DP_DARK_HOLD_BASE]["dark_hold"] = value
+            mask, bits = value >> 8, value & 0xFF
+            for i, c in enumerate(self.ch):
+                if mask >> i & 1:
+                    c["dark_hold"] = 1 - (bits >> i & 1)
+                if mask >> (2 + i) & 1:
+                    c["double_full"] = 1 - (bits >> (2 + i) & 1)
             return True
         if DP_POWER_ON_BASE <= dpid < DP_POWER_ON_BASE + 2:
             self.ch[dpid - DP_POWER_ON_BASE]["power_on"] = value

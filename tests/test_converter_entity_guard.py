@@ -44,6 +44,7 @@ ZDMS16_2_EXTENDS = [
             f"romasku.dimmerSwitchMode({dimmer})",
             f"romasku.dimmerFastPress({dimmer})",
             f"romasku.dimmerLongPressFromOff({dimmer})",
+            f"romasku.dimmerDoubleTapFull({dimmer})",
             f"romasku.dimmerStartupLevel({dimmer})",
             f"romasku.dimmerStartBoost({dimmer})",
             f"romasku.dimmerLampCompensation({dimmer})",   # 2.2.8: a new entity, none lost
