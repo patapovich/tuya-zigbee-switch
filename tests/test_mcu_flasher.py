@@ -720,15 +720,23 @@ ERR_WRONG_TARGET_ = 3
 
 def test_a_taken_up_install_that_finds_the_factory_firmware_is_a_limited_one(stock, monkeypatch):
     """PHASE_OB_WRITTEN in NV but the MCU at level 1 with its factory firmware (the option bytes
-    never started): not taken up at every power-up, an armed install as any; a lasting refusal
-    (here the ROM CRC) ends it, and the next power-up leaves the MCU alone."""
+    never started): not taken up at every power-up, a limited install; a lasting refusal (here
+    the ROM CRC) keeps it for its three more power-ups, then it ends, and the next power-up
+    leaves the MCU alone."""
     monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "1500")
     with StubProc(device_config=WITH_TOKEN) as proc:
         target(proc, "poke32", "0x1FFF0100", "0x12345678")   # the ROM CRC will not match
         target(proc, "save")
     JOB_ITEM.write_bytes(bytes([0xA7, 0x02, 0xFF, 0x00]))   # taken up, at every power-up
     monkeypatch.setenv("SWD_TARGET_POWER_CYCLE", "1")
-    with StubProc(device_config=WITH_TOKEN) as proc:
+    for left in (3, 2, 1):
+        with StubProc(device_config=WITH_TOKEN) as proc:
+            device = Device(proc)
+            proc.exec("step_time 3000")
+            st = run_until_settled(proc, device, passes=400)
+            assert (st["state"], st["error"], st["page"]) == (STATE_ARMED, ERR_WRONG_TARGET_, left), st
+            assert JOB_ITEM.read_bytes() == bytes([0xA7, 0x03, left, 0x00])
+    with StubProc(device_config=WITH_TOKEN) as proc:        # its last power-up
         device = Device(proc)
         proc.exec("step_time 3000")
         st = run_until_settled(proc, device, passes=400)
@@ -768,7 +776,7 @@ def test_held_starts_count_as_one_power_up_per_twenty(stock, monkeypatch):
 # ---- review 2026-11-21: an abort, a second power cut and a marker left behind -----------------
 
 ERR_KEPT = 16
-PHASE_ARMED_, PHASE_OB_WRITTEN_ = 1, 2
+PHASE_ARMED_, PHASE_OB_WRITTEN_, PHASE_RETAKEN_ = 1, 2, 3
 STEP_ROM_ = 4
 
 
@@ -860,3 +868,77 @@ def test_abort_before_the_option_bytes_drops_the_job_as_before(stock, monkeypatc
         assert not JOB_ITEM.exists()
         assert target(proc, "stats")["option_programs"] == "0"
 
+
+# -- an install taken up at level 1: its relaxed gate and its count live in NV
+
+def corrupt_option_bytes(proc: StubProc) -> None:
+    """What a power cut inside the option programming may leave: the model then loads level 1
+    and a user byte that is neither the factory's nor Open Dimmer's."""
+    for addr in (0x1FFF0E80, 0x1FFF0E84, 0x1FFF0E8C):
+        target(proc, "poke32", f"0x{addr:08X}", "0x12345678")
+    target(proc, "save")
+
+
+def test_an_install_taken_up_at_level_1_survives_another_power_cut(stock, monkeypatch):
+    """Option bytes a cut left corrupt, the install taken up, and the mains off again before
+    it wrote them: the next power-up still takes them as they are and installs."""
+    monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "1500")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        corrupt_option_bytes(proc)
+    power_up_with_job(monkeypatch)
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        for _ in range(3):
+            proc.exec("s")
+        assert status(device)["state"] == STATE_RUNNING
+        assert JOB_ITEM.read_bytes() == job_item(PHASE_RETAKEN_, 3)   # limited from here on
+    with StubProc(device_config=WITH_TOKEN) as proc:          # the second cut was here
+        device = Device(proc)
+        for _ in range(3):
+            proc.exec("s")
+        assert JOB_ITEM.read_bytes() == job_item(PHASE_RETAKEN_, 2)   # this power-up counted
+        proc.exec("step_time 3000")
+        check_installed(proc, run_until_settled(proc, device, passes=4000))
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        assert status(Device(proc))["state"] == STATE_IDLE
+
+
+def test_a_failure_of_an_install_taken_up_at_level_1_keeps_it_for_its_power_ups(stock, monkeypatch):
+    """The link lost while it reads the ROM: armed again with the power-ups it has left, not
+    dropped; with the link away for good it counts down and ends."""
+    monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "1500")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        corrupt_option_bytes(proc)
+    power_up_with_job(monkeypatch)
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        for _ in range(3):
+            proc.exec("s")
+        target(proc, "connect", 0)                           # a wire comes off
+        st = run_until_settled(proc, device, passes=400)
+        assert (st["state"], st["error"], st["page"]) == (STATE_ARMED, ERR_NO_TARGET, 3), st
+        assert JOB_ITEM.read_bytes() == job_item(PHASE_RETAKEN_, 3)
+    seen = []
+    for _ in range(5):
+        with StubProc(device_config=WITH_TOKEN) as proc:
+            st = status(Device(proc))
+            seen.append((st["state"], st["page"]))
+            assert target(proc, "stats")["option_programs"] == "0"
+    assert seen == [(STATE_ARMED, 2), (STATE_ARMED, 1), (STATE_ARMED, 0),
+                    (STATE_FAILED, 0), (STATE_IDLE, 0)], seen
+
+
+def test_abort_of_an_install_taken_up_at_level_1_keeps_it_while_the_mcu_is_silent(stock, monkeypatch):
+    monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "1500")
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        corrupt_option_bytes(proc)
+    power_up_with_job(monkeypatch)
+    with StubProc(device_config=WITH_TOKEN) as proc:
+        device = Device(proc)
+        for _ in range(3):
+            proc.exec("s")
+        start_job(device, JOB_ABORT)
+        st = run_until_settled(proc, device, passes=50)
+        assert (st["state"], st["error"], st["page"]) == (STATE_ARMED, ERR_KEPT, 3), st
+        assert JOB_ITEM.read_bytes() == job_item(PHASE_RETAKEN_, 3)
+        assert target(proc, "stats")["option_programs"] == "0"

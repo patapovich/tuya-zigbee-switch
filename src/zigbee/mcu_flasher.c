@@ -163,10 +163,13 @@ enum {
 
 /* An install armed in NV (NV_ITEM_MCU_FLASHER_JOB): attach at the next
  * power-ups, before (PHASE_ARMED) or after (PHASE_OB_WRITTEN) the option
- * bytes were written. */
+ * bytes were written. PHASE_RETAKEN: taken up after them but found at level 1
+ * (mcu_flasher_early): counted as PHASE_ARMED, every power-up though, and with
+ * the gates relaxed for what a cut may have left. */
 #define ARMED_MAGIC         0xA7u
 #define PHASE_ARMED         1u
 #define PHASE_OB_WRITTEN    2u
+#define PHASE_RETAKEN       3u
 #define ARMED_BOOTS         3u
 
 /* PHASE_OB_WRITTEN: the factory firmware may be gone (the protection change
@@ -201,7 +204,7 @@ static uint8_t        g_was_joined; /* ARMED: on the network at the last pass */
 static uint8_t        g_page;       /* STEP_PROGRAM: next page, 1..31 then 0 */
 static uint8_t        g_rewrites;   /* STEP_OB_CHECK / STEP_VERIFY: written again */
 static uint8_t        g_resumed;    /* an install taken up after its option bytes */
-static uint8_t        g_past_ob;    /* this install started its option bytes (or was taken up) */
+static uint8_t        g_keep;       /* this install stays armed when it stops: see finish() */
 static uint32_t       g_confirm_at;
 static uint32_t       g_step_at;    /* when the current wait step began */
 static uint16_t       g_rx_mark;    /* the MCU's UART frames so far when a job was armed */
@@ -286,13 +289,16 @@ static void report(void) {
 static void arm(uint8_t phase, uint8_t boots_left);
 
 static void finish(uint8_t state, uint8_t error, swd_err_t swd_err) {
-    if (g_status.job == MCU_FLASHER_JOB_INSTALL && g_past_ob && state != MCU_FLASHER_STATE_DONE) {
-        /* past the option bytes the factory firmware may be erased: a failure
-         * here keeps the job, it goes on at the next power-up; an abort only
-         * stops the run (armed, it can be dropped: mcu_flasher_on_write) */
+    if (g_status.job == MCU_FLASHER_JOB_INSTALL && g_keep && state != MCU_FLASHER_STATE_DONE) {
+        /* g_keep: RESUME_ALWAYS once the option bytes were started (or the
+         * job was taken up after them): the factory firmware may be erased,
+         * so a failure keeps the job, it goes on at the next power-up; an
+         * abort only stops the run (armed, it can be dropped:
+         * mcu_flasher_on_write). One taken up at level 1 (PHASE_RETAKEN) is
+         * kept the same way while it has power-ups left (g_keep: how many). */
         g_status.error   = state == MCU_FLASHER_STATE_FAILED ? error : MCU_FLASHER_ERR_KEPT;
         g_status.swd_err = (uint8_t)swd_err;
-        arm(PHASE_OB_WRITTEN, RESUME_ALWAYS);
+        arm(g_keep == RESUME_ALWAYS ? PHASE_OB_WRITTEN : PHASE_RETAKEN, g_keep);
         return;
     }
     if (g_status.step > STEP_POWER) {
@@ -370,12 +376,12 @@ void mcu_flasher_on_write(uint16_t attribute_id) {
     if (job == MCU_FLASHER_JOB_ABORT) {
         g_abort = g_status.state == MCU_FLASHER_STATE_RUNNING;
         if (g_status.state == MCU_FLASHER_STATE_ARMED) {
-            /* A job past its option bytes is dropped only when the MCU has
-             * sent a frame on the UART since the job was armed: then it runs
-             * and nothing is lost. What it sent before does not tell (the
+            /* A job kept over failures (g_keep) is dropped only when the MCU
+             * has sent a frame on the UART since the job was armed: then it
+             * runs and nothing is lost. What it sent before does not tell (the
              * factory firmware tells its version before an install erases it);
              * a cleared or wrapped count reads as silent. */
-            if (g_past_ob && tuya_mcu_diag.rx_frames <= g_rx_mark) {
+            if (g_keep && tuya_mcu_diag.rx_frames <= g_rx_mark) {
                 g_status.error = MCU_FLASHER_ERR_KEPT;
             } else {
                 hal_nvm_delete(NV_ITEM_MCU_FLASHER_JOB);
@@ -419,7 +425,7 @@ void mcu_flasher_on_write(uint16_t attribute_id) {
     g_tries         = 0;
     g_rewrites      = 0;
     g_resumed       = 0;
-    g_past_ob       = 0;
+    g_keep          = 0;
     report();
 }
 
@@ -776,8 +782,8 @@ void mcu_flasher_early(void) {
     g_status.job   = MCU_FLASHER_JOB_INSTALL;
     g_status.step  = STEP_BEGIN;
     g_started      = hal_millis();
-    g_resumed      = resumed;
-    g_past_ob      = resumed;
+    g_resumed      = resumed || a.phase == PHASE_RETAKEN;
+    g_keep         = resumed ? RESUME_ALWAYS : g_resumed ? a.boots_left : 0;
     g_rewrites     = 0;
     if (!resumed && a.boots_left == 0) {
         finish(MCU_FLASHER_STATE_FAILED, MCU_FLASHER_ERR_NO_ATTACH, SWD_OK);
@@ -850,16 +856,19 @@ void mcu_flasher_early(void) {
         g_status.duration_ms = sat16(hal_millis());
         return;
     }
-    if (err == SWD_OK && halted && resumed) {
+    if (err == SWD_OK && halted && g_resumed) {
         /* level 1 again: the protection change never took (or option bytes a
          * cut left corrupt load as level 1): the factory firmware may still be
-         * there, so from here a limited armed install (its gates relaxed for
-         * what a cut may leave), not one taken up at every power-up */
-        a.phase      = PHASE_ARMED;
-        a.boots_left = ARMED_BOOTS;
+         * there, so from here a limited install (PHASE_RETAKEN: its gates
+         * relaxed for what a cut may leave, also at its next power-ups), not
+         * one taken up at every power-up. Each later power-up that attaches
+         * costs one of its count, so a cut or a failure before the option
+         * bytes keeps it and still ends it. */
+        a.phase      = PHASE_RETAKEN;
+        a.boots_left = resumed ? ARMED_BOOTS : (uint8_t)(a.boots_left - 1u);
         a.held       = 0;
         hal_nvm_write(NV_ITEM_MCU_FLASHER_JOB, sizeof(a), (uint8_t *)&a);
-        g_past_ob = 0;
+        g_keep = a.boots_left;
     }
     if (err == SWD_OK && halted) {
         g_status.app_build = sat16(hal_millis());   /* attach time: shown for an install */
@@ -1194,7 +1203,7 @@ void mcu_flasher_task(void) {
         hal_nvm_write(NV_ITEM_MCU_FLASHER_JOB, sizeof(a), (uint8_t *)&a);
         err = ob_program(&started);
         if (started || err != SWD_OK) {
-            g_past_ob = 1;   /* started, or a transfer failed on the way: maybe */
+            g_keep = RESUME_ALWAYS;   /* started, or a transfer failed on the way: maybe */
         }
 
         /* not started (the controller stayed locked): nothing changed, a
