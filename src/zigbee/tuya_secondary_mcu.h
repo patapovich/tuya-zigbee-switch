@@ -25,6 +25,7 @@
  */
 
 typedef enum {
+    TUYA_DP_TYPE_RAW   = 0x00,
     TUYA_DP_TYPE_BOOL  = 0x01,
     TUYA_DP_TYPE_VALUE = 0x02, /* 4 byte big-endian */
     TUYA_DP_TYPE_ENUM  = 0x04,

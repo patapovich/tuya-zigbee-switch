@@ -191,3 +191,40 @@ def test_the_device_db_times_are_in_ms_shown_in_seconds():
     assert units == {"fade_on_time": "s", "fade_off_time": "s", "hold_time": "s",
                      "fade_off_slow_zone": "%", "hold_slow_zone": "%"}
     assert js.count("divisor: 1000,") == 2 * 2 * 3      # 2 definitions, 2 channels, 3 times
+
+
+def test_the_custom_curve_is_17_numbers_written_as_little_endian_u16():
+    """custom_curve (Open Dimmer 2.2.8): text in, lightingBallastCfg 0xff12 out (34 bytes, an
+    empty string for none); refused unless 17 whole numbers 0..10000, 0 first, 10000 last,
+    never falling. A report is shown as the 17 numbers again."""
+    out = json.loads(run_node(SET.replace('ver("2.2.0 own")', 'ver("2.2.8 own")') + """
+(async () => {
+    const curve = "0, 100, 250, 450, 700, 1000, 1400, 1900, 2500, 3200, 4000, 4900, 5900, 7000, 8100, 9100, 10000";
+    const res = {
+        ok: await set("custom_curve", curve, 2),
+        none: await set("custom_curve", "", 1),
+        falling: await set("custom_curve", curve.replace(" 1000,", " 600,"), 1),   // 700 -> 600
+        short: await set("custom_curve", "0, 10000", 1),
+        end: await set("custom_curve", curve.replace("10000", "9999"), 1),
+    };
+    const fz = def.extend.filter((x) => !x.fake).flatMap((x) => x.fromZigbee ?? [])
+        .filter((f) => f.cluster === "lightingBallastCfg");
+    const b = Buffer.alloc(34); [0, 100, 250, 450, 700, 1000, 1400, 1900, 2500, 3200, 4000, 4900, 5900, 7000, 8100, 9100, 10000].forEach((x, i) => b.writeUInt16LE(x, 2 * i));
+    const msg = {data: {0xff12: b}, endpoint: {ID: 2}, device: dev};
+    res.report = fz.map((f) => f.convert(model, msg, () => {}, {}, {})).filter(Boolean);
+    const p = pick("custom_curve", "l1");
+    res.expose = p && {type: p.type, access: p.access};
+    console.log(JSON.stringify(res));
+})();
+"""))
+    want = [0, 100, 250, 450, 700, 1000, 1400, 1900, 2500, 3200, 4000, 4900, 5900, 7000, 8100, 9100, 10000]
+    writes, state = out["ok"]
+    b = bytes(writes[0]["65298"]["value"]["data"])
+    assert len(b) == 34 and [int.from_bytes(b[2 * i:2 * i + 2], "little") for i in range(17)] == want
+    assert state == {"custom_curve": ",".join(map(str, want))}    # Z2M adds the endpoint
+    writes, state = out["none"]
+    assert writes[0]["65298"]["value"]["data"] == [] and state == {"custom_curve": ""}
+    for bad in ("falling", "short", "end"):
+        assert "custom_curve: 17 whole numbers" in out[bad], bad
+    assert {"custom_curve_l2": ",".join(map(str, want))} in out["report"]
+    assert out["expose"] == {"type": "text", "access": 7}

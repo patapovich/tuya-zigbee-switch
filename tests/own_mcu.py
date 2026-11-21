@@ -65,6 +65,7 @@ PROFILE_KEYS = ("fade_on", "fade_off", "soft_end", "hold", "hold_end")
 TRANSITION_BUILD = 400
 FEATURES_BUILD = 500
 LAMP_COMP_BUILD = 1300    # 2.2.8: the lamp compensation, DP 172 / 173 (in its dump)
+DP_CUSTOM_BASE = 174      # 2.2.8: custom curve, + 3 * channel + part, raw 6 big-endian u16 (RAM only)
 COUNTDOWN_MAX = 86400
 UART_C = Path(__file__).resolve().parent.parent / "src/telink/hal/uart.c"
 
@@ -98,6 +99,7 @@ class OwnMcu:
         self.version, self.protocol = version, protocol
         self.build, self.boot = build, boot   # a v2 app says them in its identity answer
         self.ch = [channel(po) for po in power_on]
+        self.custom = [[0] * 17, [0] * 17]   # its RAM tables (DPs 174..179)
         self.query_seq = 0
         self.report_seq = 0
         # The module's first answer to a query of ours makes us dump our state
@@ -121,7 +123,14 @@ class OwnMcu:
         self.report_seq = (self.report_seq + 1) & 0xFFFF
         return frame
 
+    def custom_ok(self, ch: int) -> bool:
+        t = self.custom[ch]
+        return t[0] == 0 and t[16] == 10000 and all(b >= a for a, b in zip(t, t[1:]))
+
     def _dp(self, dpid: int) -> bytes:
+        if DP_CUSTOM_BASE <= dpid < DP_CUSTOM_BASE + 6:          # the ack: the table valid yet
+            ok = self.custom_ok((dpid - DP_CUSTOM_BASE) // 3)
+            return dp_payload(dpid, TUYA_TYPE_VALUE, int(ok).to_bytes(4, "big"))
         if dpid == DP_POWER_ON:
             return dp_payload(dpid, TUYA_TYPE_ENUM, bytes([self.ch[0]["power_on"]]))
         if DP_PROFILE_BASE <= dpid < DP_PROFILE_BASE + 10:
@@ -188,6 +197,14 @@ class OwnMcu:
         vlen = int.from_bytes(data[2:4], "big")
         value = int.from_bytes(data[4:4 + vlen], "big")
         self.writes.append((dpid, value))
+        if DP_CUSTOM_BASE <= dpid < DP_CUSTOM_BASE + 6:
+            if not self.has(LAMP_COMP_BUILD) or data[1] != 0 or vlen != 12:
+                return False
+            ch, part = divmod(dpid - DP_CUSTOM_BASE, 3)
+            for i in range(6):
+                if 6 * part + i < 17:
+                    self.custom[ch][6 * part + i] = int.from_bytes(data[4 + 2 * i:6 + 2 * i], "big")
+            return True
         if DP_POWER_ON_BASE <= dpid < DP_POWER_ON_BASE + 2:
             self.ch[dpid - DP_POWER_ON_BASE]["power_on"] = value
         elif DP_TRANSITION_BASE <= dpid < DP_TRANSITION_BASE + 2:
@@ -263,6 +280,7 @@ class OwnMcu:
         self.told_state = False
         for c in self.ch:                    # not saved: gone with the restart
             c["countdown"] = c["identify"] = 0
+        self.custom = [[0] * 17, [0] * 17]   # RAM only (2.2.8's custom curve)
 
     # ---- answering the module --------------------------------------------
 

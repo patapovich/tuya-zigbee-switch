@@ -27,6 +27,7 @@ ATTR_STARTUP_LEVEL = 0x4000      # Level Control StartUpCurrentLevel
 ATTR_IDENTIFY_TIME = 0x0000
 ATTR_BOOST = 0xFF10              # lightingBallastCfg
 ATTR_LAMP_COMP = 0xFF11          # lightingBallastCfg (2.2.8)
+ATTR_CUSTOM_CURVE = 0xFF12       # lightingBallastCfg (2.2.8): 17 u16, little-endian
 CMD_OFF, CMD_ON, CMD_ON_WITH_TIMED_OFF = 0x00, 0x01, 0x42
 CMD_IDENTIFY = 0x00
 MINIMUM, PREVIOUS = 0x00, 0xFF
@@ -546,5 +547,69 @@ def test_an_open_dimmer_without_the_lamp_compensation_gets_no_write(build):
         assert attr(device, 1, BALLAST, ATTR_LAMP_COMP) == 0xFF
         assert write(device, mcu, 1, BALLAST, ATTR_LAMP_COMP, 8) == []
         assert attr(device, 1, BALLAST, ATTR_LAMP_COMP) == 0xFF
+    finally:
+        proc.stop()
+
+
+# ---- custom curve (2.2.8) -------------------------------------------------------
+CURVE = [0, 100, 250, 450, 700, 1000, 1400, 1900, 2500, 3200, 4000, 4900, 5900, 7000, 8100, 9100,
+         10000]
+
+
+def le_hex(points) -> str:
+    return "".join(f"{p & 0xFF:02x}{p >> 8:02x}" for p in points)
+
+
+def curve_attr(device, ep: int) -> str:
+    return device.read_zigbee_attr(ep, BALLAST, ATTR_CUSTOM_CURVE).lower()
+
+
+def test_the_custom_curve_is_kept_and_written_in_three_parts():
+    """lightingBallastCfg 0xff12: 17 little-endian points; to the MCU as DPs 174 + 3 * channel
+    + part, 6 big-endian points each (the last part's sixth: 0). A falling table or a wrong
+    length is refused: the one kept stays, nothing is sent."""
+    proc, device, mcu = own(build=LAMP_COMP_BUILD)
+    try:
+        assert curve_attr(device, 2) == "-"                 # none (the stub shows an empty one so)
+        out = write(device, mcu, 2, BALLAST, ATTR_CUSTOM_CURVE, le_hex(CURVE))
+        assert [d for d, _ in out] == [177, 178, 179]
+        assert mcu.custom[1] == CURVE and mcu.custom_ok(1) and not mcu.custom_ok(0)
+        assert curve_attr(device, 2) == le_hex(CURVE)
+        bad = CURVE[:5] + [50] + CURVE[6:]
+        assert write(device, mcu, 2, BALLAST, ATTR_CUSTOM_CURVE, le_hex(bad)) == []
+        assert write(device, mcu, 2, BALLAST, ATTR_CUSTOM_CURVE, le_hex(CURVE[:16])) == []
+        assert write(device, mcu, 2, BALLAST, ATTR_CUSTOM_CURVE, le_hex(CURVE[:16] + [9999])) == []
+        assert curve_attr(device, 2) == le_hex(CURVE)
+        # none: the MCU's table made invalid (it goes back to led_soft)
+        out = write(device, mcu, 2, BALLAST, ATTR_CUSTOM_CURVE, "-")
+        assert [d for d, _ in out] == [179] and not mcu.custom_ok(1)
+        assert curve_attr(device, 2) == "-"
+    finally:
+        proc.stop()
+
+
+def test_the_custom_curve_is_given_again_after_an_mcu_restart_and_a_module_restart():
+    proc, device, mcu = own(build=LAMP_COMP_BUILD)
+    try:
+        write(device, mcu, 1, BALLAST, ATTR_CUSTOM_CURVE, le_hex(CURVE))
+        out = mcu_restarts(device, mcu, 300)            # its RAM table is gone with it
+        assert [d for d, _ in out if 174 <= d < 180] == [174, 175, 176]
+        assert mcu.custom[0] == CURVE and mcu.custom_ok(0)
+    finally:
+        proc.stop()
+    proc, device, mcu = own(build=LAMP_COMP_BUILD)        # the module restarts: kept in its NV
+    try:
+        assert curve_attr(device, 1) == le_hex(CURVE)
+        assert mcu.custom[0] == CURVE and mcu.custom_ok(0)
+    finally:
+        proc.stop()
+
+
+@pytest.mark.parametrize("build", [FEATURES_BUILD, LAMP_COMP_BUILD - 1])
+def test_an_open_dimmer_without_the_custom_curve_gets_none_but_keeps_it(build):
+    proc, device, mcu = own(build=build)
+    try:
+        assert write(device, mcu, 1, BALLAST, ATTR_CUSTOM_CURVE, le_hex(CURVE)) == []
+        assert curve_attr(device, 1) == le_hex(CURVE)  # kept for an update to 2.2.8
     finally:
         proc.stop()

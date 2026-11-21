@@ -323,6 +323,28 @@ int stub_app_string_to_attribute_value(hal_zigbee_attribute *attr,
         memcpy(&attr->value[1], str, len);
         break;
     }
+    case ZCL_DATA_TYPE_OCTET_STR: {
+        /* hex, "-" for none: length byte + bytes, at most the attribute's size */
+        size_t len = 0;
+        if (attr->size < 1)
+            return -3;
+
+        if (strcmp(str, "-") != 0) {
+            size_t hl = strlen(str);
+            if (hl % 2)
+                return -2;
+
+            for (size_t i = 0; i + 1 < hl && len < (size_t)attr->size - 1; i += 2) {
+                unsigned b;
+                if (sscanf(str + i, "%2x", &b) != 1)
+                    return -2;
+
+                attr->value[1 + len++] = (uint8_t)b;
+            }
+        }
+        attr->value[0] = (uint8_t)len;
+        break;
+    }
     case ZCL_DATA_TYPE_LONG_CHAR_STR: {
         size_t len = strlen(str);
         if (attr->size < 2)

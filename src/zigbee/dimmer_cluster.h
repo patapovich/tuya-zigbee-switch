@@ -36,7 +36,7 @@ typedef struct {
      * level] ([]: boards with an image only). */
     hal_zigbee_attribute attr_infos[10];
     hal_zigbee_attribute multistate_attr_infos[4];  // wall switch gestures (own MCU)
-    hal_zigbee_attribute ballast_attr_infos[4];     // min/max level, [start boost, lamp compensation] (lightingBallastCfg)
+    hal_zigbee_attribute ballast_attr_infos[5];     // min/max level, [start boost, lamp compensation, custom curve] (lightingBallastCfg)
 #ifdef DIMMER_BINDINGS
     hal_zigbee_attribute switch_type_attr_infos[6]; // ..., bind mode, double / triple press action
 #else
@@ -72,6 +72,15 @@ typedef struct {
      * in this contact: an older MCU, none; a write sends nothing then). */
     uint8_t              lamp_comp;
     uint8_t              lamp_comp_mcu;
+
+    /* Open Dimmer 2.2.8's custom curve (lightingBallastCfg 0xff12, octet string: 17 little-endian
+     * u16, 0..10000 at 0, 1/16 .. 1 of min..max; length 0: none), kept in NV and written to the
+     * MCU (DPs 174 + 3 * channel ..) at each contact and when changed. The buffer takes any
+     * octet string: the SDK copies a written one without checking its length. */
+    struct {
+        uint8_t len;
+        uint8_t data[255];
+    }                    custom_curve;
     uint8_t              input_mode;
     uint8_t              input_mode_mcu;
     uint8_t              fast_press;     /* DP 170 / 171: detached momentary press at once (6) */

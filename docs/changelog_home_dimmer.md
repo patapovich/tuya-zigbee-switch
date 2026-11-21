@@ -14,6 +14,10 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
 
 ## Next
 
+- Open Dimmer 2.2.8's custom dimming curve per channel: `dimming_curve` `custom` and its table
+  `custom_curve` (lightingBallastCfg 0xff12, 17 points 0..10000), kept in the module's NV and
+  given to the dimmer chip (DPs 174..179) at every contact and when changed; made for a lamp by
+  open-dimmer's `tools/custom_curve.py`.
 - Open Dimmer 2.2.8's lamp compensation per channel (lightingBallastCfg 0xff11, in levels
   0..63, DP 172 / 173; Zigbee2MQTT `lamp_compensation`): for LED lamps that are brighter
   dimmed down than switched on at the same level. Shown and written only for an MCU that has

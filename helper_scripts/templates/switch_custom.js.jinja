@@ -1200,6 +1200,35 @@ const romasku = {
             },
         });
     },
+    // Custom curve (Open Dimmer 2.2.8, lightingBallastCfg 0xff12: 17 little-endian u16): the
+    // table dimming_curve "custom" takes; shown as 17 numbers. Made by open-dimmer's
+    // tools/custom_curve.py from a measurement of the lamp.
+    dimmerCustomCurve: (endpointName) => {
+        const expose = e.text("custom_curve", ea.ALL).withEndpoint(endpointName)
+            .withDescription("The table of dimming curve 'custom': 17 outputs 0..10000 (0 first, 10000 last, never falling) at 0, 1/16 .. 1 of the min..max range, comma-separated; empty: none. Made for a lamp by open-dimmer's tools/custom_curve.py (Open Dimmer 2.2.8)")
+            .withCategory("config");
+        return romasku.dimmerOwnAttr({
+            expose, endpointName, cluster: "lightingBallastCfg", attr: {ID: 0xff12}, type: Zcl.DataType.OCTET_STR,
+            minMcu: "2.2.8",
+            fromValue: (raw) => {
+                const b = Buffer.from(raw ?? []);
+                if (b.length !== 34) return "";
+                return Array.from({length: 17}, (_, i) => b.readUInt16LE(2 * i)).join(",");
+            },
+            toValue: (value) => {
+                const text = String(value ?? "").trim();
+                if (text === "") return Buffer.alloc(0);
+                const p = text.split(/[\s,;]+/).filter((x) => x !== "").map(Number);
+                if (p.length !== 17 || p.some((x) => !Number.isInteger(x) || x < 0 || x > 10000) ||
+                    p[0] !== 0 || p[16] !== 10000 || p.some((x, i) => i && x < p[i - 1])) {
+                    throw new Error("custom_curve: 17 whole numbers 0..10000, 0 first, 10000 last, never falling (or empty)");
+                }
+                const b = Buffer.alloc(34);
+                p.forEach((x, i) => b.writeUInt16LE(x, 2 * i));
+                return b;
+            },
+        });
+    },
     // Identify (Open Dimmer 2.2.0, DP 166 / 167): every channel blinks for a few seconds (the
     // one with a lamp shows which module this is).
     dimmerIdentify: (dimmerNames) => {
@@ -1617,6 +1646,7 @@ const definitions = [
             romasku.dimmerStartupLevel("{{dimmerName}}"),
             romasku.dimmerStartBoost("{{dimmerName}}"),
             romasku.dimmerLampCompensation("{{dimmerName}}"),
+            romasku.dimmerCustomCurve("{{dimmerName}}"),
             romasku.dimmerExecuteIfOff("{{dimmerName}}"),
             romasku.dimmerOnLevelLocal("{{dimmerName}}"),
             romasku.dimmerBrightnessFadeTime("{{dimmerName}}"),
@@ -1870,7 +1900,7 @@ const definitions = [
             if (openDimmer22) {
                 for (const [cluster, attrs] of [["genOnOff", [0xff10]], ["genOnOffSwitchCfg", [0xff10, 0xff11]],
                                                 ["genLevelCtrl", ["startUpCurrentLevel", "options", 0xff11]],
-                                                ["lightingBallastCfg", [0xff10, 0xff11]]{% if device.dimmer_only %},
+                                                ["lightingBallastCfg", [0xff10, 0xff11, 0xff12]]{% if device.dimmer_only %},
                                                 ["genOnOffSwitchCfg", [0xff12, 0xff13, 0xff14]]{% endif %}]) {
                     try {
                         await dimmer{{loop.index}}.read(cluster, attrs);

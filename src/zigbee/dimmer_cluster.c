@@ -430,6 +430,11 @@ static void dimmer_send_level_transition(zigbee_dimmer_cluster *cluster, const u
 #define DIMMER_OD_LAMP_COMP      5      /* 2.2.8: known from its dump (lamp_comp_mcu) */
 #define DIMMER_LAMP_COMP_MAX     63     /* levels (the MCU: up to 252 of 1000, steps of 4) */
 #define DIMMER_LAMP_COMP_NONE    0xFF
+#define DIMMER_CUSTOM_POINTS     17
+#define DIMMER_CUSTOM_LEN        (2 * DIMMER_CUSTOM_POINTS)
+#define DIMMER_CUSTOM_DP_BASE    174    /* + 3 * channel + part (6 big-endian u16 each) */
+typedef char dimmer_custom_curve_takes_any_octet_string[
+        (sizeof(((zigbee_dimmer_cluster *) 0)->custom_curve) == 256) ? 1 : -1];
 #define DIMMER_COUNTDOWN_MAX     86400u /* s */
 #define DIMMER_INPUT_MODE_MAX    2      /* 0 normal, 1 detached, 2 off */
 #define DIMMER_INPUT_NORMAL      0
@@ -990,6 +995,53 @@ static void dimmer_range_changed(zigbee_dimmer_cluster *cluster) {
 
 #ifdef SECONDARY_MCU_IMAGE
 /* A value DP of Open Dimmer: this channel's countdown or one of its settings from 162 on. */
+static uint16_t dimmer_custom_point(const zigbee_dimmer_cluster *cluster, uint8_t i) {
+    return (uint16_t)(cluster->custom_curve.data[2 * i] | cluster->custom_curve.data[2 * i + 1] <<
+                      8);
+}
+
+/* A whole table: 0 first, 10000 last, never falling. */
+static uint8_t dimmer_custom_valid(const zigbee_dimmer_cluster *cluster) {
+    if (cluster->custom_curve.len != DIMMER_CUSTOM_LEN || dimmer_custom_point(cluster, 0) != 0 ||
+        dimmer_custom_point(cluster, DIMMER_CUSTOM_POINTS - 1) != 10000)
+        return 0;
+
+    for (uint8_t i = 1; i < DIMMER_CUSTOM_POINTS; i++) {
+        if (dimmer_custom_point(cluster, i) < dimmer_custom_point(cluster, i - 1))
+            return 0;
+    }
+    return 1;
+}
+
+/* To the MCU in three parts of 6 big-endian points (the write queue takes 16 bytes); none
+ * (length 0): a last part of zeros, which leaves its table invalid (it uses led_soft). */
+static void dimmer_custom_send(const zigbee_dimmer_cluster *cluster) {
+    uint8_t has = cluster->custom_curve.len == DIMMER_CUSTOM_LEN;
+
+    for (uint8_t part = has ? 0 : 2; part < 3; part++) {
+        uint8_t b[12] = { 0 };
+        for (uint8_t i = 0; has && i < 6 && 6 * part + i < DIMMER_CUSTOM_POINTS; i++) {
+            uint16_t p = dimmer_custom_point(cluster, (uint8_t)(6 * part + i));
+            b[2 * i]     = (uint8_t)(p >> 8);
+            b[2 * i + 1] = (uint8_t)p;
+        }
+        tuya_secondary_mcu_write_dp((uint8_t)(DIMMER_CUSTOM_DP_BASE + 3 * cluster->dimmer_idx +
+                                              part),
+                                    TUYA_DP_TYPE_RAW, b, sizeof(b));
+    }
+}
+
+static void dimmer_custom_load(zigbee_dimmer_cluster *cluster) {
+    cluster->custom_curve.len = 0;
+    if (cluster->dimmer_idx < NV_LAYOUT_DIMMERS &&
+        hal_nvm_read(NV_ITEM_DIMMER_CUSTOM_CURVE(cluster->dimmer_idx), DIMMER_CUSTOM_LEN,
+                     cluster->custom_curve.data) == HAL_NVM_SUCCESS) {
+        cluster->custom_curve.len = DIMMER_CUSTOM_LEN;
+        if (!dimmer_custom_valid(cluster))
+            cluster->custom_curve.len = 0;
+    }
+}
+
 static void dimmer_on_od_value(zigbee_dimmer_cluster *cluster, uint8_t dpid, uint32_t number) {
     uint16_t v = (uint16_t)(number > 0xFFFF ? 0xFFFF : number);
 
@@ -1049,6 +1101,9 @@ static void dimmer_on_od_value(zigbee_dimmer_cluster *cluster, uint8_t dpid, uin
                                             ZCL_ATTR_BALLAST_START_BOOST);
         break;
     case DIMMER_OD_LAMP_COMP: {
+        /* 2.2.8, first told in this contact (its dump): its custom curve is ours to give */
+        if (cluster->lamp_comp_mcu == DIMMER_LAMP_COMP_NONE && cluster->custom_curve.len)
+            dimmer_custom_send(cluster);
         /* value of 1000 -> levels of 254 (the MCU keeps steps of 4, about one level) */
         uint32_t lv = (number * ZCL_LEVEL_MAX + TUYA_BRIGHTNESS_MAX / 2) / TUYA_BRIGHTNESS_MAX;
         cluster->lamp_comp     = (uint8_t)(lv > DIMMER_LAMP_COMP_MAX ? DIMMER_LAMP_COMP_MAX : lv);
@@ -1651,10 +1706,13 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
     cluster->start_boost     = 0;
     cluster->lamp_comp       = DIMMER_LAMP_COMP_NONE;
     cluster->lamp_comp_mcu   = DIMMER_LAMP_COMP_NONE;
-    cluster->input_mode      = 0;
-    cluster->input_mode_mcu  = 0;
-    cluster->fast_press      = 0;
-    cluster->fast_press_mcu  = 0;
+#ifdef SECONDARY_MCU_IMAGE
+    dimmer_custom_load(cluster);
+#endif
+    cluster->input_mode     = 0;
+    cluster->input_mode_mcu = 0;
+    cluster->fast_press     = 0;
+    cluster->fast_press_mcu = 0;
 #ifdef SECONDARY_MCU_IMAGE
     cluster->identify_task.handler = dimmer_identify_tick;
     cluster->identify_task.arg     = cluster;
@@ -1702,6 +1760,9 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
                          ZCL_DATA_TYPE_UINT16, ATTR_WRITABLE, cluster->start_boost);
     SETUP_ATTR_FOR_TABLE(cluster->ballast_attr_infos, 3, ZCL_ATTR_BALLAST_LAMP_COMP,
                          ZCL_DATA_TYPE_UINT8, ATTR_WRITABLE, cluster->lamp_comp);
+    SETUP_ATTR_FOR_TABLE(cluster->ballast_attr_infos, 4, ZCL_ATTR_BALLAST_CUSTOM_CURVE,
+                         ZCL_DATA_TYPE_OCTET_STR, ATTR_WRITABLE, cluster->custom_curve);
+    cluster->ballast_attr_infos[4].size = 0xFFu;   /* the field's most (uint8_t); the buffer has 256 */
     SETUP_ATTR_FOR_TABLE(cluster->switch_type_attr_infos, 1,
                          ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_INPUT_MODE,
                          ZCL_DATA_TYPE_ENUM8, ATTR_WRITABLE, cluster->input_mode);
@@ -1716,7 +1777,7 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
                        dimmer_cluster_callback_trampoline);
     dimmer_add_cluster(endpoint, ZCL_CLUSTER_LEVEL_CONTROL, DIMMER_LEVEL_ATTRS, level_attrs,
                        dimmer_cluster_level_callback_trampoline);
-    dimmer_add_cluster(endpoint, ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG, 2 + 2 * DIMMER_OD_ATTRS,
+    dimmer_add_cluster(endpoint, ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG, 2 + 3 * DIMMER_OD_ATTRS,
                        cluster->ballast_attr_infos, NULL);
 #ifdef DIMMER_BINDINGS
     dimmer_bind_setup(cluster, 1 + 2 * DIMMER_OD_ATTRS);
@@ -1867,6 +1928,22 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
             dimmer_write_tuya_value(dimmer_od_dp(cluster, DIMMER_OD_LAMP_COMP),
                                     ((uint32_t)cluster->lamp_comp * TUYA_BRIGHTNESS_MAX +
                                      ZCL_LEVEL_MAX / 2) / ZCL_LEVEL_MAX);
+        } else if (attribute_id == ZCL_ATTR_BALLAST_CUSTOM_CURVE) {
+            /* a whole valid table, or length 0 (none); anything else: the one kept */
+            if (cluster->custom_curve.len && !dimmer_custom_valid(cluster)) {
+                dimmer_custom_load(cluster);
+                break;
+            }
+            if (cluster->dimmer_idx < NV_LAYOUT_DIMMERS) {
+                if (cluster->custom_curve.len)
+                    hal_nvm_write(NV_ITEM_DIMMER_CUSTOM_CURVE(cluster->dimmer_idx),
+                                  DIMMER_CUSTOM_LEN,
+                                  cluster->custom_curve.data);
+                else
+                    hal_nvm_delete(NV_ITEM_DIMMER_CUSTOM_CURVE(cluster->dimmer_idx));
+            }
+            if (dimmer_od_features(cluster) && cluster->lamp_comp_mcu != DIMMER_LAMP_COMP_NONE)
+                dimmer_custom_send(cluster);   /* an MCU without it: kept for one that has it */
         }
 #endif
         break;
