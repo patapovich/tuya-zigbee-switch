@@ -177,8 +177,8 @@ console.log(JSON.stringify({
 }));
 """))
     assert out["oldHide"] == 2                  # as a stock MCU: shared power_on_behavior, mcu_firmware
-    assert out["oldShow"] == 16 + 23 + 6        # "show": every Open Dimmer setting, those of 2.2.0
-                                                # and the 6 binding settings too
+    assert out["oldShow"] == 16 + 23 + 6 + 2    # "show": every Open Dimmer setting, those of 2.2.0,
+                                                # the 6 binding settings and 2.2.8's lamp_compensation
     assert out["newWins"] == [16, 2]
     assert out["oldShowStored"] == [{"dimming_curve_l1": "linear"}]
     assert out["options"] == [["open_dimmer_settings", ["auto", "show", "hide"], "Open Dimmer settings"],

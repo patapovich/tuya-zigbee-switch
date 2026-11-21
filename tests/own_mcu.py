@@ -58,12 +58,13 @@ DP_POWER_ON_BASE = 103
 DP_PROFILE_BASE = 150
 DP_TRANSITION_BASE = 160   # transition time ms per channel, from build 400 (never in the dump)
 DP_EXTRA_BASE = 162        # + 2 * k + channel, from build 500: EXTRA_KEYS[k]
-EXTRA_KEYS = ("input", "power_level", "identify", "boost", "fast_press")
+EXTRA_KEYS = ("input", "power_level", "identify", "boost", "fast_press", "lamp_comp")
 DP_HEALTH_FIRST = 130      # 130..137 every 2 min, 138 (die temperature) and 139 (its sensor's
                            # calibration) in a frame of their own
 PROFILE_KEYS = ("fade_on", "fade_off", "soft_end", "hold", "hold_end")
 TRANSITION_BUILD = 400
 FEATURES_BUILD = 500
+LAMP_COMP_BUILD = 1300    # 2.2.8: the lamp compensation, DP 172 / 173 (in its dump)
 COUNTDOWN_MAX = 86400
 UART_C = Path(__file__).resolve().parent.parent / "src/telink/hal/uart.c"
 
@@ -85,7 +86,8 @@ def channel(power_on: int) -> dict:
     return {"on": 0, "level": 1000, "min": 200, "switch_type": 0, "max": 1000,
             "countdown": 0, "curve": 2, "power_on": power_on, "fade_on": 950,
             "fade_off": 950, "soft_end": 12, "hold": 3300, "hold_end": 20, "transition": 0,
-            "input": 0, "power_level": 0, "identify": 0, "boost": 0, "fast_press": 0}
+            "input": 0, "power_level": 0, "identify": 0, "boost": 0, "fast_press": 0,
+            "lamp_comp": 0}
 
 
 class OwnMcu:
@@ -158,6 +160,8 @@ class OwnMcu:
             extras = [DP_EXTRA_BASE + 2 * k + ch for k in (0, 1, 3)] if self.has(FEATURES_BUILD) else []
             frames.append(self._report([self._dp(DP_PROFILE_BASE + 5 * ch + k)
                                         for k in range(5)] + [self._dp(dp) for dp in extras]))
+            if self.has(LAMP_COMP_BUILD):        # the frame was full: one of its own
+                frames.append(self._report([self._dp(DP_EXTRA_BASE + 10 + ch)]))
         return frames
 
     def health(self, uptime_min: int = 61, reset: int = 0x08, zc_losses: int = 0,
@@ -195,7 +199,11 @@ class OwnMcu:
                 return False
             k, ch = divmod(dpid - DP_EXTRA_BASE, 2)
             c = self.ch[ch]
-            if k == 4:                           # fast press
+            if k == 5:                           # lamp compensation, from 2.2.8
+                if not self.has(LAMP_COMP_BUILD) or value > 252:
+                    return False
+                c["lamp_comp"] = (value + 2) // 4 * 4
+            elif k == 4:                         # fast press
                 if value > 1:
                     return False
                 c["fast_press"] = value

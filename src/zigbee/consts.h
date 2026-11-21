@@ -172,6 +172,7 @@
 #define ZCL_ATTR_BALLAST_MIN_LEVEL                                   0x0010
 #define ZCL_ATTR_BALLAST_MAX_LEVEL                                   0x0011
 #define ZCL_ATTR_BALLAST_START_BOOST                                 0xff10 /* ms (Open Dimmer) */
+#define ZCL_ATTR_BALLAST_LAMP_COMP                                   0xff11 /* levels (Open Dimmer 2.2.8) */
 
 // Poll Control cluster
 #define ZCL_CLUSTER_POLL_CONTROL                                     0x0020

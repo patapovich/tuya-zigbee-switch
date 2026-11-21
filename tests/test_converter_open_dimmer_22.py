@@ -36,12 +36,14 @@ OWN_2_1 = ["dimming_curve_l1", "power_on_behavior_l1", "fade_on_time_l1",
            "hold_time_l2", "hold_slow_zone_l2", "action", "mcu_firmware"]
 STOCK = ["power_on_behavior", "mcu_firmware"]
 FADE = ["brightness_fade_time_l1", "brightness_fade_time_l2"]   # from 2.1.14
+LAMP = ["lamp_compensation_l1", "lamp_compensation_l2"]         # from 2.2.8
 
 
 def test_the_new_exposes_follow_the_open_dimmer_version():
     out = json.loads(run_node(ALL + """
 console.log(JSON.stringify({
-    own22: shown(ver("2.2.0 own")), own23: shown(ver("2.3.1 own")), own3: shown(ver("3.0.0 own")),
+    own22: shown(ver("2.2.0 own")), own227: shown(ver("2.2.7 own")), own228: shown(ver("2.2.8 own")),
+    own23: shown(ver("2.3.1 own")), own3: shown(ver("3.0.0 own")),
     own2114: shown(ver("2.1.14 own")), bare22: shown(ver("2.2.0")), stock: shown(ver("1.0.7")),
     hide: shown(ver("2.2.0 own"), {open_dimmer_settings: "hide"}),
     show: shown(ver("1.0.7"), {open_dimmer_settings: "show"}),
@@ -50,12 +52,14 @@ console.log(JSON.stringify({
 }));
 """))
     assert sorted(out["own22"]) == sorted(OWN_2_1 + NEW + FADE)
-    assert out["own23"] == out["own3"] == out["own22"]
+    assert out["own227"] == out["own22"]
+    assert sorted(out["own228"]) == sorted(OWN_2_1 + NEW + FADE + LAMP)   # 2.2.8: the compensation
+    assert out["own23"] == out["own3"] == out["own228"]
     assert sorted(out["own2114"]) == sorted(OWN_2_1 + FADE)  # no 2.2.0 setting for 2.1.x
     assert out["bare22"] == STOCK                         # not identified: as a stock MCU
     assert out["stock"] == STOCK                          # the house units: unchanged
     assert out["hide"] == STOCK
-    assert sorted(out["show"]) == sorted(OWN_2_1 + NEW + FADE)
+    assert sorted(out["show"]) == sorted(OWN_2_1 + NEW + FADE + LAMP)
     assert out["fakeStock"] == out["fakeOwn"]             # the static extends are the same
 
 
@@ -256,7 +260,7 @@ def test_configure_binds_basic_for_open_dimmer_and_reads_the_new_settings_of_2_2
     assert "1:genBasic" in own["binds"]
     new_reads = [f"{ep}:{cluster}" for ep in (1, 2) for cluster in
                  ("genOnOff:65296", "genOnOffSwitchCfg:65296+65297",
-                  "genLevelCtrl:startUpCurrentLevel+options+65297", "lightingBallastCfg:65296",
+                  "genLevelCtrl:startUpCurrentLevel+options+65297", "lightingBallastCfg:65296+65297",
                   "genOnOffSwitchCfg:65298+65299+65300")]       # the binding settings
     assert [r for r in own["dimmerReads"] if r in new_reads] == new_reads
     assert len(own["dimmerReads"]) == 8 + 10 + 2

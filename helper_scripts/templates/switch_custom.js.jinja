@@ -1181,6 +1181,25 @@ const romasku = {
             },
         });
     },
+    // Lamp compensation (Open Dimmer 2.2.8, DP 172 / 173, lightingBallastCfg 0xff11): levels
+    // of output taken off after the light came down, for lamps that are brighter then; 255 from
+    // the module: the MCU does not have it.
+    dimmerLampCompensation: (endpointName) => {
+        const expose = e.numeric("lamp_compensation", ea.ALL).withEndpoint(endpointName)
+            .withValueMin(0).withValueMax(63).withValueStep(1)
+            .withDescription("For LED lamps that are brighter dimmed down than switched on at the same level: this many levels less at the minimum after the light came down (less higher up, none from a quarter of the range). Set it so a dim-down to the minimum looks like the minimum switched on from dark (0 = off; Open Dimmer 2.2.8)")
+            .withCategory("config");
+        return romasku.dimmerOwnAttr({
+            expose, endpointName, cluster: "lightingBallastCfg", attr: {ID: 0xff11}, type: Zcl.DataType.UINT8,
+            minMcu: "2.2.8",
+            fromValue: (v) => (v === 255 ? null : v),
+            toValue: (value) => {
+                const v = Number(value);
+                if (value === "" || value === null || !Number.isInteger(v) || v < 0 || v > 63) throw new Error("lamp_compensation: 0..63");
+                return v;
+            },
+        });
+    },
     // Identify (Open Dimmer 2.2.0, DP 166 / 167): every channel blinks for a few seconds (the
     // one with a lamp shows which module this is).
     dimmerIdentify: (dimmerNames) => {
@@ -1597,6 +1616,7 @@ const definitions = [
             romasku.dimmerFastPress("{{dimmerName}}"),
             romasku.dimmerStartupLevel("{{dimmerName}}"),
             romasku.dimmerStartBoost("{{dimmerName}}"),
+            romasku.dimmerLampCompensation("{{dimmerName}}"),
             romasku.dimmerExecuteIfOff("{{dimmerName}}"),
             romasku.dimmerOnLevelLocal("{{dimmerName}}"),
             romasku.dimmerBrightnessFadeTime("{{dimmerName}}"),
@@ -1850,7 +1870,7 @@ const definitions = [
             if (openDimmer22) {
                 for (const [cluster, attrs] of [["genOnOff", [0xff10]], ["genOnOffSwitchCfg", [0xff10, 0xff11]],
                                                 ["genLevelCtrl", ["startUpCurrentLevel", "options", 0xff11]],
-                                                ["lightingBallastCfg", [0xff10]]{% if device.dimmer_only %},
+                                                ["lightingBallastCfg", [0xff10, 0xff11]]{% if device.dimmer_only %},
                                                 ["genOnOffSwitchCfg", [0xff12, 0xff13, 0xff14]]{% endif %}]) {
                     try {
                         await dimmer{{loop.index}}.read(cluster, attrs);

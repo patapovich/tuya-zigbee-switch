@@ -6,7 +6,7 @@ Those DPs go only to an Open Dimmer identified with build 500 or later; any othe
 it got before (an OnWithTimedOff is an On), and a write of their attributes sends it nothing.
 """
 import pytest
-from own_mcu import FEATURES_BUILD, own_mcu_contact
+from own_mcu import FEATURES_BUILD, LAMP_COMP_BUILD, own_mcu_contact
 from test_dimmer_mcu import ack_writes, scaled_to_tuya, scaled_to_zcl, start
 from tuya_mcu import (
     TUYA_CMD_REPORT_PASSIVE,
@@ -26,6 +26,7 @@ ATTR_FAST_PRESS = 0xFF11         # genOnOffSwitchCfg
 ATTR_STARTUP_LEVEL = 0x4000      # Level Control StartUpCurrentLevel
 ATTR_IDENTIFY_TIME = 0x0000
 ATTR_BOOST = 0xFF10              # lightingBallastCfg
+ATTR_LAMP_COMP = 0xFF11          # lightingBallastCfg (2.2.8)
 CMD_OFF, CMD_ON, CMD_ON_WITH_TIMED_OFF = 0x00, 0x01, 0x42
 CMD_IDENTIFY = 0x00
 MINIMUM, PREVIOUS = 0x00, 0xFF
@@ -37,6 +38,7 @@ DP_POWER_LEVEL = {1: 164, 2: 165}
 DP_IDENTIFY = {1: 166, 2: 167}
 DP_BOOST = {1: 168, 2: 169}
 DP_FAST_PRESS = {1: 170, 2: 171}
+DP_LAMP_COMP = {1: 172, 2: 173}
 NEW_DPS = {6, 12, *range(162, 172)}
 MCU_MIN = 200                    # the firmware's default min (OwnMcu)
 
@@ -514,5 +516,35 @@ def test_the_dump_of_2_2_0_is_one_burst_of_298_bytes():
                 dps.add(data[0])
                 data = data[4 + int.from_bytes(data[2:4], "big"):]
         assert dps & NEW_DPS == {6, 12, 162, 163, 164, 165, 168, 169, 170, 171}   # identify: never
+    finally:
+        proc.stop()
+
+
+def test_the_lamp_compensation_is_read_from_the_dump_and_written_in_levels():
+    """Open Dimmer 2.2.8: DP 172 / 173 in value units of 1000 (steps of 4); the attribute in
+    levels like the min and max (0..63)."""
+    proc, device, mcu = own(build=LAMP_COMP_BUILD, prepare=lambda m: m.ch[1].update(lamp_comp=32))
+    try:
+        assert [attr(device, ep, BALLAST, ATTR_LAMP_COMP) for ep in (1, 2)] == [0, 8]
+        assert write(device, mcu, 1, BALLAST, ATTR_LAMP_COMP, 8) == [(DP_LAMP_COMP[1], 31)]
+        assert mcu.ch[0]["lamp_comp"] == 32
+        assert attr(device, 1, BALLAST, ATTR_LAMP_COMP) == 8            # what the MCU kept
+        assert write(device, mcu, 2, BALLAST, ATTR_LAMP_COMP, 70) == [(DP_LAMP_COMP[2], 248)]
+        assert attr(device, 2, BALLAST, ATTR_LAMP_COMP) == 63
+        assert write(device, mcu, 2, BALLAST, ATTR_LAMP_COMP, 0) == [(DP_LAMP_COMP[2], 0)]
+        assert attr(device, 2, BALLAST, ATTR_LAMP_COMP) == 0
+    finally:
+        proc.stop()
+
+
+@pytest.mark.parametrize("build", [FEATURES_BUILD, LAMP_COMP_BUILD - 1])
+def test_an_open_dimmer_without_the_lamp_compensation_gets_no_write(build):
+    """Its dump has no DP 172 / 173: the attribute stays "none" (0xFF) and a write of it sends
+    nothing and sets it back."""
+    proc, device, mcu = own(build=build)
+    try:
+        assert attr(device, 1, BALLAST, ATTR_LAMP_COMP) == 0xFF
+        assert write(device, mcu, 1, BALLAST, ATTR_LAMP_COMP, 8) == []
+        assert attr(device, 1, BALLAST, ATTR_LAMP_COMP) == 0xFF
     finally:
         proc.stop()

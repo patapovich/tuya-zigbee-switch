@@ -427,6 +427,9 @@ static void dimmer_send_level_transition(zigbee_dimmer_cluster *cluster, const u
 #define DIMMER_OD_IDENTIFY       2
 #define DIMMER_OD_BOOST          3
 #define DIMMER_OD_FAST_PRESS     4
+#define DIMMER_OD_LAMP_COMP      5      /* 2.2.8: known from its dump (lamp_comp_mcu) */
+#define DIMMER_LAMP_COMP_MAX     63     /* levels (the MCU: up to 252 of 1000, steps of 4) */
+#define DIMMER_LAMP_COMP_NONE    0xFF
 #define DIMMER_COUNTDOWN_MAX     86400u /* s */
 #define DIMMER_INPUT_MODE_MAX    2      /* 0 normal, 1 detached, 2 off */
 #define DIMMER_INPUT_NORMAL      0
@@ -1012,7 +1015,7 @@ static void dimmer_on_od_value(zigbee_dimmer_cluster *cluster, uint8_t dpid, uin
     }
 
     uint8_t k = (uint8_t)(dpid - dimmer_od_dp(cluster, 0));
-    if (dpid < dimmer_od_dp(cluster, 0) || (k & 1) || k > 2 * DIMMER_OD_FAST_PRESS)
+    if (dpid < dimmer_od_dp(cluster, 0) || (k & 1) || k > 2 * DIMMER_OD_LAMP_COMP)
         return; /* the other channel's, or none of these */
 
     switch (k >> 1) {
@@ -1045,6 +1048,15 @@ static void dimmer_on_od_value(zigbee_dimmer_cluster *cluster, uint8_t dpid, uin
         hal_zigbee_notify_attribute_changed(cluster->endpoint, ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG,
                                             ZCL_ATTR_BALLAST_START_BOOST);
         break;
+    case DIMMER_OD_LAMP_COMP: {
+        /* value of 1000 -> levels of 254 (the MCU keeps steps of 4, about one level) */
+        uint32_t lv = (number * ZCL_LEVEL_MAX + TUYA_BRIGHTNESS_MAX / 2) / TUYA_BRIGHTNESS_MAX;
+        cluster->lamp_comp     = (uint8_t)(lv > DIMMER_LAMP_COMP_MAX ? DIMMER_LAMP_COMP_MAX : lv);
+        cluster->lamp_comp_mcu = cluster->lamp_comp;
+        hal_zigbee_notify_attribute_changed(cluster->endpoint, ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG,
+                                            ZCL_ATTR_BALLAST_LAMP_COMP);
+        break;
+    }
     default: /* identify: its end is counted here */
         break;
     }
@@ -1637,6 +1649,8 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
     cluster->startup_expect  = 0xFFFF;
     cluster->identify_time   = 0;
     cluster->start_boost     = 0;
+    cluster->lamp_comp       = DIMMER_LAMP_COMP_NONE;
+    cluster->lamp_comp_mcu   = DIMMER_LAMP_COMP_NONE;
     cluster->input_mode      = 0;
     cluster->input_mode_mcu  = 0;
     cluster->fast_press      = 0;
@@ -1686,6 +1700,8 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
                          ZCL_DATA_TYPE_UINT8, ATTR_WRITABLE, cluster->startup_level);
     SETUP_ATTR_FOR_TABLE(cluster->ballast_attr_infos, 2, ZCL_ATTR_BALLAST_START_BOOST,
                          ZCL_DATA_TYPE_UINT16, ATTR_WRITABLE, cluster->start_boost);
+    SETUP_ATTR_FOR_TABLE(cluster->ballast_attr_infos, 3, ZCL_ATTR_BALLAST_LAMP_COMP,
+                         ZCL_DATA_TYPE_UINT8, ATTR_WRITABLE, cluster->lamp_comp);
     SETUP_ATTR_FOR_TABLE(cluster->switch_type_attr_infos, 1,
                          ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_INPUT_MODE,
                          ZCL_DATA_TYPE_ENUM8, ATTR_WRITABLE, cluster->input_mode);
@@ -1700,7 +1716,7 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
                        dimmer_cluster_callback_trampoline);
     dimmer_add_cluster(endpoint, ZCL_CLUSTER_LEVEL_CONTROL, DIMMER_LEVEL_ATTRS, level_attrs,
                        dimmer_cluster_level_callback_trampoline);
-    dimmer_add_cluster(endpoint, ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG, 2 + DIMMER_OD_ATTRS,
+    dimmer_add_cluster(endpoint, ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG, 2 + 2 * DIMMER_OD_ATTRS,
                        cluster->ballast_attr_infos, NULL);
 #ifdef DIMMER_BINDINGS
     dimmer_bind_setup(cluster, 1 + 2 * DIMMER_OD_ATTRS);
@@ -1841,6 +1857,16 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
                 cluster->start_boost = DIMMER_BOOST_MAX;
             /* The MCU keeps steps of 50 ms; its answer tells the one it took. */
             dimmer_write_tuya_value(dimmer_od_dp(cluster, DIMMER_OD_BOOST), cluster->start_boost);
+        } else if (attribute_id == ZCL_ATTR_BALLAST_LAMP_COMP) {
+            if (!dimmer_od_features(cluster) || cluster->lamp_comp_mcu == DIMMER_LAMP_COMP_NONE) {
+                cluster->lamp_comp = DIMMER_LAMP_COMP_NONE;   /* an MCU without it: none */
+                break;
+            }
+            if (cluster->lamp_comp > DIMMER_LAMP_COMP_MAX)
+                cluster->lamp_comp = DIMMER_LAMP_COMP_MAX;
+            dimmer_write_tuya_value(dimmer_od_dp(cluster, DIMMER_OD_LAMP_COMP),
+                                    ((uint32_t)cluster->lamp_comp * TUYA_BRIGHTNESS_MAX +
+                                     ZCL_LEVEL_MAX / 2) / ZCL_LEVEL_MAX);
         }
 #endif
         break;
@@ -1896,6 +1922,13 @@ void dimmer_cluster_mcu_restarted(void) {
         if (cluster->countdown)
             cluster->countdown_lost = 1;
 #ifdef SECONDARY_MCU_IMAGE
+        /* Its dump tells it again; an older MCU (a downgrade) does not have it. */
+        if (cluster->lamp_comp != DIMMER_LAMP_COMP_NONE) {
+            cluster->lamp_comp = cluster->lamp_comp_mcu = DIMMER_LAMP_COMP_NONE;
+            hal_zigbee_notify_attribute_changed(cluster->endpoint,
+                                                ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG,
+                                                ZCL_ATTR_BALLAST_LAMP_COMP);
+        }
         hal_tasks_unschedule(&cluster->identify_task);
         if (cluster->identify_time) {
             cluster->identify_time = 0;

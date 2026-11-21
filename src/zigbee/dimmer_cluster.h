@@ -36,7 +36,7 @@ typedef struct {
      * level] ([]: boards with an image only). */
     hal_zigbee_attribute attr_infos[10];
     hal_zigbee_attribute multistate_attr_infos[4];  // wall switch gestures (own MCU)
-    hal_zigbee_attribute ballast_attr_infos[3];     // min/max level, [start boost] (lightingBallastCfg)
+    hal_zigbee_attribute ballast_attr_infos[4];     // min/max level, [start boost, lamp compensation] (lightingBallastCfg)
 #ifdef DIMMER_BINDINGS
     hal_zigbee_attribute switch_type_attr_infos[6]; // ..., bind mode, double / triple press action
 #else
@@ -66,6 +66,12 @@ typedef struct {
     uint8_t              startup_written;
     uint16_t             identify_time;
     uint16_t             start_boost;
+
+    /* Open Dimmer 2.2.8's lamp compensation (DP 172 / 173, lightingBallastCfg 0xff11), in
+     * levels like the min and max: lamp_comp_mcu as the MCU last said (0xFF: it has not said it
+     * in this contact: an older MCU, none; a write sends nothing then). */
+    uint8_t              lamp_comp;
+    uint8_t              lamp_comp_mcu;
     uint8_t              input_mode;
     uint8_t              input_mode_mcu;
     uint8_t              fast_press;     /* DP 170 / 171: detached momentary press at once (6) */

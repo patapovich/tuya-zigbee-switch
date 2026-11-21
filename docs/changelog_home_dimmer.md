@@ -14,6 +14,11 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
 
 ## Next
 
+- Open Dimmer 2.2.8's lamp compensation per channel (lightingBallastCfg 0xff11, in levels
+  0..63, DP 172 / 173; Zigbee2MQTT `lamp_compensation`): for LED lamps that are brighter
+  dimmed down than switched on at the same level. Shown and written only for an MCU that has
+  it (its dump tells; any other one: none, a write sends nothing).
+
 - The dimmer chip's health report reaches the hub seconds after a restart of the module or of
   the chip (Open Dimmer 2.2.7 sends it 3 s after the two made contact; it came up to 2 min
   after the module's start). A report made while the module is not on a network is not
