@@ -148,6 +148,11 @@ typedef struct {
     uint32_t             held_report_value;
     uint32_t             last_written_value;
 
+    /* A wall switch hold of Open Dimmer in progress (its HOLD gesture, normal mode: the finger
+     * dims the light); hold_at: hal_millis() of that gesture or of its last level report. */
+    uint8_t              hold;
+    uint32_t             hold_at;
+
 #ifdef DIMMER_BINDINGS
     /* Its wall switch's own endpoint (dimmer_cluster_add_switch_endpoint; 0: none), for the
      * lights bound to it; bind_hold_down: its next hold (detached mode) dims down. Following

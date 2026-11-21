@@ -173,10 +173,12 @@ static void dimmer_set_on(zigbee_dimmer_cluster *cluster, uint8_t on) {
         return;
 
     cluster->on = on;
-    if (on)
+    if (on) {
         cluster->pending_level = 0; /* applied by whoever switched it on */
-    else
+    } else {
         cluster->fade_ms = 0;
+        cluster->hold    = 0;       /* an off ends a wall switch hold */
+    }
     dimmer_notify_onoff(cluster);
     /* Open Dimmer: any off (ours, the wall switch, the countdown's own end) ends it. */
     if (!on && cluster->countdown) {
@@ -187,6 +189,31 @@ static void dimmer_set_on(zigbee_dimmer_cluster *cluster, uint8_t on) {
     dimmer_light_tell();
 }
 
+/* ---- a wall switch hold (Open Dimmer) --------------------------------------
+ *
+ * From its HOLD gesture (normal wall switch mode) the finger has the level: the MCU reports it
+ * every 0.5 s (from 2.2.4) and ignores our level writes for the light. Until the RELEASE, an
+ * off, or DIMMER_HOLD_MS without a level report (a lost release, a hold at the end of the range,
+ * an older MCU that reports only at the end), no ramp of ours runs and the level reports are
+ * taken as they come, none held back for a fade of ours. */
+#define DIMMER_HOLD_MS    1200
+
+#ifdef SECONDARY_MCU_IMAGE
+/* 1 while a hold is in progress; a level report (report) keeps it going. */
+static uint8_t dimmer_holding(zigbee_dimmer_cluster *cluster, uint8_t report) {
+    uint32_t now = hal_millis();
+
+    if (cluster->hold && now - cluster->hold_at >= DIMMER_HOLD_MS)
+        cluster->hold = 0;
+    if (cluster->hold && report)
+        cluster->hold_at = now;
+    return cluster->hold;
+}
+
+#else
+#define dimmer_holding(cluster, report)    0
+#endif
+
 /* ---- MCU writes ---------------------------------------------------------- */
 
 /* How long reports of the level DP are treated as the MCU's own fade towards
@@ -195,6 +222,9 @@ static void dimmer_set_on(zigbee_dimmer_cluster *cluster, uint8_t on) {
 #define DIMMER_FADE_HOLDOFF_MS    3000
 
 static void dimmer_start_holdoff(zigbee_dimmer_cluster *cluster) {
+    if (dimmer_holding(cluster, 0))
+        return; /* a wall switch hold: the MCU does not fade to what we wrote */
+
     cluster->level_holdoff   = 1;
     cluster->has_held_report = 0;
     hal_tasks_unschedule(&cluster->holdoff_task);
@@ -385,6 +415,7 @@ static void dimmer_send_level_transition(zigbee_dimmer_cluster *cluster, const u
 #define DIMMER_OD_FAST_PRESS     4
 #define DIMMER_COUNTDOWN_MAX     86400u /* s */
 #define DIMMER_INPUT_MODE_MAX    2      /* 0 normal, 1 detached, 2 off */
+#define DIMMER_INPUT_NORMAL      0
 #define DIMMER_IDENTIFY_MAX      255    /* s */
 #define DIMMER_BOOST_MAX         750    /* ms */
 
@@ -695,6 +726,11 @@ static void dimmer_cluster_ramp_step(void *arg) {
 
     if (cluster == NULL || !cluster->move_active)
         return;
+
+    if (dimmer_holding(cluster, 0)) {
+        cluster->move_active = 0; /* a wall switch hold has the level */
+        return;
+    }
 
     uint32_t acc  = cluster->move_acc + (uint32_t)cluster->move_rate * DIMMER_RAMP_PERIOD_MS;
     int      step = (int)(acc / 1000u);
@@ -1021,7 +1057,6 @@ static uint8_t dimmer_own_mcu(const zigbee_dimmer_cluster *cluster) {
 #define DIMMER_GESTURE_TRIPLE     3
 #define DIMMER_GESTURE_RELEASE    5
 #define DIMMER_GESTURE_PRESS      6
-#define DIMMER_INPUT_NORMAL       0
 #define DIMMER_INPUT_DETACHED     1
 #define DIMMER_BIND_RATE          50   /* levels/s of a hold without a DefaultMoveRate */
 #define DIMMER_BIND_FADE          4    /* 1/10 s, of a MoveToLevelWithOnOff */
@@ -1310,9 +1345,10 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
                 dimmer_write_level(cluster, on_at);
             }
         } else if (dp_type == TUYA_DP_TYPE_VALUE && dpid == cluster->level_dpid) {
-            if (cluster->move_active || cluster->level_holdoff) {
+            if (!dimmer_holding(cluster, 1) && (cluster->move_active || cluster->level_holdoff)) {
                 /* Our own ramp or fade in progress: the MCU reports where
-                 * its smoothing is, not where the light is going. */
+                 * its smoothing is, not where the light is going. (Not under
+                 * a wall switch hold: its level is the finger's.) */
                 cluster->held_report_value = number;
                 cluster->has_held_report   = 1;
             } else {
@@ -1366,12 +1402,21 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
         } else if (dp_type == TUYA_DP_TYPE_ENUM && cluster->action_dpid &&
                    tuya_mcu_app_mcu_is_own() && dpid == cluster->action_dpid &&
                    value[0] >= 1 && value[0] <= DIMMER_GESTURE_MAX) {
-            /* A hold: the finger is in control (Open Dimmer ignores level writes under it), so
-             * a holdoff of ours (e.g. the wall switch's OnLevel write before a hold from
-             * dark) ends now and the hold's level reports go out as they come. */
-            if (value[0] == DIMMER_GESTURE_HOLD && cluster->level_holdoff) {
-                hal_tasks_unschedule(&cluster->holdoff_task);
-                dimmer_holdoff_done(cluster);
+            /* A hold (normal mode): the finger is in control until its release
+             * (dimmer_holding()). A ramp of ours stops, and a holdoff of ours (e.g. the wall
+             * switch's OnLevel write before a hold from dark) ends now: the hold's level
+             * reports go out as they come. */
+            if (value[0] == DIMMER_GESTURE_HOLD &&
+                cluster->input_mode_mcu == DIMMER_INPUT_NORMAL) {
+                cluster->hold    = 1;
+                cluster->hold_at = hal_millis();
+                dimmer_stop_move(cluster);
+                if (cluster->level_holdoff) {
+                    hal_tasks_unschedule(&cluster->holdoff_task);
+                    dimmer_holdoff_done(cluster);
+                }
+            } else {
+                cluster->hold = 0; /* its release (any other gesture: that one was lost) */
             }
             cluster->action_seq   = (uint8_t)((cluster->action_seq + 1) & 0x0F);
             cluster->action_state = (uint16_t)((cluster->action_seq << 4) | value[0]);

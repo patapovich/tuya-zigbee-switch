@@ -13,8 +13,8 @@ On / Off / Toggle / MoveToLevel ask for an APS ack, Move / Stop not."""
 # A level report every 0.5 s through a hold, ~80 of 1000 a report: a house unit's factory MCU.
 import pytest
 from own_mcu import FEATURES_BUILD, own_mcu_contact
-from test_dimmer_mcu import (DP_LEVEL_L1, DP_ON_L1, DP_ON_L2, ack_writes, known_off, level, start,
-                             tuya_to_zcl)
+from test_dimmer_mcu import (DP_LEVEL_L1, DP_ON_L1, DP_ON_L2, ack_writes, known_off, level,
+                             scaled_to_zcl, start, tuya_to_zcl)
 
 STOP = (3, 0x0008, 0x07, b"")
 from tuya_mcu import TUYA_CMD_REPORT_PASSIVE, bool_dp, enum_dp, mcu_report, take_tx, value_dp
@@ -292,6 +292,57 @@ def test_open_dimmer_hold_followed_in_the_normal_mode_its_release_ends_it(mode):
             assert len(out) in (3, 4)                          # a second Move if the rate differs
         else:
             assert out == [STOP]                               # detached: its release's own Stop
+    finally:
+        proc.stop()
+
+
+def test_a_level_command_during_a_hold_leaves_the_bound_lights_at_the_holds_level():
+    """A level command for this channel while the finger holds its wall switch (the MCU keeps
+    the light under the finger): the hold's reports still drive the bound lights, and its
+    release leaves them at the level the hold ended at, not at the command's."""
+    proc, device, mcu = od(0)
+    try:
+        wall(mcu, 1)
+        device.step_time(2500)
+        sent(device)
+        assert gesture(proc, device, HOLD) == []               # normal mode: no gesture out
+        out = []
+        for v in (520, 440, 360):                              # a hold down, every 0.5 s
+            mcu.ch[0]["level"] = v
+            mcu.send([mcu._report([mcu._dp(2)], passive=False)])
+            mcu.serve()
+            out += sent(device)
+            device.step_time(200)
+            if v == 520:
+                device.call_zigbee_cmd(1, LEVEL, 0x00, bytes([200, 0, 0]))
+                mcu.serve()
+            device.step_time(200)
+        mcu_report(proc, enum_dp(DP_ACTION[1], RELEASE))
+        device.step_time(50)
+        out += sent(device)
+        end = scaled_to_zcl(360, 200, 1000)                    # OwnMcu's range
+        assert level(device) == end
+        assert out[0] == (3, LEVEL, MOVE, bytes([1, 50]))
+        assert out[-2:] == [STOP, (3, LEVEL, MOVE_TO_LEVEL_WITH_ONOFF, bytes([end, 4, 0]))]
+        assert [c for c in out[:-1] if c[2] == MOVE_TO_LEVEL_WITH_ONOFF] == []
+    finally:
+        proc.stop()
+
+
+def test_a_detached_hold_leaves_the_channels_own_ramp_alone():
+    """Detached: the hold drives the bound lights and does nothing to this light, so a Move
+    of the channel itself (e.g. the one its own group got) keeps ramping under it."""
+    proc, device, mcu = od(1)
+    try:
+        device.call_zigbee_cmd(1, LEVEL, MOVE_TO_LEVEL_WITH_ONOFF, bytes([100, 0, 0]))
+        mcu.serve()
+        device.step_time(4000)
+        device.call_zigbee_cmd(1, LEVEL, MOVE, bytes([0, 20]))
+        mcu.serve(350)
+        gesture(proc, device, HOLD)
+        mcu.writes.clear()
+        mcu.serve(700)
+        assert DP_LEVEL_L1 in [dp for dp, _ in mcu.writes]
     finally:
         proc.stop()
 

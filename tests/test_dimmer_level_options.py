@@ -20,6 +20,7 @@ from test_dimmer_mcu import (
     level,
     onoff,
     scaled_to_tuya,
+    scaled_to_zcl,
     set_on_level,
     start,
 )
@@ -259,6 +260,101 @@ def test_a_hold_after_the_wall_switchs_on_level_reports_its_level_at_once():
         assert level(device) == 33                     # the hold ends the holdoff: 300 now
         od_level_report(mcu, 340)
         assert level(device) == 45                     # and every hold report after it
+    finally:
+        proc.stop()
+
+
+# ---- a wall switch hold as a state (Open Dimmer, from its hold gesture to its release) ------
+
+GESTURE_RELEASE, STOP = 5, 0x03
+
+
+def od_lit(lvl: int = 100):
+    """Open Dimmer, channel 1 on at that level a while ago: no holdoff of ours is left."""
+    proc, device, mcu = od()
+    device.call_zigbee_cmd(1, LEVEL, MOVE_TO_LEVEL_WITH_ONOFF, bytes([lvl, 0, 0]))
+    mcu.serve()
+    device.step_time(4000)
+    mcu.serve()
+    mcu.writes.clear()
+    return proc, device, mcu
+
+
+def od_gesture(proc, gesture: int) -> None:
+    mcu_report(proc, enum_dp(DP_ACTION_L1, gesture))
+
+
+def od_zcl(value: int) -> int:
+    return scaled_to_zcl(value, OD_MIN, OD_MAX)
+
+
+def test_a_level_command_during_a_hold_does_not_hold_back_the_holds_reports():
+    """The finger has the level from the hold gesture to the release. A level command in
+    between still goes to the MCU (which keeps the light under the finger), and the hold's
+    next report is taken at once, not after our 3 s holdoff."""
+    proc, device, mcu = od_lit()
+    try:
+        od_gesture(proc, GESTURE_HOLD)
+        od_level_report(mcu, 520)
+        assert level(device) == od_zcl(520)
+        device.step_time(300)
+        to_level(device, 200)                          # e.g. a hub's periodic brightness
+        mcu.serve()
+        assert mcu.writes[-1] == (DP_LEVEL_L1, scaled_to_tuya(200, OD_MIN, OD_MAX))
+        assert level(device) == 200                    # shown until the hold's next report
+        device.step_time(200)
+        od_level_report(mcu, 440)
+        assert level(device) == od_zcl(440)
+        device.step_time(400)
+        od_level_report(mcu, 360)
+        assert level(device) == od_zcl(360)
+    finally:
+        proc.stop()
+
+
+@pytest.mark.parametrize("end", ["release", "silence", "off"])
+def test_after_a_hold_our_fades_hold_reports_back_again(end):
+    """The hold ends at its release, at an off, and when no level report came for 1.2 s (a
+    lost release): from then a level of ours is a fade again, its reports on the way wait."""
+    proc, device, mcu = od_lit()
+    try:
+        od_gesture(proc, GESTURE_HOLD)
+        od_level_report(mcu, 520)
+        if end == "release":
+            od_gesture(proc, GESTURE_RELEASE)
+        elif end == "silence":
+            device.step_time(1100)                     # with the report's own 0.1 s
+        else:
+            device.call_zigbee_cmd(1, ON_OFF, CMD_OFF)
+            mcu.serve()
+        device.call_zigbee_cmd(1, LEVEL, MOVE_TO_LEVEL_WITH_ONOFF, bytes([200, 0, 0]))
+        mcu.serve()
+        od_level_report(mcu, 600)                      # the MCU's fade on its way
+        assert level(device) == 200
+    finally:
+        proc.stop()
+
+
+def test_a_hold_stops_our_ramp_and_its_reports_are_taken_at_once():
+    """A Move of ours parks the MCU's level reports and writes a step every 300 ms: under a
+    hold the light is the finger's, so the ramp ends at the hold gesture, and a Move that comes
+    during the hold does not start one."""
+    proc, device, mcu = od_lit()
+    try:
+        device.call_zigbee_cmd(1, LEVEL, MOVE, bytes([UP, 20]))
+        mcu.serve(350)
+        assert DP_LEVEL_L1 in [dp for dp, _ in mcu.writes]      # its first step
+        od_gesture(proc, GESTURE_HOLD)
+        mcu.serve()
+        mcu.writes.clear()
+        od_level_report(mcu, 300)
+        assert level(device) == od_zcl(300)
+        mcu.serve(600)
+        assert mcu.writes == []                        # no more steps of ours
+        od_level_report(mcu, 320)
+        device.call_zigbee_cmd(1, LEVEL, MOVE, bytes([UP, 20]))
+        mcu.serve(700)
+        assert mcu.writes == [] and level(device) == od_zcl(320)
     finally:
         proc.stop()
 
