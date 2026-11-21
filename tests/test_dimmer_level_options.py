@@ -335,6 +335,28 @@ def test_after_a_hold_our_fades_hold_reports_back_again(end):
         proc.stop()
 
 
+def test_a_release_after_a_rest_at_the_end_of_the_range_shows_its_level_at_once():
+    """With the finger at rest at the end of the range Open Dimmer reports no level, so the
+    hold runs out here after 1.2 s. A level command after that starts a holdoff of ours (the
+    MCU keeps the light under the finger). The release ends it: the level reported just
+    before the release is the light's, at once and not 3 s later."""
+    proc, device, mcu = od_lit()
+    try:
+        od_gesture(proc, GESTURE_HOLD)
+        od_level_report(mcu, OD_MAX)                   # the hold reached the top
+        device.step_time(1500)                         # the finger rests there: no reports
+        to_level(device, 200)                          # e.g. a hub's periodic brightness
+        mcu.serve()
+        assert level(device) == 200
+        device.step_time(300)
+        od_level_report(mcu, OD_MAX)                   # the release: the level, then the gesture
+        assert level(device) == 200                    # (held back: our fade, as far as we know)
+        od_gesture(proc, GESTURE_RELEASE)
+        assert level(device) == od_zcl(OD_MAX)
+    finally:
+        proc.stop()
+
+
 def test_a_hold_stops_our_ramp_and_its_reports_are_taken_at_once():
     """A Move of ours parks the MCU's level reports and writes a step every 300 ms: under a
     hold the light is the finger's, so the ramp ends at the hold gesture, and a Move that comes

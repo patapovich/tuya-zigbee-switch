@@ -1447,18 +1447,24 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
             /* A hold (normal mode): the finger is in control until its release
              * (dimmer_holding()). A ramp of ours stops, and a holdoff of ours (e.g. the wall
              * switch's OnLevel write before a hold from dark) ends now: the hold's level
-             * reports go out as they come. */
-            if (value[0] == DIMMER_GESTURE_HOLD &&
+             * reports go out as they come. Its release ends a holdoff too: the light is where
+             * the finger left it (reported just before the release), whatever we wrote under
+             * the hold, also after dimmer_holding() ran out with the finger at rest at the
+             * end of the range (no reports there). Any other gesture: the release was lost. */
+            uint8_t hold = value[0] == DIMMER_GESTURE_HOLD;
+
+            cluster->hold = 0;
+            if ((hold || value[0] == DIMMER_GESTURE_RELEASE) &&
                 cluster->input_mode_mcu == DIMMER_INPUT_NORMAL) {
-                cluster->hold    = 1;
-                cluster->hold_at = hal_millis();
-                dimmer_stop_move(cluster);
+                if (hold) {
+                    cluster->hold    = 1;
+                    cluster->hold_at = hal_millis();
+                    dimmer_stop_move(cluster);
+                }
                 if (cluster->level_holdoff) {
                     hal_tasks_unschedule(&cluster->holdoff_task);
                     dimmer_holdoff_done(cluster);
                 }
-            } else {
-                cluster->hold = 0; /* its release (any other gesture: that one was lost) */
             }
             cluster->action_seq   = (uint8_t)((cluster->action_seq + 1) & 0x0F);
             cluster->action_state = (uint16_t)((cluster->action_seq << 4) | value[0]);
