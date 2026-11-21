@@ -171,7 +171,7 @@ uint16_t tuya_mcu_ota_own_build(void);
  * come before it can, and an app that declines offers is reached only so):
  *  - a bootloader with no valid app (request mode 2, e.g. after a power cut during an
  *    update, which also restarted this firmware, so it has heard no report) is served
- *    whatever the image: the bootloader itself takes up to 14 KB there ("recovery comes
+ *    whatever the image: the bootloader itself takes up to 14 KB there (v3: 26 KB) ("recovery comes
  *    before settings", BOOTLOADER.md section 1); a refusal would leave the lamp dark;
  *  - a probe, rescue, button or link run (mode 3, 4, 5, 6) whose request's installed header
  *    (bytes 8..15: CRC, version, flags, build) has RING_HIGH is served: that app's layout has

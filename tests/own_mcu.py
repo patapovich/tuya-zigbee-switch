@@ -66,6 +66,7 @@ TRANSITION_BUILD = 400
 FEATURES_BUILD = 500
 LAMP_COMP_BUILD = 1300    # 2.2.8: the lamp compensation, DP 172 / 173 (in its dump)
 DP_CUSTOM_BASE = 174      # 2.2.8: custom curve, + 3 * channel + part, raw 6 little-endian u16 (saved, in the dump)
+DP_DARK_HOLD_BASE = 180   # 2.2.8: + channel, a long press from off rises from the min (1, default) or not (0)
 COUNTDOWN_MAX = 86400
 UART_C = Path(__file__).resolve().parent.parent / "src/telink/hal/uart.c"
 
@@ -88,7 +89,7 @@ def channel(power_on: int) -> dict:
             "countdown": 0, "curve": 2, "power_on": power_on, "fade_on": 950,
             "fade_off": 950, "soft_end": 12, "hold": 3300, "hold_end": 20, "transition": 0,
             "input": 0, "power_level": 0, "identify": 0, "boost": 0, "fast_press": 0,
-            "lamp_comp": 0}
+            "lamp_comp": 0, "dark_hold": 1}
 
 
 class OwnMcu:
@@ -128,6 +129,9 @@ class OwnMcu:
         return t[0] == 0 and t[16] == 10000 and all(b >= a for a, b in zip(t, t[1:]))
 
     def _dp(self, dpid: int) -> bytes:
+        if DP_DARK_HOLD_BASE <= dpid < DP_DARK_HOLD_BASE + 2:
+            v = self.ch[dpid - DP_DARK_HOLD_BASE]["dark_hold"]
+            return dp_payload(dpid, TUYA_TYPE_VALUE, v.to_bytes(4, "big"))
         if DP_CUSTOM_BASE <= dpid < DP_CUSTOM_BASE + 6:          # the part as kept
             ch, part = divmod(dpid - DP_CUSTOM_BASE, 3)
             pts = (self.custom[ch] + [0])[6 * part:6 * part + 6]
@@ -173,7 +177,8 @@ class OwnMcu:
             if self.has(LAMP_COMP_BUILD):        # the frame was full: in frames of their own
                 frames.append(self._report([self._dp(DP_EXTRA_BASE + 10 + ch)] +
                                            [self._dp(DP_CUSTOM_BASE + 3 * ch + k) for k in range(2)]))
-                frames.append(self._report([self._dp(DP_CUSTOM_BASE + 3 * ch + 2)]))
+                frames.append(self._report([self._dp(DP_CUSTOM_BASE + 3 * ch + 2),
+                                            self._dp(DP_DARK_HOLD_BASE + ch)]))
         return frames
 
     def health(self, uptime_min: int = 61, reset: int = 0x08, zc_losses: int = 0,
@@ -207,6 +212,11 @@ class OwnMcu:
             for i in range(6):
                 if 6 * part + i < 17:
                     self.custom[ch][6 * part + i] = int.from_bytes(data[4 + 2 * i:6 + 2 * i], "little")
+            return True
+        if DP_DARK_HOLD_BASE <= dpid < DP_DARK_HOLD_BASE + 2:
+            if not self.has(LAMP_COMP_BUILD) or vlen != 4 or value > 1:
+                return False
+            self.ch[dpid - DP_DARK_HOLD_BASE]["dark_hold"] = value
             return True
         if DP_POWER_ON_BASE <= dpid < DP_POWER_ON_BASE + 2:
             self.ch[dpid - DP_POWER_ON_BASE]["power_on"] = value

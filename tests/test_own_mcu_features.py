@@ -551,6 +551,39 @@ def test_an_open_dimmer_without_the_lamp_compensation_gets_no_write(build):
         proc.stop()
 
 
+# ---- a long press from off (2.2.8) --------------------------------------------
+ATTR_DARK_HOLD = 0xFF15
+DP_DARK_HOLD = {1: 180, 2: 181}
+
+
+def test_the_long_press_from_off_is_read_from_the_dump_and_written():
+    """Open Dimmer 2.2.8: DP 180 / 181 (1 rises from the min, the default; 0 on at its level),
+    genOnOffSwitchCfg 0xff15 per channel endpoint."""
+    proc, device, mcu = own(build=LAMP_COMP_BUILD, prepare=lambda m: m.ch[1].update(dark_hold=0))
+    try:
+        assert [attr(device, ep, SWITCH_CFG, ATTR_DARK_HOLD) for ep in (1, 2)] == [1, 0]
+        assert write(device, mcu, 1, SWITCH_CFG, ATTR_DARK_HOLD, 0) == [(DP_DARK_HOLD[1], 0)]
+        assert mcu.ch[0]["dark_hold"] == 0
+        assert attr(device, 1, SWITCH_CFG, ATTR_DARK_HOLD) == 0
+        assert write(device, mcu, 2, SWITCH_CFG, ATTR_DARK_HOLD, 1) == [(DP_DARK_HOLD[2], 1)]
+        assert attr(device, 2, SWITCH_CFG, ATTR_DARK_HOLD) == 1
+    finally:
+        proc.stop()
+
+
+@pytest.mark.parametrize("build", [FEATURES_BUILD, LAMP_COMP_BUILD - 1])
+def test_an_open_dimmer_without_the_long_press_setting_gets_no_write(build):
+    """Its dump has no DP 180 / 181: the attribute stays "none" (0xFF) and a write of it sends
+    nothing and sets it back."""
+    proc, device, mcu = own(build=build)
+    try:
+        assert attr(device, 1, SWITCH_CFG, ATTR_DARK_HOLD) == 0xFF
+        assert write(device, mcu, 1, SWITCH_CFG, ATTR_DARK_HOLD, 0) == []
+        assert attr(device, 1, SWITCH_CFG, ATTR_DARK_HOLD) == 0xFF
+    finally:
+        proc.stop()
+
+
 # ---- custom curve (2.2.8) -------------------------------------------------------
 CURVE = [0, 100, 250, 450, 700, 1000, 1400, 1900, 2500, 3200, 4000, 4900, 5900, 7000, 8100, 9100,
          10000]

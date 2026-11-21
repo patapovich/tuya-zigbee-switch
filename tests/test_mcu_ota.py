@@ -90,7 +90,8 @@ def answer_version(proc, device, packed: int) -> list[tuple[int, bytes]]:
 
 def test_carried_image_is_an_own_firmware():
     assert IMAGE[0xC0:0xC4] == b"APDZ"
-    assert SIZE == len(IMAGE) <= 14 * 1024           # app area behind the 4 KB bootloader
+    assert SIZE == len(IMAGE) <= 26 * 1024           # app area behind the 4 KB bootloader + the
+                                                     # hidden flash past the ring (v3, section 18)
     assert SIZE <= 12 * 1024 or IMAGE[0xCD] & 0x10   # over 12 KB only above the moved ring
     assert VERSION >> 6 >= 2
     assert not IMAGE[0xCD] & (IMAGE_FLAG_SIM | IMAGE_FLAG_MEASURE)   # never a bench build
@@ -894,6 +895,7 @@ def test_a_2_1_x_identity_leaves_build_and_bootloader_at_0():
 RESET = int.from_bytes(BASE[4:8], "little")
 OVER_12K = 12 * 1024 + 128
 OVER_14K = 14 * 1024 + 128
+OVER_26K = 26 * 1024 + 128
 LAST_ODD = (APP_BASE + len(BASE) - 1) | 1 if len(BASE) % 2 == 0 else APP_BASE + len(BASE) - 2
 
 REFUSED = {
@@ -911,7 +913,7 @@ REFUSED = {
     "reset vector past the image": variant(reset=(APP_BASE + len(BASE)) | 1),
     "reset vector in the bootloader": variant(reset=APP_BASE - 0xF00 + 1),
     "over 12 KB without RING_HIGH": variant(clear_flags=APP_FLAG_RING_HIGH, pad_to=OVER_12K),
-    "over 14 KB with RING_HIGH": variant(flags=APP_FLAG_RING_HIGH, pad_to=OVER_14K),
+    "over 26 KB with RING_HIGH": variant(flags=APP_FLAG_RING_HIGH, pad_to=OVER_26K),
     "crc": variant(crc=0x12345678),
 }
 SERVED = {
@@ -921,13 +923,17 @@ SERVED = {
     "12 KB": variant(flags=APP_FLAG_CONFIRMS, build=300, pad_to=12 * 1024),
     "last odd address is the reset vector": variant(reset=LAST_ODD),
 }
+# carried and served like any image over 12 KB (behind the ring gate): v3 puts its part past
+# 14 KB in the hidden flash (open-dimmer docs/BOOTLOADER.md section 18)
+CARRIED_V3 = {"over 14 KB with RING_HIGH (v3: hidden)": variant(flags=APP_FLAG_CONFIRMS | APP_FLAG_RING_HIGH,
+                                                               build=300, pad_to=OVER_14K)}
 
 
 @pytest.fixture(scope="module")
 def variant_stubs(tmp_path_factory) -> dict:
     """One stub per image, built in parallel."""
     from concurrent.futures import ThreadPoolExecutor
-    images = {**REFUSED, **SERVED}
+    images = {**REFUSED, **SERVED, **CARRIED_V3}
     with ThreadPoolExecutor(8) as pool:
         futures = {name: pool.submit(image_stub, tmp_path_factory.mktemp("img"), img)
                    for name, img in images.items()}
@@ -956,6 +962,18 @@ def test_an_image_the_bootloader_may_take_is_served_and_offered(variant_stubs, n
         _, frames = contact_as_own(proc, device, older_version())
         assert [d for cmd, d in frames if cmd == OTA_NOTIFY] == [offer(img)]
         assert answers(proc, device, block_request(0xC0, 16, MODE_PROBE)) == [header_answer(img)]
+    finally:
+        proc.stop()
+
+
+@pytest.mark.parametrize("name", CARRIED_V3)
+def test_an_image_over_14_kb_is_carried_and_served_to_a_bootloader_without_an_app(variant_stubs, name):
+    """Up to 26 KB (IMAGE_MAX): usable, and served whatever the image to a bootloader with no
+    valid app (mode 2); offered only past the ring gate, as every image over 12 KB."""
+    img = CARRIED_V3[name]
+    proc, device = start_with(variant_stubs[name])
+    try:
+        assert answers(proc, device, block_request(0xC0, 16, MODE_NO_APP)) == [header_answer(img)]
     finally:
         proc.stop()
 
@@ -1335,14 +1353,14 @@ def boot_pick(answer: bytes, mode: int, installed: bytes = IMAGE[0xC8:0xD0]) -> 
     """open-dimmer boot/boot.c pick() on a block answer, as far as the module's answer decides
     it: NONE (no header answer: the probe waits on), REFUSE (a probe ends: the app starts), TAKE.
     installed: the request's installed header bytes 8..15 (CRC, version, flags, build). The
-    limit is the installed layout's (12 KB without RING_HIGH, 14 KB with it or without an app);
+    limit is the installed layout's (12 KB without RING_HIGH, 26 KB (v3) with it or without an app);
     a rescue or button run skips the installed image (g_skip)."""
     if len(answer) < 13 + 16 or int.from_bytes(answer[0:4], "big") != 0xC0:
         return "NONE"
     h = answer[13:29]
     size, crc = int.from_bytes(answer[4:8], "big"), int.from_bytes(answer[8:12], "big")
     build, had = int.from_bytes(h[14:16], "little"), int.from_bytes(installed[6:8], "little")
-    limit = 14 * 1024 if mode == MODE_NO_APP or installed[5] & APP_FLAG_RING_HIGH else 12 * 1024
+    limit = 26 * 1024 if mode == MODE_NO_APP or installed[5] & APP_FLAG_RING_HIGH else 12 * 1024
     if (h[0:4] != b"APDZ" or int.from_bytes(h[4:8], "little") != size
             or int.from_bytes(h[8:12], "little") != crc or size < 0xD0 or size > limit
             or h[13] & 0x07 or crc == 0

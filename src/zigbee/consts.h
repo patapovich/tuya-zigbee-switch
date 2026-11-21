@@ -104,6 +104,8 @@
 #define ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_BIND_MODE          0xff12 /* dimmer: its bindings */
 #define ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_DOUBLE_ACTION      0xff13 /* dimmer: double press */
 #define ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_TRIPLE_ACTION      0xff14 /* dimmer: triple press */
+#define ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_DARK_HOLD          0xff15 /* dimmer: a long press from off rises
+                                                                       * from the min (Open Dimmer 2.2.8) */
 
 
 // Multistate cluster

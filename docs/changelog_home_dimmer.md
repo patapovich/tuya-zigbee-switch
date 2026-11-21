@@ -14,6 +14,14 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
 
 ## Next
 
+- Carries Open Dimmer's bootloader v3 for the SWD job `update_bootloader`: images up to 26 KB,
+  their part past 14 KB in the dimmer chip's hidden flash (open-dimmer docs/BOOTLOADER.md
+  section 18). The carried image may now be up to 26 KB (`IMAGE_MAX`); a chip under bootloader
+  v2 declines an image over 14 KB and keeps its app.
+- Open Dimmer 2.2.8's long press from off per channel (genOnOffSwitchCfg 0xff15, DP 180 / 181;
+  Zigbee2MQTT `long_press_from_off`, on by default): off, a long press from off brings the light
+  on at its level and the hold goes on from there instead of rising from the minimum. Shown and
+  written only for an MCU that has it (its dump tells).
 - Open Dimmer 2.2.8's custom dimming curve per channel: `dimming_curve` `custom` and its table
   `custom_curve` (lightingBallastCfg 0xff12, 17 points 0..10000): passed on to the dimmer chip
   (DPs 174..179), which saves it, and shown as the chip reports it; made for a lamp by

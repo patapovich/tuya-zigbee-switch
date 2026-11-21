@@ -1114,6 +1114,24 @@ const romasku = {
             },
         });
     },
+    // A long press from off (Open Dimmer 2.2.8, DP 180 / 181 by genOnOffSwitchCfg 0xff15): it
+    // rises from the minimum (true, the default), or the light comes on at its level (false).
+    dimmerLongPressFromOff: (endpointName) => {
+        const expose = e.binary("long_press_from_off", ea.ALL, true, false).withEndpoint(endpointName)
+            .withLabel("Long press from off: rise from the minimum")
+            .withDescription("A long press of the wall switch while the light is off: on (the default), the light comes on at its minimum, waits there 0.7 s and rises while the switch is held, so it can be let go at any level from the lowest; off, it comes on at its level as for a short press and the hold dims from there (Open Dimmer firmware)")
+            .withCategory("config");
+        return romasku.dimmerOwnAttr({
+            expose, endpointName, cluster: "genOnOffSwitchCfg", attr: {ID: 0xff15}, type: Zcl.DataType.BOOLEAN,
+            minMcu: "2.2.8",
+            fromValue: (v) => (v === 0xFF ? null : v === 1 || v === true),
+            toValue: (value) => {
+                if (value === true || value === "ON" || value === "true") return 1;
+                if (value === false || value === "OFF" || value === "false") return 0;
+                throw new Error("long_press_from_off: true or false");
+            },
+        });
+    },
     // The wall switch's bindings (dimmer-only builds: genOnOffSwitchCfg 0xff12..0xff14, kept
     // by the module): what goes to the lights and groups bound to the channel's wall switch
     // endpoint (3 / 4 on the ZDMS16-2). An enum each, its values by their index.
@@ -1643,6 +1661,7 @@ const definitions = [
             romasku.dimmerCountdown("{{dimmerName}}"),
             romasku.dimmerSwitchMode("{{dimmerName}}"),
             romasku.dimmerFastPress("{{dimmerName}}"),
+            romasku.dimmerLongPressFromOff("{{dimmerName}}"),
             romasku.dimmerStartupLevel("{{dimmerName}}"),
             romasku.dimmerStartBoost("{{dimmerName}}"),
             romasku.dimmerLampCompensation("{{dimmerName}}"),
@@ -1898,7 +1917,7 @@ const definitions = [
                 }
             }
             if (openDimmer22) {
-                for (const [cluster, attrs] of [["genOnOff", [0xff10]], ["genOnOffSwitchCfg", [0xff10, 0xff11]],
+                for (const [cluster, attrs] of [["genOnOff", [0xff10]], ["genOnOffSwitchCfg", [0xff10, 0xff11, 0xff15]],
                                                 ["genLevelCtrl", ["startUpCurrentLevel", "options", 0xff11]],
                                                 ["lightingBallastCfg", [0xff10, 0xff11, 0xff12]]{% if device.dimmer_only %},
                                                 ["genOnOffSwitchCfg", [0xff12, 0xff13, 0xff14]]{% endif %}]) {

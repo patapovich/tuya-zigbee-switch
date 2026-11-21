@@ -20,10 +20,14 @@
 #define IMAGE_APP_BASE          0x08001000u   /* where the bootloader puts it */
 #define IMAGE_SP                0x20000BE0u   /* every app's initial SP: below the RAM mailbox */
 #define IMAGE_LIMIT_LEGACY      (12u * 1024u) /* an app whose settings ring is at 0x08004000 */
-#define IMAGE_MAX               (14u * 1024u) /* 0x3800, the v2 bootloader's BOOT_APP_MAX: over
+#define IMAGE_MAX               (26u * 1024u) /* 0x6800, the v3 bootloader's BOOT_IMAGE_MAX: over
                                                * 12 KB only with RING_HIGH, after the ring move
                                                * (BOOTLOADER.md section 1), and behind the ring
-                                               * gate (tuya_mcu_ota.h) */
+                                               * gate (tuya_mcu_ota.h); over 14 KB the part
+                                               * past it goes to the hidden flash (section 18):
+                                               * an app under a v2 bootloader declines such an
+                                               * offer and the v2 bootloader refuses the image,
+                                               * so that module keeps its app */
 #define IMAGE_FLAG_SIM          0x01          /* bench build with a virtual zero cross */
 #define IMAGE_FLAG_MEASURE      0x02          /* measurement build: outputs always off */
 #define IMAGE_FLAG_DIAG         0x04          /* diagnostics build: takes no update */

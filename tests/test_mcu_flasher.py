@@ -275,10 +275,13 @@ def flash_read(proc: StubProc, addr: int, words: int) -> bytes:
     return out
 
 
-def test_the_carried_bootloader_is_v2():
+def test_the_carried_bootloader_is_v3():
+    """Open Dimmer's bootloader v3 (images up to 26 KB, the part past 14 KB in the hidden flash):
+    version 3, features 0x1F, app_max 0x6800."""
     boot = carried_boot()
-    assert boot[0x10:0x14] == b"ODBL" and boot[0x14] >= 2
-    assert crc(sector(boot)) == 0x7D215316  # what the test unit reports as DP 136
+    assert boot[0x10:0x14] == b"ODBL" and boot[0x14] == 3 and boot[0x15] == 0x1F
+    assert int.from_bytes(boot[0x18:0x1C], "little") == 0x6800
+    assert crc(sector(boot)) == 0xA2B67F8C  # what a unit with it reports as DP 136
 
 
 def test_a_writing_job_needs_its_name_first(flasher, tmp_path):
