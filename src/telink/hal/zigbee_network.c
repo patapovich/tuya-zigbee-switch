@@ -308,6 +308,28 @@ static void stock_nv_log(uint8_t kind, uint8_t a, uint8_t b) {
     g_log_at += sizeof(r);
 }
 
+/* Debug builds: raw items for the log pages (zigbee/stock_nv.h STOCK_NV_RAW_PAGE). */
+static uint16_t stock_nv_raw(uint8_t which, uint8_t *buf, uint16_t max) {
+    static const struct {
+        uint8_t  module;
+        uint8_t  item;
+        uint16_t size;
+    }       k[] = {
+        { NV_MODULE_ZB_INFO, NV_ITEM_ZB_INFO,     sizeof(zb_info_t)         },
+        { NV_MODULE_APS,     NV_ITEM_APS_SSIB,    sizeof(ss_info_base_t)    },
+        { NV_MODULE_KEYPAIR, NV_ITEM_SS_KEY_PAIR, sizeof(ss_dev_pair_set_t) },
+    };
+    uint8_t i = which >> 1;
+
+    if (i >= sizeof(k) / sizeof(k[0]) || k[i].size > max) {
+        return 0;
+    }
+    if (which & 1u) {
+        return stock_nv_item(stock_nv_read, k[i].module, k[i].item, buf, k[i].size) ? k[i].size : 0;
+    }
+    return nv_flashReadNew(1, k[i].module, k[i].item, k[i].size, buf) == NV_SUCC ? k[i].size : 0;
+}
+
 static void stock_nv_take_network(void) {
     zb_info_t         info;
     ss_info_base_t    ss;
@@ -315,6 +337,7 @@ static void stock_nv_take_network(void) {
     uint8_t           marker;
 
     g_stock_nv_flash_read     = stock_nv_read;
+    g_stock_nv_raw            = stock_nv_raw;
     g_stock_nv_diag.flash_cap = (uint8_t)(flash_read_mid() >> 16);
     if (g_stock_nv_diag.flash_cap < FLASH_SIZE_1M) {
         g_stock_nv_diag.result = STOCK_NV_NOT_1MB; /* no factory NV past 512 KB on this chip */

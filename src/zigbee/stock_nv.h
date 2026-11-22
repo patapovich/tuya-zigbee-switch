@@ -91,6 +91,15 @@ extern uint8_t             g_stock_nv_log_page_no;
 extern stock_nv_log_page_t g_stock_nv_log_page;
 /* The HAL's flash read, set by the Telink start-up (NULL elsewhere: pages stay empty). */
 extern stock_nv_read_t g_stock_nv_flash_read;
+
+/* Debug builds: pages 0x80 and up are raw items instead of log records, 40 bytes a page:
+ * page 0x80 + 0x10 * which + chunk; which 0 / 1 = this firmware's / the factory network
+ * information, 2 / 3 = security material, 4 / 5 = TC link key; total = the item's size (0:
+ * not there). The Telink start-up sets the reader (NULL elsewhere). */
+#define STOCK_NV_RAW_PAGE     0x80u
+#define STOCK_NV_RAW_BYTES    40u
+typedef uint16_t (*stock_nv_raw_t)(uint8_t which, uint8_t *buf, uint16_t max);
+extern stock_nv_raw_t g_stock_nv_raw;
 void stock_nv_log_fill_page(void);
 
 /* The newest intact copy of item item_id of module module (both sectors looked at): exactly

@@ -1,5 +1,7 @@
 #include "zigbee/stock_nv.h"
 
+#include <string.h>
+
 #include "zigbee/crc32_nibble.h"
 
 stock_nv_diag_t     g_stock_nv_diag = { sizeof(stock_nv_diag_t) - 1u, 2, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -7,6 +9,7 @@ stock_nv_diag_t     g_stock_nv_diag = { sizeof(stock_nv_diag_t) - 1u, 2, 0, 0, 0
 uint8_t             g_stock_nv_log_page_no;
 stock_nv_log_page_t g_stock_nv_log_page = { 3, 0, 0, { { 0 } } };
 stock_nv_read_t     g_stock_nv_flash_read;
+stock_nv_raw_t      g_stock_nv_raw;
 
 void stock_nv_log_fill_page(void) {
     uint32_t magic = 0;
@@ -16,6 +19,21 @@ void stock_nv_log_fill_page(void) {
     g_stock_nv_log_page.page  = g_stock_nv_log_page_no;
     g_stock_nv_log_page.total = 0;
     g_stock_nv_log_page.len   = 3;
+    if (g_stock_nv_log_page_no >= STOCK_NV_RAW_PAGE) {
+        static uint8_t raw[192];
+        uint8_t        which = (uint8_t)((g_stock_nv_log_page_no - STOCK_NV_RAW_PAGE) >> 4);
+        uint16_t       at    = (uint16_t)((g_stock_nv_log_page_no & 0x0Fu) * STOCK_NV_RAW_BYTES);
+        uint16_t       size  = g_stock_nv_raw ? g_stock_nv_raw(which, raw, sizeof(raw)) : 0;
+        uint16_t       n     = at < size ? (uint16_t)(size - at) : 0;
+
+        if (n > STOCK_NV_RAW_BYTES) {
+            n = STOCK_NV_RAW_BYTES;
+        }
+        memcpy(g_stock_nv_log_page.rec, raw + at, n);
+        g_stock_nv_log_page.total = size;
+        g_stock_nv_log_page.len   = (uint8_t)(3u + n);
+        return;
+    }
     if (!g_stock_nv_flash_read) {
         return;
     }
