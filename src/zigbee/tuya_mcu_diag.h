@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include "hal/zigbee.h"
+#include "zigbee/consts.h"
 
 /*
  * Secondary-MCU link diagnostics, readable over Zigbee: manufacturer specific
@@ -20,6 +21,10 @@
  *               DP dump
  *
  * Decoder: helper_scripts/decode_mcu_diag.py
+ *
+ * The attributes and the event log are in debug builds only (MCU_FLASHER_DUMP: make
+ * MCU_DUMP=1, and the stub); a release build keeps the counters, which the MCU update and the
+ * SWD master use (rx_frames, first_answer_ms, request_boot_mode, ...), and logs nothing.
  */
 
 typedef enum {
@@ -107,16 +112,21 @@ extern tuya_mcu_diag_counters_t tuya_mcu_diag;
 #define TUYA_MCU_DIAG_CONTROL_CLEAR        1
 #define TUYA_MCU_DIAG_CONTROL_QUERY_ALL    2
 
-void tuya_mcu_diag_clear(void);
-
-/** Append an event to the log (value: up to the first 4 bytes, big-endian,
- *  as tuya_mcu_diag_number() builds them). */
-void tuya_mcu_diag_log(uint8_t kind, uint8_t id, uint32_t value);
 uint32_t tuya_mcu_diag_number(const uint8_t *data, uint16_t len);
 
 /** A time for a 16-bit field: saturated at 0xFFFF and at least 1, since 0
  *  there means "not yet". */
 uint16_t tuya_mcu_diag_ms(uint32_t ms);
+
+#ifdef MCU_FLASHER_DUMP
+/* The attributes: counters, log pages, control. */
+#define TUYA_MCU_DIAG_ATTRS    (1 + TUYA_MCU_DIAG_LOG_PAGES + 1)
+
+void tuya_mcu_diag_clear(void);
+
+/** Append an event to the log (value: up to the first 4 bytes, big-endian,
+ *  as tuya_mcu_diag_number() builds them). */
+void tuya_mcu_diag_log(uint8_t kind, uint8_t id, uint32_t value);
 
 /** Append the attributes to a Basic cluster table; returns how many. */
 uint8_t tuya_mcu_diag_register(hal_zigbee_attribute *table, uint8_t start_index);
@@ -125,5 +135,30 @@ uint8_t tuya_mcu_diag_register(hal_zigbee_attribute *table, uint8_t start_index)
  *  write was another attribute). Clearing is done here; the DP dump is the
  *  caller's job. */
 uint8_t tuya_mcu_diag_on_write(uint16_t attribute_id);
+
+#else
+#define TUYA_MCU_DIAG_ATTRS    0
+
+static inline void tuya_mcu_diag_clear(void) {
+}
+
+static inline void tuya_mcu_diag_log(uint8_t kind, uint8_t id, uint32_t value) {
+    (void)kind;
+    (void)id;
+    (void)value;
+}
+
+static inline uint8_t tuya_mcu_diag_register(hal_zigbee_attribute *table, uint8_t start_index) {
+    (void)table;
+    (void)start_index;
+    return 0;
+}
+
+static inline uint8_t tuya_mcu_diag_on_write(uint16_t attribute_id) {
+    (void)attribute_id;
+    return 0;
+}
+
+#endif
 
 #endif

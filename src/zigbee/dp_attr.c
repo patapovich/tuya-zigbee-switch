@@ -4,6 +4,7 @@
 #include "device_config/config_parser.h"
 #include "hal/printf_selector.h"
 #include "hal/timer.h"
+#include "tuya_mcu_diag.h"
 #include "tuya_secondary_mcu.h"
 #include <string.h>
 
@@ -13,10 +14,10 @@ uint8_t   dp_attrs_cnt = 0;
 /* Every dp attribute gets a slot in the Basic cluster's attribute table
  * (basic_cluster_add_to_endpoint): 13 fixed, network LED, dp config, config
  * ext, the dp attributes, MCU version, MCU diag (counters, log pages,
- * control), the Open Dimmer health report. Raise attr_infos together with
+ * control; debug builds), the Open Dimmer health report. Raise attr_infos together with
  * MAX_DP_ATTRS. A negative array size stops the build; the Telink gcc 4.5 has
  * no _Static_assert. */
-#define BASIC_ATTRS_BESIDE_DP    (13 + 1 + 2 + 1 + 1 + TUYA_MCU_DIAG_LOG_PAGES + 1 + 1 + \
+#define BASIC_ATTRS_BESIDE_DP    (13 + 1 + 2 + 1 + 1 + TUYA_MCU_DIAG_ATTRS + \
                                   BASIC_MCU_FLASHER_ATTRS + BASIC_STOCK_NV_ATTRS)
 typedef char dp_attrs_fit_the_basic_table[
         (sizeof(((zigbee_basic_cluster *) 0)->attr_infos) / sizeof(hal_zigbee_attribute) >=

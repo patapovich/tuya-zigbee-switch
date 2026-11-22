@@ -15,6 +15,14 @@
 #define BASIC_MCU_FLASHER_ATTRS    0
 #endif
 
+/* The secondary MCU link diagnostics (zigbee/tuya_mcu_diag.h): counters, log pages, control;
+ * debug builds only. */
+#if defined(MCU_FLASHER_DUMP)
+#define BASIC_MCU_DIAG_ATTRS    7
+#else
+#define BASIC_MCU_DIAG_ATTRS    0
+#endif
+
 /* The start-up's look at the factory NV (zigbee/stock_nv.h) and the factory identity
  * (zigbee/factory_identity.h), ZDMS16-2 builds. */
 #if defined(SECONDARY_MCU_IMAGE) && defined(MCU_FLASHER_DUMP)
@@ -29,7 +37,8 @@ typedef struct {
     uint8_t              deviceEnable;
     char                 manuName[32];
     char                 modelId[32];
-    hal_zigbee_attribute attr_infos[37 + BASIC_MCU_FLASHER_ATTRS + BASIC_STOCK_NV_ATTRS]; // 13 fixed + led + 2 config + 12 dp attrs + MCU version + 7 MCU diag + health (checked in dp_attr.c), + the SWD master's (mcu_flasher.h)
+    hal_zigbee_attribute attr_infos[30 + BASIC_MCU_DIAG_ATTRS + BASIC_MCU_FLASHER_ATTRS +
+                                    BASIC_STOCK_NV_ATTRS];                                                       // 13 fixed + led + 2 config + 12 dp attrs + MCU version + health (checked in dp_attr.c), + the MCU diag (debug builds) and the SWD master's (mcu_flasher.h)
 } zigbee_basic_cluster;
 
 void basic_cluster_add_to_endpoint(zigbee_basic_cluster *cluster,

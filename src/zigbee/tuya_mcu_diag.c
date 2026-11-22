@@ -11,13 +11,28 @@
 #define DIAG_PAGE_ENTRIES    6 /* 48 bytes: one read response fits one frame */
 #define DIAG_LOG_ENTRIES     (DIAG_PAGE_ENTRIES * TUYA_MCU_DIAG_LOG_PAGES)
 
+tuya_mcu_diag_counters_t tuya_mcu_diag;
+uint16_t hal_zigbee_tables_dropped;
+
+uint32_t tuya_mcu_diag_number(const uint8_t *data, uint16_t len) {
+    uint32_t value = 0;
+
+    for (uint16_t i = 0; data != NULL && i < len && i < 4; i++) {
+        value = (value << 8) | data[i];
+    }
+    return value;
+}
+
+uint16_t tuya_mcu_diag_ms(uint32_t ms) {
+    return ms > 0xFFFF ? 0xFFFF : ms == 0 ? 1 : (uint16_t)ms;
+}
+
+#ifdef MCU_FLASHER_DUMP   /* debug builds: the attributes and the event log */
 typedef struct {
     uint8_t len;
     uint8_t data[DIAG_PAGE_ENTRIES * DIAG_ENTRY_SIZE];
 } tuya_mcu_diag_page_t;
 
-tuya_mcu_diag_counters_t tuya_mcu_diag;
-uint16_t hal_zigbee_tables_dropped;
 static tuya_mcu_diag_page_t g_pages[TUYA_MCU_DIAG_LOG_PAGES];
 static uint8_t g_log[DIAG_LOG_ENTRIES * DIAG_ENTRY_SIZE];
 static uint8_t g_log_count = 0;
@@ -39,19 +54,6 @@ void tuya_mcu_diag_clear(void) {
     tuya_mcu_diag.zcl_tables_dropped = hal_zigbee_tables_dropped;   /* since the start */
     memset(g_pages, 0, sizeof(g_pages));
     g_log_count = 0;
-}
-
-uint32_t tuya_mcu_diag_number(const uint8_t *data, uint16_t len) {
-    uint32_t value = 0;
-
-    for (uint16_t i = 0; data != NULL && i < len && i < 4; i++) {
-        value = (value << 8) | data[i];
-    }
-    return value;
-}
-
-uint16_t tuya_mcu_diag_ms(uint32_t ms) {
-    return ms > 0xFFFF ? 0xFFFF : ms == 0 ? 1 : (uint16_t)ms;
 }
 
 void tuya_mcu_diag_log(uint8_t kind, uint8_t id, uint32_t value) {
@@ -131,3 +133,5 @@ uint8_t tuya_mcu_diag_on_write(uint16_t attribute_id) {
     g_control = 0;
     return command;
 }
+
+#endif /* MCU_FLASHER_DUMP */
