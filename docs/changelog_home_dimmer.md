@@ -14,6 +14,8 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
 
 ## Next
 
+- Open Dimmer 2.2.8: `fade_off_slow_zone` and `hold_slow_zone` are a share of the channel's
+  min..max (before: of the whole scale); the labels say so. Defaults 15 / 25 %.
 - `multi_press_reset_count` works on the ZDMS16-2 with Open Dimmer 2.2.8: the dimmer chip counts
   the closures of one wall switch (each within 10 s of the first, as the factory MCU does with its
   fixed 8) and asks for the leave and pairing at that count; the module writes the count to it
