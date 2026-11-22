@@ -164,7 +164,7 @@ def test_install_and_its_armed_state():
     assert resumed == [{"mcu_flasher_status": "armed install; power-cycle the module now "
                         "(the install goes on at every power-up); 1.2 s"}]
     wrong = decode(status(state=0, job=5, step=0, error=12))
-    assert "not a factory MCU" in wrong[0]["mcu_flasher_status"]
+    assert "Open Dimmer is there already" in wrong[0]["mcu_flasher_status"]
     # abort past the option bytes with a silent MCU: the job stays armed, and the status says so
     kept = decode(status(state=5, job=5, step=11, error=16, page=255))
     assert kept == [{"mcu_flasher_status": "armed install; power-cycle the module now "
@@ -255,14 +255,15 @@ def test_configure_binds_basic_for_the_swd_master_with_a_stock_mcu():
 
 
 def test_the_dump_job_and_its_serving_state():
-    """dump (6) is one write like the surveys (no confirm: it only reads); while it serves its
-    reads the status says so and that abort ends it; sector0_crc is then the whole flash's."""
+    """dump (6) is in debug builds of the module only: not offered (written raw by the bench
+    tools); a debug build's status is decoded: while it serves its reads the status says so
+    and that abort ends it; sector0_crc is then the whole flash's."""
     out = json.loads(run_node(FLASHER + """
 (async () => {
     console.log(JSON.stringify({dump: await set(h.device(), "dump", {mcu_flasher: "show"})}));
 })();
 """))
-    assert out["dump"] == [["write", 1, "genBasic", {"65361": {"value": 6, "type": 0x20}}]]
+    assert "unknown job" in out["dump"]
     serving = decode(status(state=1, job=6, step=21, dpidr=0x0BC11477, optr=0xBEAA,
                             sector0_crc=0x12345678, app_build=150))
     assert serving == [{"mcu_flasher_status":

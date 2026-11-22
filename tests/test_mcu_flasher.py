@@ -374,10 +374,21 @@ def test_protection_or_unknown_option_bytes_refuse_the_write(flasher, tmp_path, 
     assert int(stats["erases"]) == 0 and int(stats["programs"]) == 0
 
 
-def test_another_rom_refuses_the_write(flasher, tmp_path):
+def test_another_rom_is_told_not_refused(flasher, tmp_path):
+    """ROM revisions differ between units (0xA52232EA, 0x62889B8E seen): the chip is identified
+    by its debug port, AP, CPUID and IDCODE; the ROM's CRC is only told."""
     proc, device = flasher
     load_flash(proc, tmp_path, carried_boot()[:-1] + b"\x00")
     target(proc, "poke32", "0x1FFF0100", "0x12345678")
+    st = run_update(proc, device)
+    assert (st["state"], st["error"]) == (STATE_DONE, ERR_NONE), st
+    assert st["rom_crc"] != crc(ROM) and st["sector0_crc"] == crc(sector(carried_boot()))
+
+
+def test_another_chip_id_refuses_the_write(flasher, tmp_path):
+    proc, device = flasher
+    load_flash(proc, tmp_path, carried_boot()[:-1] + b"\x00")
+    target(proc, "poke32", "0x40015800", "0x12345678")    # DBGMCU IDCODE
     st = run_update(proc, device)
     assert (st["state"], st["error"]) == (STATE_FAILED, ERR_WRONG_TARGET)
     assert int(target(proc, "stats")["erases"]) == 0
@@ -447,20 +458,25 @@ def stock(monkeypatch, tmp_path):
     return tmp_path
 
 
-def test_install_needs_a_factory_version_on_the_uart():
+def test_install_of_a_silent_mcu_is_told_by_the_attach(tmp_path):
+    """No version on the UART (any factory firmware may be silent): the job starts, and what is
+    behind the wires decides; Open Dimmer's bootloader there: refused, nothing written."""
     with StubProc(device_config=WITH_TOKEN) as proc:
         device = Device(proc)
-        confirm(device, "install")
-        start_job(device, JOB_INSTALL)
-        st = status(device)
-        assert (st["state"], st["error"]) == (STATE_IDLE, ERR_WRONG_CLASS)
-        assert int(target(proc, "stats")["line_resets"]) == 0
+        load_flash(proc, tmp_path, carried_boot())
+        st = run_install(proc, device)
+        assert (st["state"], st["error"]) == (STATE_FAILED, ERR_WRONG_CLASS), st
+        stats = target(proc, "stats")
+        assert stats["option_programs"] == "0" and int(stats["erases"]) == 0
+        assert stats["core"] == "running"
 
 
-def test_install_refuses_an_unprotected_mcu():
-    """An MCU that tells 1.x but is not read-protected is not a factory one: nothing written."""
+def test_install_refuses_open_dimmer(tmp_path):
+    """An MCU at level 0 with Open Dimmer's bootloader is not a factory one, whatever it told:
+    nothing written, the core never stopped."""
     with StubProc(device_config=WITH_TOKEN) as proc:
         device = Device(proc)
+        load_flash(proc, tmp_path, carried_boot())
         mcu_tells(proc)
         st = run_install(proc, device)
         assert (st["state"], st["error"]) == (STATE_FAILED, ERR_WRONG_CLASS)
@@ -600,9 +616,12 @@ def test_auto_armed_status_goes_out_once_on_the_network(stock, monkeypatch):
         proc.exec("net 1")                                       # back on the network: at once
         assert after(1000) == 3
 
-def test_auto_leaves_an_open_dimmer_mcu_running():
-    """Wires on a unit that runs Open Dimmer already (read protection level 0): told before
-    the core is touched, nothing written, never again."""
+def test_auto_leaves_an_open_dimmer_mcu_running(monkeypatch, tmp_path):
+    """Wires on a unit that runs Open Dimmer already (read protection level 0, its bootloader
+    there): told before the core is touched, nothing written, never again."""
+    image = tmp_path / "od.bin"
+    image.write_bytes(sector(carried_boot()))
+    monkeypatch.setenv("SWD_TARGET_FLASH", str(image))
     with StubProc(device_config=WITH_TOKEN) as proc:
         st = status(Device(proc))
         assert (st["state"], st["job"], st["error"]) == (STATE_FAILED, JOB_INSTALL, ERR_WRONG_CLASS)
@@ -727,12 +746,10 @@ ERR_WRONG_TARGET_ = 3
 def test_a_taken_up_install_that_finds_the_factory_firmware_is_a_limited_one(stock, monkeypatch):
     """PHASE_OB_WRITTEN in NV but the MCU at level 1 with its factory firmware (the option bytes
     never started): not taken up at every power-up, a limited install; a lasting refusal (here
-    the ROM CRC) keeps it for its three more power-ups, then it ends, and the next power-up
+    another IDCODE) keeps it for its three more power-ups, then it ends, and the next power-up
     leaves the MCU alone."""
     monkeypatch.setenv("SWD_TARGET_STOCK_PINS_MS", "1500")
-    with StubProc(device_config=WITH_TOKEN) as proc:
-        target(proc, "poke32", "0x1FFF0100", "0x12345678")   # the ROM CRC will not match
-        target(proc, "save")
+    monkeypatch.setenv("SWD_TARGET_IDCODE", "0x12345678")   # the IDCODE will not match
     JOB_ITEM.write_bytes(bytes([0xA7, 0x02, 0xFF, 0x00]))   # taken up, at every power-up
     monkeypatch.setenv("SWD_TARGET_POWER_CYCLE", "1")
     for left in (3, 2, 1):
@@ -1012,13 +1029,13 @@ def test_a_taken_up_install_leaves_an_mcu_that_has_the_bootloader_alone(unprotec
 
 
 def test_a_taken_up_install_never_writes_a_chip_it_cannot_identify(unprotected, monkeypatch):
-    """The same marker, another ROM behind the wires: read, refused, kept armed; nothing
+    """The same marker, another chip id behind the wires: read, refused, kept armed; nothing
     written, the core never stopped."""
     with StubProc(device_config=WITH_TOKEN) as proc:
         load_flash(proc, unprotected, carried_boot()[:-1] + b"\x00")
-        target(proc, "poke32", "0x1FFF0100", "0x12345678")
         target(proc, "save")
     power_up_with_job(monkeypatch)
+    monkeypatch.setenv("SWD_TARGET_IDCODE", "0x12345678")   # DBGMCU IDCODE: another chip
     with StubProc(device_config=WITH_TOKEN) as proc:
         device = Device(proc)
         st = run_until_settled(proc, device, passes=400)

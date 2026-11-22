@@ -28,7 +28,6 @@
 #define PY32_AP_IDR              0x04770031u
 #define PY32_CPUID               0x410CC601u
 #define PY32_IDCODE              0x60001000u
-#define PY32_ROM_CRC             0xA52232EAu
 
 #define ADDR_CPUID               0xE000ED00u
 #define ADDR_DBGMCU_IDCODE       0x40015800u
@@ -172,6 +171,10 @@ enum {
      * the ROM the CRC of the whole flash, then the reads */
     STEP_DUMP_CRC,
     STEP_DUMP,
+
+    /* install of a factory MCU at level 0: its flash erased by the install
+     * (no protection change to do it), before the option bytes */
+    STEP_ERASE_ALL,
 };
 
 /* An install armed in NV (NV_ITEM_MCU_FLASHER_JOB): attach at the next
@@ -193,6 +196,7 @@ enum {
 #define DUMP_SYS_BASE       0x1FFF0000u
 #define DUMP_SYS_END        0x1FFF1000u
 #define DUMP_CRC_WORDS      ((DUMP_FLASH_END - ADDR_FLASH) / 4u)
+#define MAIN_FLASH_BYTES    0x5000u   /* the PY32F002A's 20 KB; the hidden 12 KB after it */
 #define DUMP_IDLE_MS        600000u
 
 /* PHASE_OB_WRITTEN: the factory firmware may be gone (the protection change
@@ -218,27 +222,30 @@ typedef struct {
 
 extern hal_uart_config_t mcu_uart_config; /* config_parser.c: the W token */
 
-static hal_gpio_pin_t     g_clk = HAL_INVALID_PIN;
-static hal_gpio_pin_t     g_dio = HAL_INVALID_PIN;
-static uint8_t            g_enabled;
-static uint8_t            g_control;
-static uint8_t            g_abort;
-static uint8_t            g_tries;
-static uint16_t           g_word;  /* words done in the current CRC step */
-static uint32_t           g_crc;
-static uint32_t           g_started;
-static uint32_t           g_last_report;
-static uint8_t            g_was_joined; /* ARMED: on the network at the last pass */
-static uint8_t            g_page;       /* STEP_PROGRAM: next page, 1..31 then 0 */
-static uint8_t            g_rewrites;   /* STEP_OB_CHECK / STEP_VERIFY: written again */
-static uint8_t            g_resumed;    /* an install taken up after its option bytes (or RESUMED_AT_0) */
-static uint8_t            g_keep;       /* this install stays armed when it stops: see finish() */
-static uint32_t           g_confirm_at;
-static uint32_t           g_step_at;    /* when the current wait step began */
-static uint16_t           g_rx_mark;    /* the MCU's UART frames so far when a job was armed */
-static uint8_t            g_halted;     /* dump: the core halted by this job (released at its end) */
+static hal_gpio_pin_t g_clk = HAL_INVALID_PIN;
+static hal_gpio_pin_t g_dio = HAL_INVALID_PIN;
+static uint8_t        g_enabled;
+static uint8_t        g_control;
+static uint8_t        g_abort;
+static uint8_t        g_tries;
+static uint16_t       g_word;      /* words done in the current CRC step */
+static uint32_t       g_crc;
+static uint32_t       g_started;
+static uint32_t       g_last_report;
+static uint8_t        g_was_joined;     /* ARMED: on the network at the last pass */
+static uint8_t        g_page;           /* STEP_PROGRAM: next page, 1..31 then 0 */
+static uint8_t        g_rewrites;       /* STEP_OB_CHECK / STEP_VERIFY: written again */
+static uint8_t        g_resumed;        /* an install taken up after its option bytes (or RESUMED_AT_0) */
+static uint8_t        g_keep;           /* this install stays armed when it stops: see finish() */
+static uint32_t       g_confirm_at;
+static uint32_t       g_step_at;        /* when the current wait step began */
+static uint16_t       g_rx_mark;        /* the MCU's UART frames so far when a job was armed */
+static uint8_t        g_halted;         /* dump: the core halted by this job (released at its end) */
+static uint8_t        g_open;           /* install: a factory MCU at level 0 (no Open Dimmer there) */
+#ifdef MCU_FLASHER_DUMP
 static uint32_t           g_dump_addr;  /* dump address attribute (Basic 0xff53) */
 static mcu_flasher_dump_t g_dump = { 4, MCU_FLASHER_DUMP_NONE, { 0 } };
+#endif
 
 /* Confirm attribute (Basic 0xff52, char string): a writing job's own name.
  * The SDK copies a written string without checking its length against the
@@ -307,6 +314,7 @@ uint8_t mcu_flasher_register_attrs(hal_zigbee_attribute *table, uint8_t start_in
     a[2].flag         = ATTR_WRITABLE;
     a[2].size         = 0xFFu;   /* the field's most (uint8_t); the buffer has 256 */
     a[2].value        = (uint8_t *)&g_confirm;
+#ifdef MCU_FLASHER_DUMP
     a[3].attribute_id = ZCL_ATTR_BASIC_MCU_FLASHER_DUMP_ADDR;
     a[3].data_type_id = ZCL_DATA_TYPE_UINT32;
     a[3].flag         = ATTR_WRITABLE;
@@ -317,6 +325,7 @@ uint8_t mcu_flasher_register_attrs(hal_zigbee_attribute *table, uint8_t start_in
     a[4].flag         = ATTR_READONLY;
     a[4].size         = (uint8_t)sizeof(g_dump);
     a[4].value        = (uint8_t *)&g_dump;
+#endif
     return MCU_FLASHER_ATTRS;
 }
 
@@ -331,9 +340,21 @@ static void arm(uint8_t phase, uint8_t boots_left);
 
 static uint8_t is_install(void);
 
+/* The dump job is in debug builds only (make MCU_DUMP=1): elsewhere this is 0
+ * and its code goes away. */
 static uint8_t is_dump(void) {
+#ifdef MCU_FLASHER_DUMP
     return g_status.job == MCU_FLASHER_JOB_DUMP;
+#else
+    return 0;
+#endif
 }
+
+#ifdef MCU_FLASHER_DUMP
+#define MCU_FLASHER_JOB_LAST    MCU_FLASHER_JOB_DUMP
+#else
+#define MCU_FLASHER_JOB_LAST    MCU_FLASHER_JOB_INSTALL
+#endif
 
 /* The end of a dump with the core halted: the reset catch and debug off,
  * then a system reset, so the MCU's own firmware starts from its reset
@@ -372,8 +393,10 @@ static void finish(uint8_t state, uint8_t error, swd_err_t swd_err) {
         swd_power_down();   /* best effort: the link may be gone */
     }
     swd_end();
-    g_dump.len           = 4;
-    g_dump.addr          = MCU_FLASHER_DUMP_NONE;
+#ifdef MCU_FLASHER_DUMP
+    g_dump.len  = 4;
+    g_dump.addr = MCU_FLASHER_DUMP_NONE;
+#endif
     g_status.state       = state;
     g_status.error       = error;
     g_status.swd_err     = (uint8_t)swd_err;
@@ -425,6 +448,8 @@ static uint8_t confirmed(uint8_t job) {
     return ok;
 }
 
+#ifdef MCU_FLASHER_DUMP
+
 /* A write of the dump address: the words there into the dump data attribute,
  * read now (a few ms of SWD), so that the read that follows gets them. Only
  * word-aligned addresses inside the two areas; the address is in the answer,
@@ -472,14 +497,18 @@ static void dump_fill(void) {
     g_dump.addr = addr;
 }
 
+#endif
+
 void mcu_flasher_on_write(uint16_t attribute_id) {
     if (!g_enabled) {
         return;
     }
+#ifdef MCU_FLASHER_DUMP
     if (attribute_id == ZCL_ATTR_BASIC_MCU_FLASHER_DUMP_ADDR) {
         dump_fill();
         return;
     }
+#endif
     if (attribute_id == ZCL_ATTR_BASIC_MCU_FLASHER_CONFIRM) {
         if (g_confirm.len > 23u) {
             g_confirm.len = 0;   /* no job has such a name; read back it would not fit a frame */
@@ -514,7 +543,7 @@ void mcu_flasher_on_write(uint16_t attribute_id) {
     if (g_status.state == MCU_FLASHER_STATE_RUNNING) {
         return; /* one job at a time; the running one is not disturbed */
     }
-    if (job < MCU_FLASHER_JOB_SURVEY_DP || job > MCU_FLASHER_JOB_DUMP) {
+    if (job < MCU_FLASHER_JOB_SURVEY_DP || job > MCU_FLASHER_JOB_LAST) {
         g_status.error = MCU_FLASHER_ERR_BAD_JOB;
         report();
         return;
@@ -525,8 +554,9 @@ void mcu_flasher_on_write(uint16_t attribute_id) {
         return;
     }
 
-    /* install: only an MCU that told a factory version (1.x) on the UART in
-     * this run; a silent one is refused too */
+    /* install: never an MCU that told an Open Dimmer version in this run; the
+     * factory firmware may be any (or silent): what is behind the wires is
+     * told at the attach (Open Dimmer's bootloader or app there: refused) */
     if (job == MCU_FLASHER_JOB_INSTALL || job == MCU_FLASHER_JOB_DUMP) {
         armed_t a;
 
@@ -538,7 +568,7 @@ void mcu_flasher_on_write(uint16_t attribute_id) {
         uint8_t kept  = armed && (a.phase == PHASE_OB_WRITTEN || a.phase == PHASE_RETAKEN);
         uint8_t error = kept ? MCU_FLASHER_ERR_KEPT :
                         job == MCU_FLASHER_JOB_DUMP ? (armed ? MCU_FLASHER_ERR_BUSY : 0) :
-                        !tuya_mcu_app_mcu_is_stock() ? MCU_FLASHER_ERR_WRONG_CLASS : 0;
+                        tuya_mcu_app_mcu_is_own() ? MCU_FLASHER_ERR_WRONG_CLASS : 0;
 
         if (error) {
             g_status.error = error;
@@ -561,6 +591,7 @@ void mcu_flasher_on_write(uint16_t attribute_id) {
     g_resumed       = 0;
     g_keep          = 0;
     g_halted        = 0;
+    g_open          = 0;
     report();
 }
 
@@ -906,6 +937,21 @@ static swd_err_t read_optr(uint32_t *optr) {
     return err;
 }
 
+/* At level 0: Open Dimmer is there (its bootloader's boot_id or its app's
+ * header), so the MCU is not a factory one and an install never erases it.
+ * Whatever else is there (any factory firmware, any variant) is one. */
+static swd_err_t open_dimmer_there(uint8_t *there) {
+    uint32_t  id  = 0;
+    uint32_t  hdr = 0;
+    swd_err_t err = swd_mem_read32(ADDR_BOOT_ID, &id);
+
+    if (err == SWD_OK) {
+        err = swd_mem_read32(ADDR_APP_HEADER, &hdr);
+    }
+    *there = id == BOOT_ID_MAGIC || hdr == APP_MAGIC;
+    return err;
+}
+
 /* The armed install of this power-up: attach before the factory firmware
  * takes the SWD pins, halt; the rest runs from the main loop. An install past
  * its option bytes (PHASE_OB_WRITTEN) is taken up the same way: at read
@@ -926,6 +972,14 @@ void mcu_flasher_early(void) {
     uint8_t resumed = a.phase == PHASE_OB_WRITTEN;
     uint8_t dump    = a.phase == PHASE_DUMP;   /* else an install */
 
+#ifndef MCU_FLASHER_DUMP
+    if (dump) {
+        /* armed by a debug build before this one: never run as an install */
+        hal_nvm_delete(NV_ITEM_MCU_FLASHER_JOB);
+        return;
+    }
+#endif
+
     g_status.state = MCU_FLASHER_STATE_RUNNING;
     g_status.job   = dump ? MCU_FLASHER_JOB_DUMP : MCU_FLASHER_JOB_INSTALL;
     g_status.step  = STEP_BEGIN;
@@ -941,6 +995,8 @@ void mcu_flasher_early(void) {
     uint32_t  optr   = 0;
     uint8_t   halted = 0;
     uint8_t   held   = 0;            /* the pins were taken at the first try */
+    uint8_t   level0 = 0;            /* read protection level 0 */
+    uint8_t   open   = 0;            /* level 0 without Open Dimmer: a factory MCU */
     uint8_t   stage  = STEP_BEGIN;   /* how far it got, shown when it fails */
     swd_err_t err    = SWD_ERR_NO_TARGET;
 
@@ -973,13 +1029,23 @@ void mcu_flasher_early(void) {
             err   = swd_power_up();
         }
         if (err == SWD_OK) {
-            /* read protection first, the core untouched: level 0 is not a
-             * factory MCU (Open Dimmer runs there) and keeps running; for a
-             * taken-up install it is the state after the protection change.
-             * A dump the other way round: only level 0 is read. */
-            stage = STEP_IDENTITY;
-            err   = read_optr(&optr);
-            if (err == SWD_OK && ((uint8_t)optr == 0xAAu) != dump) {
+            /* read protection first, the core untouched. At level 0 an install
+             * looks for Open Dimmer: there, the MCU keeps running (refused);
+             * else it is a factory MCU that left its flash open (any variant,
+             * any firmware): halted and installed, its flash erased by the
+             * install. For a taken-up install level 0 is the state after the
+             * protection change. A dump only reads level 0. */
+            stage  = STEP_IDENTITY;
+            err    = read_optr(&optr);
+            level0 = err == SWD_OK && (uint8_t)optr == 0xAAu;
+            open   = 0;
+            if (err == SWD_OK && !dump && level0 && !resumed) {
+                uint8_t od = 1;
+
+                err  = open_dimmer_there(&od);
+                open = !od;
+            }
+            if (err == SWD_OK && (dump ? !level0 : level0 && (resumed || !open))) {
                 break;
             }
         }
@@ -996,9 +1062,9 @@ void mcu_flasher_early(void) {
         next_step(STEP_REATTACH);   /* the link is up: the checks, then the bootloader */
         return;
     }
-    if (err == SWD_OK && ((uint8_t)optr == 0xAAu) != dump) {
-        /* an install at level 0: refused, the core untouched; a dump at level 1:
-         * refused, the core held (dump_refuse_halt) */
+    if (err == SWD_OK && (dump ? !level0 : level0 && !open)) {
+        /* an install with Open Dimmer there: refused, the core untouched; a
+         * dump at level 1: refused, the core held (dump_refuse_halt) */
         if (dump) {
             dump_refuse_halt();
         }
@@ -1011,7 +1077,7 @@ void mcu_flasher_early(void) {
         g_status.duration_ms = sat16(hal_millis());
         return;
     }
-    if (err == SWD_OK && halted && g_resumed) {
+    if (err == SWD_OK && halted && g_resumed && !open) {
         /* level 1 again: the protection change never took (or option bytes a
          * cut left corrupt load as level 1): the factory firmware may still be
          * there, so from here a limited install (PHASE_RETAKEN: its gates
@@ -1032,6 +1098,7 @@ void mcu_flasher_early(void) {
             hal_nvm_delete(NV_ITEM_MCU_FLASHER_JOB);
             g_halted = 1;
         }
+        g_open = open;
         next_step(STEP_IDENTITY);
         return;
     }
@@ -1129,15 +1196,25 @@ void mcu_flasher_task(void) {
     case STEP_POWER:
         err = swd_power_up();
         if (err == SWD_OK && (is_install() || is_dump())) {
-            /* read protection before the core is stopped: at level 0 it is not a
-             * factory MCU, and it keeps running (a halted one would stay so
-             * until a power cycle); a dump only reads level 0 (at level 1 the
-             * flash reads are bus errors) */
+            /* read protection before the core is stopped. Install: at level 0
+             * with Open Dimmer there it is not a factory MCU, and it keeps
+             * running (a halted one would stay so until a power cycle); at level
+             * 0 without it, a factory MCU that left its flash open (g_open). A
+             * dump only reads level 0 (at level 1 the flash reads are bus
+             * errors). */
             uint32_t optr = 0;
+            uint8_t  level0;
 
             err           = read_optr(&optr);
             g_status.optr = optr;   /* packed: assigned, never through a pointer */
-            if (err == SWD_OK && ((uint8_t)optr == 0xAAu) != is_dump()) {
+            level0        = (uint8_t)optr == 0xAAu;
+            if (err == SWD_OK && is_install() && level0) {
+                uint8_t od = 1;
+
+                err    = open_dimmer_there(&od);
+                g_open = !od;
+            }
+            if (err == SWD_OK && (is_dump() ? !level0 : level0 && !g_open)) {
                 if (is_dump()) {
                     dump_refuse_halt();
                 }
@@ -1174,22 +1251,24 @@ void mcu_flasher_task(void) {
                 break;
             }
 
-            /* A writing job: RDP level 0, user byte 0xF0 (factory) or 0xF9 (Open
-             * Dimmer), sector 0 not write-protected. */
+            /* An update: RDP level 0, user byte 0xF0 (factory) or 0xF9 (Open
+             * Dimmer), sector 0 not write-protected. An install: a factory MCU
+             * at level 1 (read-protected), or at level 0 without Open Dimmer
+             * (g_open) and no sector write-protected (its pages are erased);
+             * whatever user byte the factory left (the install writes its own
+             * option bytes). */
             uint8_t user = (uint8_t)(g_status.optr >> 8);
-            /* install: a factory MCU, read-protected (level 1) */
-            if (is_install() && (uint8_t)g_status.optr == 0xAA && g_resumed) {
-                /* a taken-up install at level 0: its option bytes again */
+            if (is_install() && (uint8_t)g_status.optr == 0xAA && (g_resumed || g_open)) {
+                /* a taken-up install at level 0: its option bytes again; or a
+                 * factory MCU that left its flash open */
+                if ((g_status.wrpr & 0xFFu) != 0xFFu) {
+                    fail = MCU_FLASHER_ERR_PROTECTED;
+                    break;
+                }
             } else if (is_install() &&
                        ((uint8_t)g_status.optr == 0xAA || (uint8_t)g_status.optr == 0xCC)) {
                 fail = (uint8_t)g_status.optr ==
                        0xAA ? MCU_FLASHER_ERR_WRONG_CLASS : MCU_FLASHER_ERR_PROTECTED;
-                break;
-            }
-            if (is_install() && !g_resumed && user != 0xF0 && user != 0xF9) {
-                /* (a taken-up install writes its option bytes again, whatever
-                 * a cut left there) */
-                fail = MCU_FLASHER_ERR_PROTECTED;
                 break;
             }
             if (is_update() && ((uint8_t)g_status.optr != 0xAA || (user != 0xF0 && user != 0xF9) ||
@@ -1209,18 +1288,19 @@ void mcu_flasher_task(void) {
 
         err = crc_slice(rom ? ADDR_ROM : ADDR_FLASH, rom ? ROM_WORDS : SECTOR0_WORDS,
                         rom ? STATUS_AT(rom_crc) : STATUS_AT(sector0_crc), &complete);
-        if (err == SWD_OK && complete && rom && (is_update() || is_install()) &&
-            g_status.rom_crc != PY32_ROM_CRC) {
-            fail = MCU_FLASHER_ERR_WRONG_TARGET;
-            break;
-        }
+
+        /* The ROM's CRC is told, not checked: the chip is identified by its
+         * debug port, AP, CPUID and IDCODE (STEP_IDENTITY); ROM revisions
+         * differ between units (0xA52232EA, 0x62889B8E seen). */
         if (err == SWD_OK && complete && rom && is_dump()) {
             next_step(STEP_DUMP_CRC);
             break;
         }
         if (err == SWD_OK && complete && rom && is_install() && g_resumed != RESUMED_AT_0) {
+            /* at level 0 no protection change erases the flash: the install does */
             g_rewrites = 0;
-            next_step(STEP_OB);
+            g_word     = 0;
+            next_step((uint8_t)g_status.optr == 0xAAu ? STEP_ERASE_ALL : STEP_OB);
             break;
         }
         if (err == SWD_OK && complete && !rom && (is_update() || is_install())) {
@@ -1480,6 +1560,75 @@ void mcu_flasher_task(void) {
         }
         break;
 
+    case STEP_ERASE_ALL: {
+        /* A factory MCU at level 0: a page a pass (the blank ones only read),
+         * the 20 KB and the hidden 12 KB (a die without them: the first bus
+         * error past 20 KB ends it). From the first erase its firmware is
+         * gone: the job is kept in NV and goes on at every power-up until it
+         * is done, as past the option bytes. */
+        uint32_t w[FLASH_PAGE_WORDS];
+        uint32_t addr  = ADDR_FLASH + 4u * FLASH_PAGE_WORDS * g_word;
+        uint8_t  blank = 1;
+        uint8_t  ok    = 0;
+
+        if (g_keep != RESUME_ALWAYS) {
+            armed_t a = { ARMED_MAGIC, PHASE_OB_WRITTEN, RESUME_ALWAYS, 0 };
+
+            hal_nvm_write(NV_ITEM_MCU_FLASHER_JOB, sizeof(a), (uint8_t *)&a);
+            g_keep = RESUME_ALWAYS;
+        }
+        if (addr >= DUMP_FLASH_END) {
+            g_rewrites = 0;
+            next_step(STEP_OB);
+            break;
+        }
+        err = swd_mem_read_block(addr, w, FLASH_PAGE_WORDS);
+        if (err != SWD_OK && addr >= ADDR_FLASH + MAIN_FLASH_BYTES) {
+            uint32_t dpidr;
+
+            /* no hidden flash on this die: done, the link set up again */
+            if (swd_connect(&dpidr) == SWD_OK && swd_power_up() == SWD_OK) {
+                err        = SWD_OK;
+                g_rewrites = 0;
+                next_step(STEP_OB);
+            }
+            break;
+        }
+        for (uint8_t i = 0; err == SWD_OK && i < FLASH_PAGE_WORDS; i++) {
+            blank &= w[i] == 0xFFFFFFFFu;
+        }
+        if (err == SWD_OK && !blank) {
+            err = flash_unlock(&ok);
+            if (err == SWD_OK && !ok) {
+                fail = MCU_FLASHER_ERR_FLASH;
+                break;
+            }
+            if (err == SWD_OK) {
+                err = erase_page(addr, &ok);
+            }
+            if (err == SWD_OK && !ok) {
+                fail = MCU_FLASHER_ERR_FLASH;
+                break;
+            }
+            if (err == SWD_OK) {
+                err = swd_mem_read_block(addr, w, FLASH_PAGE_WORDS);
+            }
+            for (uint8_t i = 0; err == SWD_OK && i < FLASH_PAGE_WORDS; i++) {
+                if (w[i] != 0xFFFFFFFFu) {
+                    fail = MCU_FLASHER_ERR_FLASH;   /* erased, not blank */
+                }
+            }
+            if (fail != MCU_FLASHER_ERR_NONE) {
+                break;
+            }
+        }
+        if (err == SWD_OK) {
+            g_word++;
+        }
+        break;
+    }
+
+#ifdef MCU_FLASHER_DUMP
     case STEP_DUMP_CRC:
         err = crc_slice(ADDR_FLASH, (uint16_t)DUMP_CRC_WORDS, STATUS_AT(sector0_crc), &complete);
         if (err == SWD_OK && complete) {
@@ -1496,6 +1645,7 @@ void mcu_flasher_task(void) {
             finish(MCU_FLASHER_STATE_DONE, MCU_FLASHER_ERR_NONE, SWD_OK);
         }
         return;
+#endif
 
     default:
         finish(MCU_FLASHER_STATE_DONE, MCU_FLASHER_ERR_NONE, SWD_OK);

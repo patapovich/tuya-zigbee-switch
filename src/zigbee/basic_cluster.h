@@ -7,8 +7,10 @@
 
 /* The SWD master's status, control, confirm and dump (mcu_flasher.h MCU_FLASHER_ATTRS), only in
  * builds that carry an MCU image: the table of every other board stays as it was. */
-#ifdef SECONDARY_MCU_IMAGE
-#define BASIC_MCU_FLASHER_ATTRS    5
+#if defined(SECONDARY_MCU_IMAGE) && defined(MCU_FLASHER_DUMP)
+#define BASIC_MCU_FLASHER_ATTRS    5   /* + the dump job's two (debug builds) */
+#elif defined(SECONDARY_MCU_IMAGE)
+#define BASIC_MCU_FLASHER_ATTRS    3
 #else
 #define BASIC_MCU_FLASHER_ATTRS    0
 #endif

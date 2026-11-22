@@ -14,7 +14,17 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
 
 ## Next
 
-- SWD job `dump` (control 6): reads a dimmer chip at read protection level 0 over Zigbee, without
+- The SWD job `install` (and the automatic install of the first start-up with the wires) takes
+  any factory dimmer chip, whatever its firmware: also one that left its flash open (read
+  protection level 0, seen on a `_TZE204_o9gyszw2`). There no protection change erases the
+  flash, so the install erases its pages itself (page by page, the hidden 12 KB too; kept over a
+  power cut like the steps past the option bytes), then writes the option bytes and the
+  bootloader as for a read-protected chip. A chip with Open Dimmer's bootloader or app is never
+  taken for a factory one; a write-protected sector refuses it before anything is erased. The
+  install no longer needs a factory version on the UART (it refuses only a chip that told an
+  Open Dimmer version), and the chip is identified by its debug port, AP, CPUID and IDCODE: the
+  ROM's CRC is told, not checked (ROM revisions differ: 0xA52232EA, 0x62889B8E seen).
+- SWD job `dump` (control 6, debug builds only: `make MCU_DUMP=1`): reads a dimmer chip at read protection level 0 over Zigbee, without
   writing it: a factory chip that left its flash open (seen on a `_TZE204_o9gyszw2`) or one
   running Open Dimmer. It attaches at once or, when the factory firmware holds the SWD pins, at
   the next power-up (armed like `install`); the core is halted, the CRC-32 of the 32 KB flash

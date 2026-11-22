@@ -14,6 +14,8 @@ NVM_MIGRATIONS_VERSION ?= $(shell cat ../../NVM_MIGRATIONS_VERSION 2>/dev/null |
 FIRMWARE_BASENAME ?= tlc_switch
 DEVICE_TYPE ?= router
 DEBUG ?= 0
+# The SWD master's dump job (reads an unprotected dimmer MCU over Zigbee): debug builds only
+MCU_DUMP ?= 0
 CONFIG_STR ?= ja5osu5g;TS004F-Loginovo;IC4i;SC2u;BTB5;M;
 # CONFIG_STR ?= jl7qyupf;TS0012-custom;BA0f;LD7;SC2f;RC0;SC3f;RB4;
 MANUFACTURER_ID ?= 4417
@@ -97,6 +99,9 @@ DEVICE_DEFS := \
 
 ifeq ($(DEBUG), 1)
 	DEVICE_DEFS := $(DEVICE_DEFS) -DUART_PRINTF_MODE=1
+endif
+ifeq ($(MCU_DUMP), 1)
+	DEVICE_DEFS := $(DEVICE_DEFS) -DMCU_FLASHER_DUMP
 endif
 
 # Include paths (SDK paths first to avoid conflicts)
@@ -419,6 +424,7 @@ help:
 	@echo "  DEVICE_TYPE         - router or end_device (default: $(DEVICE_TYPE))"
 	@echo "  CONFIG_STR          - Device pin configuration string"
 	@echo "  DEBUG               - Enable debug output (0/1, default: $(DEBUG))"
+	@echo "  MCU_DUMP            - The SWD master's dump job, debug builds (0/1, default: $(MCU_DUMP))"
 	@echo "  TLSRPGM_TTY         - Programmer serial port (default: $(TLSRPGM_TTY))"
 	@echo ""
 	@echo "Help Targets:"

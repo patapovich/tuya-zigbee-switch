@@ -1347,7 +1347,9 @@ const romasku = {
     // 47 bytes, mcu_flasher_status_t; reported at every change and about once a second while
     // it runs).
     mcuFlasher: () => {
-        const jobs = {survey_dp: 1, survey_full: 2, update_bootloader: 3, update_bootloader_force: 4, install: 5, dump: 6, abort: 0xff};
+        const jobs = {survey_dp: 1, survey_full: 2, update_bootloader: 3, update_bootloader_force: 4, install: 5, abort: 0xff};
+        // job 6 (dump) is in debug builds of the module only: not offered here, its status is decoded
+        const jobNames = {...jobs, dump: 6};
         const states = ["idle", "running", "done", "failed", "aborted", "armed"];
         const errors = ["", "SWCLK held low (power-cycle the module, then try again)", "no answer (wires? power?)",
                         "not the expected PY32F002A", "SWD transfer failed", "busy", "unknown job",
@@ -1355,14 +1357,14 @@ const romasku = {
                         "read-protected, unexpected option bytes or the bootloader write-protected",
                         "the MCU did not stop", "flash error (unlock, write protection or timeout)",
                         "the bootloader's checksum was wrong after writing it twice: the MCU stays stopped, its outputs off",
-                        "not a factory MCU (install takes one that told a 1.x version and is read-protected)",
+                        "Open Dimmer is there already (install takes a factory MCU: any without Open Dimmer's bootloader or app)",
                         "the option bytes did not read back as written (not loaded; try again)",
                         "no attach in the armed power-ups",
                         "after the option reload not unprotected and erased",
                         "kept: the MCU may be without firmware, so its install stays armed (it goes on at the next power-up; abort drops it once the MCU answers)"];
         const exposes = [
             e.enum("mcu_flasher", ea.SET, Object.keys(jobs)).withLabel("MCU flasher")
-                .withDescription("Start a job of the module's SWD link to the dimming MCU: survey_dp reads the debug port's id, survey_full the MCU's identity, option bytes and firmware checksums (both only read); update_bootloader writes the module's bootloader into the MCU if it differs (_force: always); install takes a factory MCU to Open Dimmer (ERASES its firmware and settings; then power-cycle the module when the status says so); dump stops an unprotected MCU and serves reads of its flash and system memory (Basic 0xff53 / 0xff54; only reads; abort ends it and restarts the MCU). Writing jobs need mcu_flasher_confirm first. Needs the SW token in device_config")
+                .withDescription("Start a job of the module's SWD link to the dimming MCU: survey_dp reads the debug port's id, survey_full the MCU's identity, option bytes and firmware checksums (both only read); update_bootloader writes the module's bootloader into the MCU if it differs (_force: always); install takes a factory MCU (read-protected or not, any firmware) to Open Dimmer (ERASES its firmware and settings; then power-cycle the module when the status says so). Writing jobs need mcu_flasher_confirm first. Needs the SW token in device_config")
                 .withCategory("config"),
             e.text("mcu_flasher_confirm", ea.SET).withLabel("MCU flasher confirm")
                 .withDescription("A writing job runs only if its name was written here within the last 60 s (update_bootloader, update_bootloader_force or install); used once")
@@ -1375,7 +1377,7 @@ const romasku = {
         const hex = (v) => "0x" + (v >>> 0).toString(16).toUpperCase().padStart(8, "0");
         const describe = (b) => {
             const state = states[b[1]] ?? `state ${b[1]}`;
-            const job = Object.keys(jobs).find((k) => jobs[k] === b[2]) ?? `job ${b[2]}`;
+            const job = Object.keys(jobNames).find((k) => jobNames[k] === b[2]) ?? `job ${b[2]}`;
             const parts = [`${state} ${job}`];
             if (b[1] === 1) parts.push(b[3] === 11 ? `writing page ${b[46] || 32}/32` : b[2] === 6 && b[3] === 21 ? "serving reads (abort ends the dump and restarts the MCU)" : `step ${b[3]}`);
             // page 255: an install past its option bytes, taken up at every power-up until done

@@ -822,6 +822,16 @@ static void env_flash(void) {
     fprintf(stderr, "[SWD_TARGET] %u flash bytes from %s\n", (unsigned)n, path);
 }
 
+/* SWD_TARGET_IDCODE: another chip's DBGMCU IDCODE at every power-on (a lasting
+ * "not the expected chip" over the stub's restarts). */
+static void env_idcode(void) {
+    const char *v = env_str("SWD_TARGET_IDCODE");
+
+    if (v) {
+        m.regs.dbgmcu_idcode = (uint32_t)strtoul(v, NULL, 0);
+    }
+}
+
 static void env_stock_pins(void) {
     const char *v = env_str("SWD_TARGET_STOCK_PINS_MS");
 
@@ -955,6 +965,7 @@ static void start_from_env(void) {
     if (pc && strcmp(pc, "1") == 0) {
         power_cycle();
     }
+    env_idcode();
 
     /* SWD_TARGET_CONNECT=0 / 1: the wires to the SWD pads absent / there from
     * the start (a power-up without them, the next one after the soldering) */

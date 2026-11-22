@@ -14,15 +14,19 @@
  * Jobs: the read-only surveys (survey_dp, survey_full) start with one write of
  * the control attribute; update_bootloader (and _force) writes the carried
  * bootloader (secondary_mcu_boot.c) into sector 0; install takes a factory MCU
- * (read-protected) to Open Dimmer: protection off (which erases its flash),
- * option bytes as Open Dimmer has them, the bootloader, which then fetches the
- * app over the UART. The writing jobs need the confirm attribute set to the
+ * to Open Dimmer, whatever its firmware: a read-protected one (the protection
+ * change erases its flash) or one that left its flash open (level 0 without
+ * Open Dimmer's bootloader or app: its pages erased by the install, unless a
+ * sector is write-protected), then option bytes as Open Dimmer has them and
+ * the bootloader, which fetches the app over the UART. Open Dimmer is never
+ * taken for a factory MCU. The chip is identified by its debug port, AP,
+ * CPUID and IDCODE; the ROM's CRC is told, not checked. The writing jobs need the confirm attribute set to the
  * job's name first (one use, 60 s). An install that cannot attach at once
  * (the factory firmware may hold the SWD pins) is armed in NV and attaches
  * early at the next power-ups (mcu_flasher_early). The result is the status
  * attribute.
  *
- * dump reads an MCU at read protection level 0 (a factory one that left its
+ * dump (debug builds only, make MCU_DUMP=1) reads an MCU at read protection level 0 (a factory one that left its
  * flash open, or Open Dimmer) without writing it: attached at once, or (the
  * factory firmware holds the pins) armed for the next power-up like an
  * install; the core is halted, the CRC-32 of the 32 KB flash goes to
@@ -35,7 +39,11 @@
  * running core, so it is halted with the gate outputs low until the module's
  * next power cycle; nothing is written. */
 
+#ifdef MCU_FLASHER_DUMP                   /* debug builds (make MCU_DUMP=1) */
 #define MCU_FLASHER_ATTRS               5 /* status, control, confirm, dump address, dump data */
+#else
+#define MCU_FLASHER_ATTRS               3 /* status, control, confirm */
+#endif
 
 #define MCU_FLASHER_JOB_NONE            0
 #define MCU_FLASHER_JOB_SURVEY_DP       1
