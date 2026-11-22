@@ -273,24 +273,33 @@ static void stock_nv_take_network(void) {
         return;
     }
     g_stock_nv_diag.area = stock_nv_area();
-    if (nv_flashReadNew(1, NV_MODULE_ZB_INFO, NV_ITEM_ZB_INFO, sizeof(info), (u8 *)&info) ==
+
+    /* the factory copies are looked at (and told) whatever this firmware's NV holds */
+    uint8_t has_info = g_stock_nv_diag.area == STOCK_NV_AREA_FACTORY &&
+                       stock_nv_item(stock_nv_read, NV_MODULE_ZB_INFO, NV_ITEM_ZB_INFO,
+                                     (uint8_t *)&info, sizeof(info));
+    uint8_t has_ss = has_info && stock_nv_item(stock_nv_read, NV_MODULE_APS, NV_ITEM_APS_SSIB,
+                                               (uint8_t *)&ss, sizeof(ss));
+
+    if (has_info) {
+        g_stock_nv_diag.found |= 1u;
+        stock_nv_diag_network(&info);
+    }
+    if (has_ss) {
+        g_stock_nv_diag.found |= 2u;
+    }
+
+    zb_info_t own;
+
+    if (nv_flashReadNew(1, NV_MODULE_ZB_INFO, NV_ITEM_ZB_INFO, sizeof(own), (u8 *)&own) ==
         NV_SUCC) {
         g_stock_nv_diag.result = STOCK_NV_OWN_NETWORK; /* on a network of its own already */
         return;
     }
-    if (!stock_nv_item(stock_nv_read, NV_MODULE_ZB_INFO, NV_ITEM_ZB_INFO, (uint8_t *)&info,
-                       sizeof(info))) {
-        g_stock_nv_diag.result = STOCK_NV_NO_ZB_INFO;
+    if (!has_info || !has_ss) {
+        g_stock_nv_diag.result = has_info ? STOCK_NV_NO_SECURITY : STOCK_NV_NO_ZB_INFO;
         return;
     }
-    g_stock_nv_diag.found |= 1u;
-    stock_nv_diag_network(&info);
-    if (!stock_nv_item(stock_nv_read, NV_MODULE_APS, NV_ITEM_APS_SSIB, (uint8_t *)&ss,
-                       sizeof(ss))) {
-        g_stock_nv_diag.result = STOCK_NV_NO_SECURITY;
-        return;
-    }
-    g_stock_nv_diag.found |= 2u;
     if (!info.bdbAttr.nodeIsOnANetwork || info.nwkNib.panId == 0xFFFFu ||
         info.nwkNib.nwkAddr >= 0xFFF8u) {
         g_stock_nv_diag.result = STOCK_NV_IMPLAUSIBLE;
