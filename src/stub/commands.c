@@ -11,6 +11,7 @@
 
 #include "stub/stub_app.h"
 #include "zigbee/consts.h"
+#include "zigbee/stock_nv.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -491,6 +492,47 @@ static int cmd_step_time(int argc, char **argv) {
     return 0;
 }
 
+/* stock_nv <file> <module> <item> <len>: the factory NV parser (zigbee/stock_nv.c) over a dump
+ * of a module's flash. */
+static uint8_t  s_stock_flash[0x100000];
+static uint32_t s_stock_len;
+
+static void stock_flash_read(uint32_t addr, uint32_t len, uint8_t *buf) {
+    for (uint32_t i = 0; i < len; i++) {
+        buf[i] = addr + i < s_stock_len ? s_stock_flash[addr + i] : 0xFF;
+    }
+}
+
+static int cmd_stock_nv(int argc, char **argv) {
+    if (argc != 5) {
+        io_res_err("usage");
+        return -1;
+    }
+    FILE *f = fopen(argv[1], "rb");
+    if (!f) {
+        io_res_err("cannot_read=%s", argv[1]);
+        return -1;
+    }
+    s_stock_len = (uint32_t)fread(s_stock_flash, 1, sizeof(s_stock_flash), f);
+    fclose(f);
+    uint16_t len = (uint16_t)strtoul(argv[4], NULL, 0);
+    uint8_t  buf[256];
+    char     hex[2 * sizeof(buf) + 1];
+
+    if (len > sizeof(buf)) {
+        io_res_err("len");
+        return -1;
+    }
+    uint8_t found = stock_nv_item(stock_flash_read, (uint8_t)strtoul(argv[2], NULL, 0),
+                                  (uint8_t)strtoul(argv[3], NULL, 0), buf, len);
+    hex[0] = 0;
+    for (uint16_t i = 0; found && i < len; i++) {
+        sprintf(hex + 2 * i, "%02x", buf[i]);
+    }
+    io_res_ok("found=%u data=%s", found, hex);
+    return 0;
+}
+
 static int cmd_set_battery_voltage(int argc, char **argv) {
     if (argc != 2) {
         fprintf(stderr, "Usage: set_battery_voltage <millivolts>\n");
@@ -842,6 +884,7 @@ static const SimpleReplCommand kCmds[] = {
     { "zcl_leave",           cmd_zcl_leave           },
     { "freeze_time",         cmd_freeze_time         },
     { "step_time",           cmd_step_time           },
+    { "stock_nv",            cmd_stock_nv            },
     { "set_battery_voltage", cmd_set_battery_voltage },
     { "swd_target",          cmd_swd_target          },
     { "swd_pin",             cmd_swd_pin             },

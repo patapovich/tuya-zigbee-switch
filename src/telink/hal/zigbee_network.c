@@ -11,6 +11,7 @@
 #include "hal/zigbee.h"
 #include "telink_zigbee_hal.h"
 #include "version_cfg.h"
+#include "zigbee/stock_nv.h"
 
 // Forward definitions
 void bdb_init_callback(u8 status, u8 joinedNetwork);
@@ -213,7 +214,57 @@ static void nwk_frame_counter_apply_floor(void) {
     }
 }
 
+/* A module converted from the factory Zigbee firmware keeps its network (W4c). The conversion
+ * moves only the image: the factory NV is still there, at Tuya's 1 MB layout (zigbee/stock_nv.h),
+ * while this firmware's NV is at the 512 KB layout, so without this the module comes up factory
+ * new and joins again only while joining is allowed. When this firmware's NV has no network
+ * information and the factory NV has an intact one (same SDK structures, the sizes checked),
+ * the network information, the security material (the network key) and the trust centre link
+ * key go into this firmware's NV before zb_init(), which then starts on that network as after
+ * any restart. The NWK frame counter is not taken: the floor below starts above it. The factory
+ * network information is then erased, so a factory reset later never brings it back. */
+typedef char   stock_zb_info_is_192_bytes[(sizeof(zb_info_t) == 192) ? 1 : -1];
+typedef char   stock_ss_ib_is_81_bytes[(sizeof(ss_info_base_t) == 81) ? 1 : -1];
+typedef char   stock_key_pair_is_36_bytes[(sizeof(ss_dev_pair_set_t) == 36) ? 1 : -1];
+
+static void stock_nv_read(uint32_t addr, uint32_t len, uint8_t *buf) {
+    flash_read(addr, len, buf);
+}
+
+static void stock_nv_take_network(void) {
+    zb_info_t         info;
+    ss_info_base_t    ss;
+    ss_dev_pair_set_t pair;
+
+    if (((flash_read_mid() >> 16) & 0xFFu) < FLASH_SIZE_1M) {
+        return; /* no factory NV past 512 KB on this chip */
+    }
+    if (nv_flashReadNew(1, NV_MODULE_ZB_INFO, NV_ITEM_ZB_INFO, sizeof(info), (u8 *)&info) ==
+        NV_SUCC) {
+        return; /* on a network of its own already */
+    }
+    if (!stock_nv_item(stock_nv_read, NV_MODULE_ZB_INFO, NV_ITEM_ZB_INFO, (uint8_t *)&info,
+                       sizeof(info)) ||
+        !stock_nv_item(stock_nv_read, NV_MODULE_APS, NV_ITEM_APS_SSIB, (uint8_t *)&ss,
+                       sizeof(ss)) ||
+        !info.bdbAttr.nodeIsOnANetwork || info.nwkNib.panId == 0xFFFFu ||
+        info.nwkNib.nwkAddr >= 0xFFF8u) {
+        return;
+    }
+    uint8_t has_pair = stock_nv_item(stock_nv_read, NV_MODULE_KEYPAIR, NV_ITEM_SS_KEY_PAIR,
+                                     (uint8_t *)&pair, sizeof(pair));
+
+    nv_flashWriteNew(1, NV_MODULE_ZB_INFO, NV_ITEM_ZB_INFO, sizeof(info), (u8 *)&info);
+    nv_flashWriteNew(1, NV_MODULE_APS, NV_ITEM_APS_SSIB, sizeof(ss), (u8 *)&ss);
+    if (has_pair) {
+        nv_flashWriteNew(1, NV_MODULE_KEYPAIR, NV_ITEM_SS_KEY_PAIR, sizeof(pair), (u8 *)&pair);
+    }
+    flash_erase_sector(STOCK_NV_BASE);
+    flash_erase_sector(STOCK_NV_BASE + STOCK_NV_SECTOR_BYTES);
+}
+
 void telink_zigbee_hal_network_init(void) {
+    stock_nv_take_network();
     zb_init();
     // zb_init() restores the counter from flash; raise it before anything is
     // sent.

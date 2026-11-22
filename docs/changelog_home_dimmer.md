@@ -14,6 +14,15 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
 
 ## Next
 
+- A module converted from the factory Zigbee firmware keeps its network: the conversion moves
+  only the image, and the factory NV (Tuya's 1 MB layout, at 0xD8000) is still there while this
+  firmware's NV is at the 512 KB layout, so the module came up factory new and joined again only
+  while joining was allowed (a Permit join after the conversion's power cycle). Now, when this
+  firmware's NV has no network information and the factory NV has an intact one (byte sum or CRC
+  checked, the structure sizes this SDK has), its network information, security material and
+  trust centre link key are taken before the stack starts; the factory network information is
+  then erased, so a factory reset later never brings it back.
+
 - The SWD job `install` (and the automatic install of the first start-up with the wires) takes
   any factory dimmer chip, whatever its firmware: also one that left its flash open (read
   protection level 0, seen on a `_TZE204_o9gyszw2`). There no protection change erases the
