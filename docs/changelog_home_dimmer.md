@@ -29,6 +29,11 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
   trust centre link key are taken before the stack starts; the factory network information is
   then erased, so a factory reset later never brings it back.
 
+- A factory dimmer chip that answers the module's "not connected" with a leave and pairing
+  request no longer resets the module: after a restart the module tells the chip "not
+  connected" until its network is back, and a request that comes within 3 s of that, once the
+  network is back, is refused (the chip is told the module is connected). The module button
+  resets as before.
 - Release builds carry no debug parts: the MCU link diagnostics (the event log and the Basic
   attributes 0xff40..0xff45 and 0xff4f, read by helper_scripts/decode_mcu_diag.py) are built
   only with `make MCU_DUMP=1`; the counters the MCU update and the SWD master use stay.

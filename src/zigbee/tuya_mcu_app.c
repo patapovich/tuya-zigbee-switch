@@ -321,6 +321,33 @@ static uint8_t network_status(void) {
            : TUYA_MCU_NETWORK_NOT_CONNECTED;
 }
 
+/* A factory MCU may answer "not connected" with a leave and re-pair request (0x03): the
+ * `_TZE204_o9gyszw2` factory firmware does so for a 0x02 status 0 (its handler 0x08003AF4), and
+ * the read-protected `jtbgusdc` one cannot be read. Arriving after the module has joined (a
+ * restart: "not connected" until the network is restored), that request would reset a dimmer
+ * module (the module button's 0x03). A 0x03 within this long of the last "not connected" told
+ * to the MCU is taken for that answer and refused; a press of the module button comes later. */
+#define NOT_CONNECTED_ANSWER_MS    3000u
+
+static uint32_t g_not_connected_told_ms;
+static uint8_t  g_not_connected_told;
+
+/* The status as told to the MCU (query answers), noting a "not connected". */
+static uint8_t network_status_told(void) {
+    uint8_t status = network_status();
+
+    if (status == TUYA_MCU_NETWORK_NOT_CONNECTED) {
+        g_not_connected_told    = 1;
+        g_not_connected_told_ms = hal_millis();
+    }
+    return status;
+}
+
+static uint8_t answers_not_connected(void) {
+    return g_not_connected_told &&
+           hal_millis() - g_not_connected_told_ms < NOT_CONNECTED_ANSWER_MS;
+}
+
 static void on_mcu_command(uint8_t cmd, uint16_t seq, const uint8_t *data, uint16_t data_len) {
     switch (cmd) {
     case TUYA_MCU_CMD_MCU_VERSION:
@@ -346,13 +373,14 @@ static void on_mcu_command(uint8_t cmd, uint16_t seq, const uint8_t *data, uint1
             return;
         }
         if (hal_zigbee_get_network_status() == HAL_ZIGBEE_NETWORK_JOINED) {
-            if (mcu_keys_are_the_ui()) {
+            if (mcu_keys_are_the_ui() || answers_not_connected()) {
                 /* On a touch switch a held key makes the MCU ask us to leave
                  * and re-pair. Those keys are what people touch every day,
                  * and an accidental long press is the most common way a
                  * switch drops off a working network, so we refuse and tell
                  * the MCU we are connected, which also stops its pairing
-                 * blink. */
+                 * blink. The same for a factory MCU's answer to the "not
+                 * connected" we told it just before joining. */
                 uint8_t status = TUYA_MCU_NETWORK_CONNECTED;
                 printf("Ignoring MCU leave request: already joined\r\n");
                 tuya_secondary_mcu_queue_cmd(TUYA_MCU_CMD_NETWORK_STATUS, &status, 1);
@@ -375,7 +403,7 @@ static void on_mcu_command(uint8_t cmd, uint16_t seq, const uint8_t *data, uint1
         }
         g_last_query_seq = seq;
         /* Unanswered, the MCU assumes the link is broken (key LEDs blink). */
-        uint8_t status = network_status();
+        uint8_t status = network_status_told();
         tuya_secondary_mcu_send_reply(cmd, seq, &status, 1);
         if (!first_contact(CONTACT_MCU) && !g_version_waiting && !g_mcu_own) {
             tuya_mcu_ota_mcu_queried();     /* its identity answers all lost? */
@@ -385,7 +413,7 @@ static void on_mcu_command(uint8_t cmd, uint16_t seq, const uint8_t *data, uint1
 
     case TUYA_MCU_CMD_QUERY_GATEWAY: {
         /* We are the gateway as far as the MCU knows. */
-        uint8_t status = network_status();
+        uint8_t status = network_status_told();
         tuya_secondary_mcu_send_reply(cmd, seq, &status, 1);
         return;
     }

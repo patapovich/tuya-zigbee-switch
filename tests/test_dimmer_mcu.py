@@ -22,6 +22,8 @@ from pathlib import Path
 from client import StubProc
 from conftest import Device
 from tuya_mcu import (  # noqa: F401  (re-exported for the other dimmer tests)
+    TUYA_CMD_NETWORK_STATUS,
+    TUYA_CMD_QUERY_NETWORK,
     TUYA_CMD_REPORT,
     TUYA_CMD_RESET_NETWORK,
     TUYA_CMD_REPORT_PASSIVE,
@@ -775,6 +777,65 @@ def test_module_button_reset_leaves_the_network():
         proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_RESET_NETWORK, bytes([0x01]))}")
         pump(proc)
         assert not device.is_joined(), "the module button must reset the device"
+    finally:
+        proc.stop()
+
+
+def _told_not_connected_then_joined(proc: StubProc, device: Device) -> None:
+    """A restart: the module not on its network yet answers the MCU's network query (0x20)
+    with "not connected", then the network is back."""
+    device.set_network(0)
+    proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_QUERY_NETWORK, b'', 7)}")
+    pump(proc)
+    assert (TUYA_CMD_QUERY_NETWORK, bytes([0x00])) in parse_frames(take_tx(proc))
+    device.set_network(1)
+    assert device.is_joined()
+
+
+def test_a_leave_request_answering_not_connected_is_refused():
+    """A factory MCU may answer "not connected" with 0x03 (the o9gyszw2 factory firmware does
+    for a 0x02 status 0). Coming after the module joined, it would reset the module: within
+    3 s of the last "not connected" it is refused, and the MCU is told we are connected."""
+    proc, device = start()
+    try:
+        _told_not_connected_then_joined(proc, device)
+        device.step_time(500)
+        proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_RESET_NETWORK, bytes([0x01]))}")
+        pump(proc)
+        assert device.is_joined(), "an answer to our own 'not connected' must not reset"
+        frames = []
+        for _ in range(8):                  # queued behind the dump query (its ack timeout)
+            device.step_time(500)
+            pump(proc)
+            frames += parse_frames(take_tx(proc))
+        assert (TUYA_CMD_NETWORK_STATUS, bytes([0x01])) in frames
+        assert device.is_joined()
+    finally:
+        proc.stop()
+
+
+def test_the_module_button_resets_again_after_the_window():
+    proc, device = start()
+    try:
+        _told_not_connected_then_joined(proc, device)
+        device.step_time(3100)
+        proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_RESET_NETWORK, bytes([0x01]))}")
+        pump(proc)
+        assert not device.is_joined(), "the module button must reset the device"
+    finally:
+        proc.stop()
+
+
+def test_a_connected_answer_does_not_open_the_window():
+    """Joined throughout: the query answers say connected, the module button resets at once."""
+    proc, device = start()
+    try:
+        proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_QUERY_NETWORK, b'', 7)}")
+        pump(proc)
+        assert (TUYA_CMD_QUERY_NETWORK, bytes([0x01])) in parse_frames(take_tx(proc))
+        proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_RESET_NETWORK, bytes([0x01]))}")
+        pump(proc)
+        assert not device.is_joined()
     finally:
         proc.stop()
 
