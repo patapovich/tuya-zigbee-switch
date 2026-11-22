@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from client import StubProc
+from conftest import Device
+from test_dimmer_mcu import ZDMS16_2
 
 DUMP = Path(__file__).resolve().parent.parent / "bin" / "_factory" / "telink" / "_TZE284_jtbgusdc.bin"
 ZB_INFO = (0, 1, 192)       # module, item, payload size (zb_info_t)
@@ -84,3 +86,11 @@ def test_the_newest_intact_copy_wins(stub, tmp_path, kind):
     d[at + 8 + 5] ^= 0x01                                # the newer one damaged: the older
     path.write_bytes(bytes(d))
     assert stock_nv(stub, path, *ZB_INFO) == old
+
+
+def test_the_start_up_look_is_an_attribute_of_the_zdms16_2():
+    """Basic 0xff55 (stock_nv_diag_t without its length byte): format 1; the stub has no factory
+    NV and no Telink start-up, so the rest is zero (own network)."""
+    with StubProc(device_config=ZDMS16_2) as proc:
+        raw = bytes.fromhex(Device(proc).read_zigbee_attr(1, 0x0000, 0xFF55))
+        assert len(raw) == 19 and raw[0] == 1 and raw[1:] == bytes(18)

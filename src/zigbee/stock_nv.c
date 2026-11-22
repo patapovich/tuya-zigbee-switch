@@ -2,6 +2,9 @@
 
 #include "zigbee/crc32_nibble.h"
 
+stock_nv_diag_t g_stock_nv_diag = { sizeof(stock_nv_diag_t) - 1u, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+                                    { 0 } };
+
 #define SECT_VALID          0x5A5Au /* NV_SECTOR_VALID */
 #define SECT_VALID_CRC      0x7A7Au /* NV_SECTOR_VALID_CHECKCRC */
 #define IDX_VALID           0x5Au   /* ITEM_FIELD_VALID */

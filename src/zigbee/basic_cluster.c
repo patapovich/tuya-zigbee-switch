@@ -17,6 +17,7 @@
 #include <stddef.h>
 #ifdef SECONDARY_MCU_IMAGE
 #include "zigbee/mcu_flasher.h"
+#include "zigbee/stock_nv.h"
 #endif
 
 #ifdef HAL_SILABS
@@ -132,6 +133,9 @@ void basic_cluster_add_to_endpoint(zigbee_basic_cluster *cluster,
     }
 #ifdef SECONDARY_MCU_IMAGE
     attr_idx += mcu_flasher_register_attrs(cluster->attr_infos, attr_idx);
+    SETUP_ATTR(attr_idx, ZCL_ATTR_BASIC_STOCK_NV, ZCL_DATA_TYPE_OCTET_STR, ATTR_READONLY,
+               g_stock_nv_diag);
+    attr_idx++;
 #endif
 
     endpoint->clusters[endpoint->cluster_count].cluster_id      = ZCL_CLUSTER_BASIC;

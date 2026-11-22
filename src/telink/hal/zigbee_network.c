@@ -231,36 +231,93 @@ static void stock_nv_read(uint32_t addr, uint32_t len, uint8_t *buf) {
     flash_read(addr, len, buf);
 }
 
+/* The diag fields of a factory copy of the network information. */
+static void stock_nv_diag_network(const zb_info_t *info) {
+    g_stock_nv_diag.on_network = info->bdbAttr.nodeIsOnANetwork;
+    g_stock_nv_diag.channel    = info->macPib.phyChannelCur;
+    g_stock_nv_diag.pan_id     = info->nwkNib.panId;
+    g_stock_nv_diag.nwk_addr   = info->nwkNib.nwkAddr;
+    memcpy(g_stock_nv_diag.ext_pan_id, info->nwkNib.extPANId, sizeof(g_stock_nv_diag.ext_pan_id));
+}
+
+/* What is at STOCK_NV_BASE; the marker's diag fields into g_stock_nv_diag. */
+static uint8_t stock_nv_area(void) {
+    uint32_t marker[1 + sizeof(stock_nv_diag_t) / 4u + 1u];
+
+    flash_read(STOCK_NV_BASE, sizeof(marker), (uint8_t *)marker);
+    if (marker[0] == STOCK_NV_MARKER_MAGIC) {
+        const stock_nv_diag_t *m = (const stock_nv_diag_t *)(void *)&marker[1];
+
+        g_stock_nv_diag.found      = m->found;
+        g_stock_nv_diag.on_network = m->on_network;
+        g_stock_nv_diag.channel    = m->channel;
+        g_stock_nv_diag.pan_id     = m->pan_id;
+        g_stock_nv_diag.nwk_addr   = m->nwk_addr;
+        memcpy(g_stock_nv_diag.ext_pan_id, m->ext_pan_id, sizeof(g_stock_nv_diag.ext_pan_id));
+        return STOCK_NV_AREA_MARKER;
+    }
+    if ((marker[0] & 0xFFFFu) == 0x5A5Au || (marker[0] & 0xFFFFu) == 0x7A7Au) {
+        return STOCK_NV_AREA_FACTORY;
+    }
+    return marker[0] == 0xFFFFFFFFu ? STOCK_NV_AREA_BLANK : STOCK_NV_AREA_OTHER;
+}
+
 static void stock_nv_take_network(void) {
     zb_info_t         info;
     ss_info_base_t    ss;
     ss_dev_pair_set_t pair;
 
-    if (((flash_read_mid() >> 16) & 0xFFu) < FLASH_SIZE_1M) {
-        return; /* no factory NV past 512 KB on this chip */
+    g_stock_nv_diag.flash_cap = (uint8_t)(flash_read_mid() >> 16);
+    if (g_stock_nv_diag.flash_cap < FLASH_SIZE_1M) {
+        g_stock_nv_diag.result = STOCK_NV_NOT_1MB; /* no factory NV past 512 KB on this chip */
+        return;
     }
+    g_stock_nv_diag.area = stock_nv_area();
     if (nv_flashReadNew(1, NV_MODULE_ZB_INFO, NV_ITEM_ZB_INFO, sizeof(info), (u8 *)&info) ==
         NV_SUCC) {
-        return; /* on a network of its own already */
+        g_stock_nv_diag.result = STOCK_NV_OWN_NETWORK; /* on a network of its own already */
+        return;
     }
     if (!stock_nv_item(stock_nv_read, NV_MODULE_ZB_INFO, NV_ITEM_ZB_INFO, (uint8_t *)&info,
-                       sizeof(info)) ||
-        !stock_nv_item(stock_nv_read, NV_MODULE_APS, NV_ITEM_APS_SSIB, (uint8_t *)&ss,
-                       sizeof(ss)) ||
-        !info.bdbAttr.nodeIsOnANetwork || info.nwkNib.panId == 0xFFFFu ||
+                       sizeof(info))) {
+        g_stock_nv_diag.result = STOCK_NV_NO_ZB_INFO;
+        return;
+    }
+    g_stock_nv_diag.found |= 1u;
+    stock_nv_diag_network(&info);
+    if (!stock_nv_item(stock_nv_read, NV_MODULE_APS, NV_ITEM_APS_SSIB, (uint8_t *)&ss,
+                       sizeof(ss))) {
+        g_stock_nv_diag.result = STOCK_NV_NO_SECURITY;
+        return;
+    }
+    g_stock_nv_diag.found |= 2u;
+    if (!info.bdbAttr.nodeIsOnANetwork || info.nwkNib.panId == 0xFFFFu ||
         info.nwkNib.nwkAddr >= 0xFFF8u) {
+        g_stock_nv_diag.result = STOCK_NV_IMPLAUSIBLE;
         return;
     }
     uint8_t has_pair = stock_nv_item(stock_nv_read, NV_MODULE_KEYPAIR, NV_ITEM_SS_KEY_PAIR,
                                      (uint8_t *)&pair, sizeof(pair));
 
+    if (has_pair) {
+        g_stock_nv_diag.found |= 4u;
+    }
     nv_flashWriteNew(1, NV_MODULE_ZB_INFO, NV_ITEM_ZB_INFO, sizeof(info), (u8 *)&info);
     nv_flashWriteNew(1, NV_MODULE_APS, NV_ITEM_APS_SSIB, sizeof(ss), (u8 *)&ss);
     if (has_pair) {
         nv_flashWriteNew(1, NV_MODULE_KEYPAIR, NV_ITEM_SS_KEY_PAIR, sizeof(pair), (u8 *)&pair);
     }
+    g_stock_nv_diag.result = STOCK_NV_TAKEN;
+
+    /* the factory network information goes; the marker tells what was taken */
+    uint32_t marker[1 + sizeof(stock_nv_diag_t) / 4u + 1u];
+
+    memset(marker, 0xFF, sizeof(marker));
+    marker[0] = STOCK_NV_MARKER_MAGIC;
+    memcpy(&marker[1], &g_stock_nv_diag, sizeof(g_stock_nv_diag));
     flash_erase_sector(STOCK_NV_BASE);
     flash_erase_sector(STOCK_NV_BASE + STOCK_NV_SECTOR_BYTES);
+    flash_write_page(STOCK_NV_BASE, sizeof(marker), (uint8_t *)marker);
 }
 
 void telink_zigbee_hal_network_init(void) {
