@@ -239,7 +239,9 @@ static void nwk_frame_counter_apply_floor(void) {
  * the network information, the security material (the network key) and the trust centre link
  * key go into this firmware's NV before zb_init(), which then starts on that network as after
  * any restart. The NWK frame counter is not taken: the floor below starts above it. The factory
- * network information is then erased, so a factory reset later never brings it back. */
+ * NV is never written or erased: a marker in a free sector (STOCK_NV_MARKER_ADDR) says it was
+ * taken, and a release build never takes it again, so a factory reset later does not bring the
+ * old network back. */
 typedef char   stock_zb_info_is_192_bytes[(sizeof(zb_info_t) == 192) ? 1 : -1];
 typedef char   stock_ss_ib_is_81_bytes[(sizeof(ss_info_base_t) == 81) ? 1 : -1];
 typedef char   stock_key_pair_is_36_bytes[(sizeof(ss_dev_pair_set_t) == 36) ? 1 : -1];
@@ -258,14 +260,23 @@ static void stock_nv_diag_network(const zb_info_t *info) {
 }
 
 /* What is at STOCK_NV_BASE. */
-static uint8_t stock_nv_area(void) {
-    uint32_t w = 0;
 
-    flash_read(STOCK_NV_BASE, 4, (uint8_t *)&w);
-    if ((w & 0xFFFFu) == 0x5A5Au || (w & 0xFFFFu) == 0x7A7Au) {
-        return STOCK_NV_AREA_FACTORY;
+/* Either sector of the factory NV's first module (the network information): the factory
+ * firmware writes them in turn, so after a rotation the first one may be blank. */
+static uint8_t stock_nv_area(void) {
+    uint8_t blank = 1;
+
+    for (uint32_t at = STOCK_NV_BASE; at < STOCK_NV_BASE + STOCK_NV_MODULE_BYTES;
+         at += STOCK_NV_SECTOR_BYTES) {
+        uint32_t w = 0;
+
+        flash_read(at, 4, (uint8_t *)&w);
+        if ((w & 0xFFFFu) == 0x5A5Au || (w & 0xFFFFu) == 0x7A7Au) {
+            return STOCK_NV_AREA_FACTORY;
+        }
+        blank &= w == 0xFFFFFFFFu;
     }
-    return w == 0xFFFFFFFFu ? STOCK_NV_AREA_BLANK : STOCK_NV_AREA_OTHER;
+    return blank ? STOCK_NV_AREA_BLANK : STOCK_NV_AREA_OTHER;
 }
 
 /* The marker sector: 1 = the marker, 0 = blank (free), 2 = something else. Debug builds: the
