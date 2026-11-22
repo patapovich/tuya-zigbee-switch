@@ -18,7 +18,7 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
   the closures of one wall switch (each within 10 s of the first, as the factory MCU does with its
   fixed 8) and asks for the leave and pairing at that count; the module writes the count to it
   (DP 181) whenever the dimmer chip's dump says another (it is not saved there: 8 at its every
-  start) and at every write of the setting. 0 turns it off; 1..4 act as 5. A factory MCU keeps
+  start) and at every write of the setting. 0 turns it off; 1..7 act as 8. A factory MCU keeps
   its own 8.
 - A module converted from the factory Zigbee firmware keeps its network: the conversion moves
   only the image, and the factory NV (Tuya's 1 MB layout, at 0xD8000) is still there while this
