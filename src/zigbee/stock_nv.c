@@ -10,6 +10,8 @@ uint8_t             g_stock_nv_log_page_no;
 stock_nv_log_page_t g_stock_nv_log_page = { 3, 0, 0, { { 0 } } };
 stock_nv_read_t     g_stock_nv_flash_read;
 stock_nv_raw_t      g_stock_nv_raw;
+uint8_t             g_stock_nv_wipe_cmd;
+void (*g_stock_nv_wipe)(void);
 
 void stock_nv_log_fill_page(void) {
     uint32_t magic = 0;

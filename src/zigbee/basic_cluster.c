@@ -71,6 +71,12 @@ void basic_cluster_callback_attr_write_trampoline(uint16_t attribute_id) {
     if (attribute_id == ZCL_ATTR_BASIC_STOCK_NV_LOG_PAGE_NO) {
         stock_nv_log_fill_page();
     }
+    if (attribute_id == ZCL_ATTR_BASIC_STOCK_NV_WIPE) {
+        if (g_stock_nv_wipe_cmd == STOCK_NV_WIPE_MAGIC && g_stock_nv_wipe) {
+            g_stock_nv_wipe();
+        }
+        g_stock_nv_wipe_cmd = 0;
+    }
 #endif
 #endif
     if (tuya_mcu_diag_on_write(attribute_id) == TUYA_MCU_DIAG_CONTROL_QUERY_ALL) {
@@ -147,6 +153,9 @@ void basic_cluster_add_to_endpoint(zigbee_basic_cluster *cluster,
     attr_idx++;
     SETUP_ATTR(attr_idx, ZCL_ATTR_BASIC_STOCK_NV_LOG_PAGE, ZCL_DATA_TYPE_OCTET_STR, ATTR_READONLY,
                g_stock_nv_log_page);
+    attr_idx++;
+    SETUP_ATTR(attr_idx, ZCL_ATTR_BASIC_STOCK_NV_WIPE, ZCL_DATA_TYPE_UINT8, ATTR_WRITABLE,
+               g_stock_nv_wipe_cmd);
     attr_idx++;
 #endif
 #endif

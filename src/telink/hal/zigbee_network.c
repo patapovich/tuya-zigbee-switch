@@ -13,6 +13,7 @@
 #include "telink_zigbee_hal.h"
 #include "version_cfg.h"
 #include "zigbee/stock_nv.h"
+#include "device_config/reset.h"
 
 // Forward definitions
 void bdb_init_callback(u8 status, u8 joinedNetwork);
@@ -330,6 +331,14 @@ static uint16_t stock_nv_raw(uint8_t which, uint8_t *buf, uint16_t max) {
     return nv_flashReadNew(1, k[i].module, k[i].item, k[i].size, buf) == NV_SUCC ? k[i].size : 0;
 }
 
+/* Debug builds: the own network NV emptied (nv_resetToFactoryNew keeps the frame counter and
+ * NV_MODULE_APP; no leave), then a restart a moment later (the write's answer goes out first). */
+static void stock_nv_wipe(void) {
+    nv_resetToFactoryNew();
+    stock_nv_log(STOCK_NV_LOG_LEAVE, 9, 0);   /* 9: the debug wipe */
+    schedule_reboot(500);
+}
+
 static void stock_nv_take_network(void) {
     zb_info_t         info;
     ss_info_base_t    ss;
@@ -338,6 +347,7 @@ static void stock_nv_take_network(void) {
 
     g_stock_nv_flash_read     = stock_nv_read;
     g_stock_nv_raw            = stock_nv_raw;
+    g_stock_nv_wipe           = stock_nv_wipe;
     g_stock_nv_diag.flash_cap = (uint8_t)(flash_read_mid() >> 16);
     if (g_stock_nv_diag.flash_cap < FLASH_SIZE_1M) {
         g_stock_nv_diag.result = STOCK_NV_NOT_1MB; /* no factory NV past 512 KB on this chip */
@@ -388,6 +398,23 @@ static void stock_nv_take_network(void) {
         if (has_pair) {
             g_stock_nv_diag.found |= 4u;
         }
+
+        /* What is the factory build's own, not the network's, is this build's: the key
+         * pointers point into the factory firmware's flash, its bit order puts the active key
+         * slot elsewhere (0x35: slot 1 in bit 4, read here as 3, no such slot: the stack then
+         * finds no usable network key and starts as factory new), its pre-configured key type
+         * and commissioning capability are its own. The network key slots, their numbers, the
+         * TC address and the counters stay as the factory firmware had them. */
+        ss.activeSecureMaterialIndex &= 1u;
+        ss.secureAllFresh             = 1;
+        ss.reserved             = 1;
+        ss.preConfiguredKeyType = 0;
+        ss.keyPairSetNew        = NULL;       /* zdo_ssInfoInit sets it */
+        ss.touchLinkKey         = bdb_commission_setting.linkKey.touchLinkKey.key;
+        ss.distributeLinkKey    = bdb_commission_setting.linkKey.distributeLinkKey.key;
+        ss.tcLinkKey            = bdb_commission_setting.linkKey.tcLinkKey.key;
+        info.bdbAttr.nodeCommissioningCapability = g_bdbAttrs.nodeCommissioningCapability;
+
         nv_flashWriteNew(1, NV_MODULE_ZB_INFO, NV_ITEM_ZB_INFO, sizeof(info), (u8 *)&info);
         nv_flashWriteNew(1, NV_MODULE_APS, NV_ITEM_APS_SSIB, sizeof(ss), (u8 *)&ss);
         if (has_pair) {

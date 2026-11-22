@@ -100,6 +100,14 @@ extern stock_nv_read_t g_stock_nv_flash_read;
 #define STOCK_NV_RAW_BYTES    40u
 typedef uint16_t (*stock_nv_raw_t)(uint8_t which, uint8_t *buf, uint16_t max);
 extern stock_nv_raw_t g_stock_nv_raw;
+
+/* Debug builds: a write of STOCK_NV_WIPE_MAGIC to Basic 0xff58 empties this firmware's network
+ * NV (no leave is sent: the network keeps the device) and restarts, so the next start-up takes
+ * the factory network again (a test of the take on a module whose factory NV is intact). The
+ * Telink start-up sets the hook (NULL elsewhere). */
+#define STOCK_NV_WIPE_MAGIC    0xA5u
+extern uint8_t g_stock_nv_wipe_cmd;
+extern void    (*g_stock_nv_wipe)(void);
 void stock_nv_log_fill_page(void);
 
 /* The newest intact copy of item item_id of module module (both sectors looked at): exactly
