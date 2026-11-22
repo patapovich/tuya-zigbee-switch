@@ -77,6 +77,11 @@ typedef struct __attribute__((packed)) {
 
 extern stock_nv_diag_t g_stock_nv_diag;
 
+/* The HAL's flash read, set by the Telink start-up (NULL elsewhere: pages stay empty). */
+extern stock_nv_read_t g_stock_nv_flash_read;
+
+#ifdef MCU_FLASHER_DUMP
+
 /* Debug builds (MCU_FLASHER_DUMP): the log read 5 records at a time. A write of the page
  * attribute (Basic 0xff56) fills the page attribute (0xff57) from the flash. */
 #define STOCK_NV_LOG_PAGE_RECS    5
@@ -89,8 +94,6 @@ typedef struct __attribute__((packed)) {
 
 extern uint8_t             g_stock_nv_log_page_no;
 extern stock_nv_log_page_t g_stock_nv_log_page;
-/* The HAL's flash read, set by the Telink start-up (NULL elsewhere: pages stay empty). */
-extern stock_nv_read_t g_stock_nv_flash_read;
 
 /* Debug builds: pages 0x80 and up are raw items instead of log records, 40 bytes a page:
  * page 0x80 + 0x10 * which + chunk; which 0 / 1 = this firmware's / the factory network
@@ -109,6 +112,8 @@ extern stock_nv_raw_t g_stock_nv_raw;
 extern uint8_t g_stock_nv_wipe_cmd;
 extern void    (*g_stock_nv_wipe)(void);
 void stock_nv_log_fill_page(void);
+
+#endif
 
 /* The newest intact copy of item item_id of module module (both sectors looked at): exactly
  * len payload bytes into buf, its byte sum or CRC checked. 1 = found (buf holds it); 0 =

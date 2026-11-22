@@ -27,7 +27,13 @@ void zdo_leave_confirmation_callback(nlme_leave_cnf_t *pLeaveCnf);
 static hal_network_status_change_callback_t network_status_change_callback =
     NULL;
 static bool steeringInProgress = 0;
+#ifdef MCU_FLASHER_DUMP
 static void stock_nv_log(uint8_t kind, uint8_t a, uint8_t b);
+
+#else
+/* Release builds keep no start-up log: no flash write at every start-up and network event. */
+#define stock_nv_log(kind, a, b)    ((void)0)
+#endif
 
 // Telink ZDO callbacks
 zdo_appIndCb_t zdo_callbacks = {
@@ -262,10 +268,12 @@ static uint8_t stock_nv_area(void) {
     return w == 0xFFFFFFFFu ? STOCK_NV_AREA_BLANK : STOCK_NV_AREA_OTHER;
 }
 
-/* The marker sector: 1 = the marker, 0 = blank (free), 2 = something else. The log's next
- * free record and this start-up's number when the marker is there. */
+/* The marker sector: 1 = the marker, 0 = blank (free), 2 = something else. Debug builds: the
+ * log's next free record and this start-up's number when the marker is there. */
+#ifdef MCU_FLASHER_DUMP
 static uint32_t g_log_at;    /* 0: no log */
 static uint8_t  g_log_boot;
+#endif
 
 static uint8_t stock_nv_marker(void) {
     uint32_t head[STOCK_NV_LOG_START / 4u];
@@ -278,6 +286,7 @@ static uint8_t stock_nv_marker(void) {
         }
         return blank ? 0 : 2;
     }
+#ifdef MCU_FLASHER_DUMP
     g_log_boot = 0;
     for (uint32_t at = STOCK_NV_MARKER_ADDR + STOCK_NV_LOG_START;
          at + sizeof(stock_nv_rec_t) <= STOCK_NV_MARKER_ADDR + STOCK_NV_SECTOR_BYTES;
@@ -294,10 +303,12 @@ static uint8_t stock_nv_marker(void) {
     if (g_log_boot < 0xFEu) {
         g_log_boot++;
     }
+#endif
     return 1;
 }
 
-/* A log record, while the sector has room (none without the marker). */
+#ifdef MCU_FLASHER_DUMP
+/* Debug builds: a log record, while the sector has room (none without the marker). */
 static void stock_nv_log(uint8_t kind, uint8_t a, uint8_t b) {
     if (!g_log_at ||
         g_log_at + sizeof(stock_nv_rec_t) > STOCK_NV_MARKER_ADDR + STOCK_NV_SECTOR_BYTES) {
@@ -339,15 +350,19 @@ static void stock_nv_wipe(void) {
     schedule_reboot(500);
 }
 
+#endif
+
 static void stock_nv_take_network(void) {
     zb_info_t         info;
     ss_info_base_t    ss;
     ss_dev_pair_set_t pair;
     uint8_t           marker;
 
-    g_stock_nv_flash_read     = stock_nv_read;
-    g_stock_nv_raw            = stock_nv_raw;
-    g_stock_nv_wipe           = stock_nv_wipe;
+    g_stock_nv_flash_read = stock_nv_read;
+#ifdef MCU_FLASHER_DUMP
+    g_stock_nv_raw  = stock_nv_raw;
+    g_stock_nv_wipe = stock_nv_wipe;
+#endif
     g_stock_nv_diag.flash_cap = (uint8_t)(flash_read_mid() >> 16);
     if (g_stock_nv_diag.flash_cap < FLASH_SIZE_1M) {
         g_stock_nv_diag.result = STOCK_NV_NOT_1MB; /* no factory NV past 512 KB on this chip */
@@ -430,7 +445,9 @@ static void stock_nv_take_network(void) {
             memcpy(&head[1], &g_stock_nv_diag, sizeof(g_stock_nv_diag));
             flash_write_page(STOCK_NV_MARKER_ADDR, sizeof(head), (uint8_t *)head);
             g_stock_nv_diag.found |= 0x80u;
+#ifdef MCU_FLASHER_DUMP
             stock_nv_marker();   /* the log from here */
+#endif
         }
     }
     stock_nv_log(STOCK_NV_LOG_BOOT, g_stock_nv_diag.result, g_stock_nv_diag.area);

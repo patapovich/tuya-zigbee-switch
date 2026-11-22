@@ -4,11 +4,13 @@
 
 #include "zigbee/crc32_nibble.h"
 
-stock_nv_diag_t     g_stock_nv_diag = { sizeof(stock_nv_diag_t) - 1u, 2, 0, 0, 0, 0, 0, 0, 0, 0,
-                                        { 0 } };
+stock_nv_diag_t g_stock_nv_diag = { sizeof(stock_nv_diag_t) - 1u, 2, 0, 0, 0, 0, 0, 0, 0, 0,
+                                    { 0 } };
+stock_nv_read_t g_stock_nv_flash_read;
+
+#ifdef MCU_FLASHER_DUMP
 uint8_t             g_stock_nv_log_page_no;
 stock_nv_log_page_t g_stock_nv_log_page = { 3, 0, 0, { { 0 } } };
-stock_nv_read_t     g_stock_nv_flash_read;
 stock_nv_raw_t      g_stock_nv_raw;
 uint8_t             g_stock_nv_wipe_cmd;
 void (*g_stock_nv_wipe)(void);
@@ -61,6 +63,8 @@ void stock_nv_log_fill_page(void) {
     g_stock_nv_log_page.total = total;
     g_stock_nv_log_page.len   = (uint8_t)(3u + n * sizeof(stock_nv_rec_t));
 }
+
+#endif
 
 #define SECT_VALID          0x5A5Au /* NV_SECTOR_VALID */
 #define SECT_VALID_CRC      0x7A7Au /* NV_SECTOR_VALID_CHECKCRC */
