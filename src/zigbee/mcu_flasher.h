@@ -20,9 +20,22 @@
  * job's name first (one use, 60 s). An install that cannot attach at once
  * (the factory firmware may hold the SWD pins) is armed in NV and attaches
  * early at the next power-ups (mcu_flasher_early). The result is the status
- * attribute. */
+ * attribute.
+ *
+ * dump reads an MCU at read protection level 0 (a factory one that left its
+ * flash open, or Open Dimmer) without writing it: attached at once, or (the
+ * factory firmware holds the pins) armed for the next power-up like an
+ * install; the core is halted, the CRC-32 of the 32 KB flash goes to
+ * sector0_crc and the job then serves reads: a write of the dump address
+ * attribute fills the dump data attribute with the 44 bytes there (flash
+ * 0x08000000..0x08007FFF, system memory 0x1FFF0000..0x1FFF0FFF). The abort
+ * job, or 10 minutes without a read, ends it: the MCU is reset with the
+ * debugger's hand off, so its own firmware starts again. A read-protected
+ * MCU is refused: reading its protection has already closed its flash to the
+ * running core, so it is halted with the gate outputs low until the module's
+ * next power cycle; nothing is written. */
 
-#define MCU_FLASHER_ATTRS               3 /* status, control, confirm: with the token */
+#define MCU_FLASHER_ATTRS               5 /* status, control, confirm, dump address, dump data */
 
 #define MCU_FLASHER_JOB_NONE            0
 #define MCU_FLASHER_JOB_SURVEY_DP       1
@@ -30,6 +43,7 @@
 #define MCU_FLASHER_JOB_UPDATE_BOOT     3
 #define MCU_FLASHER_JOB_UPDATE_FORCE    4
 #define MCU_FLASHER_JOB_INSTALL         5
+#define MCU_FLASHER_JOB_DUMP            6
 #define MCU_FLASHER_JOB_ABORT           0xFF
 
 enum {
@@ -90,7 +104,20 @@ typedef struct __attribute__((packed)) {
     uint8_t  page;         /* update_bootloader: the page being written (1..31, then 0) */
 } mcu_flasher_status_t;
 
-#define MCU_FLASHER_STATUS_MAX    48 /* bytes after the length byte */
+#define MCU_FLASHER_STATUS_MAX     48 /* bytes after the length byte */
+
+/* Dump data attribute (Basic 0xff54, octet string): the address read and the
+ * words there, little-endian. addr MCU_FLASHER_DUMP_NONE: no dump serving or
+ * an address outside the two areas (or not word-aligned); MCU_FLASHER_DUMP_FAILED:
+ * the read failed (the link is set up again for the next one). */
+#define MCU_FLASHER_DUMP_WORDS     11
+#define MCU_FLASHER_DUMP_NONE      0xFFFFFFFFu
+#define MCU_FLASHER_DUMP_FAILED    0xFFFFFFFEu
+typedef struct __attribute__((packed)) {
+    uint8_t  len;          /* ZCL octet string length byte: 4 + 4 * the words read */
+    uint32_t addr;
+    uint8_t  data[4 * MCU_FLASHER_DUMP_WORDS];
+} mcu_flasher_dump_t;
 
 /* app.c, right after parse_config(): an armed install attaches here, some
  * 40-80 ms after power-up, before a factory firmware takes the SWD pins. */
@@ -99,7 +126,7 @@ void mcu_flasher_early(void);
 /* config_parser.c: an SW<clk><dio> token. */
 void mcu_flasher_parse_token(const char *entry);
 
-/* basic_cluster.c: the two attributes, only with a valid token (else 0). */
+/* basic_cluster.c: the attributes, only with a valid token (else 0). */
 uint8_t mcu_flasher_register_attrs(hal_zigbee_attribute *table, uint8_t start_index);
 
 /* basic_cluster.c: an attribute write. */

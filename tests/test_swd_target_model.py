@@ -561,7 +561,8 @@ def test_backdoor_and_reset(host: SwdRefHost, stub_proc: StubProc, tmp_path):
     assert target(stub_proc, f"load {FLASH + 0x400:X} {path}")["len"] == "1024"
     assert target(stub_proc, f"peek32 {FLASH + 0x400:X}")["value"] == "0x03020100"
     assert not stub_proc.exec("swd_target peek32 40000000").ok
-    assert not stub_proc.exec(f"swd_target load {FLASH + 0x4F00:X} {path}").ok
+    # past the end of the 32 KB (20 KB + the hidden 12 KB)
+    assert not stub_proc.exec(f"swd_target load {FLASH + 0x7F00:X} {path}").ok
     target(stub_proc, f"poke32 {DBGMCU_IDCODE:X} 12345678")
     host.start_session()
     assert host.mem_read32(FLASH + 0x7FC) == 0xFFFEFDFC

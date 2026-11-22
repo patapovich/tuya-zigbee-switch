@@ -128,8 +128,10 @@ typedef char   ob_user_byte_is_open_dimmers[(((OB_OPTR >> 8) & 0xFFu) == 0xF9u) 
 #define APP_MAGIC                0x5A445041u /* "APDZ" */
 
 /* One frame per read response or report: the Telink gcc has no _Static_assert. */
-typedef char mcu_flasher_status_fits_one_frame[
+typedef char   mcu_flasher_status_fits_one_frame[
         (sizeof(mcu_flasher_status_t) - 1 <= MCU_FLASHER_STATUS_MAX) ? 1 : -1];
+typedef char   mcu_flasher_dump_fits_one_frame[
+        (sizeof(mcu_flasher_dump_t) - 1 <= MCU_FLASHER_STATUS_MAX) ? 1 : -1];
 
 #define SLICE_WORDS        32u    /* per main-loop pass: a few ms of SWD */
 #define TRIES_PER_STEP     3u
@@ -165,6 +167,11 @@ enum {
     STEP_OB_CHECK,
     STEP_RELOAD,
     STEP_REATTACH,
+
+    /* dump: halted like an install (STEP_STOP), then after the identity and
+     * the ROM the CRC of the whole flash, then the reads */
+    STEP_DUMP_CRC,
+    STEP_DUMP,
 };
 
 /* An install armed in NV (NV_ITEM_MCU_FLASHER_JOB): attach at the next
@@ -176,7 +183,17 @@ enum {
 #define PHASE_ARMED         1u
 #define PHASE_OB_WRITTEN    2u
 #define PHASE_RETAKEN       3u
+#define PHASE_DUMP          4u      /* a dump waiting for the next power-up */
 #define ARMED_BOOTS         3u
+
+/* dump: the flash with the hidden 12 KB of the PY32F030x6 die, the system
+ * memory (ROM, UID, option bytes, factory settings); ended when no read came
+ * for DUMP_IDLE_MS. */
+#define DUMP_FLASH_END      0x08008000u
+#define DUMP_SYS_BASE       0x1FFF0000u
+#define DUMP_SYS_END        0x1FFF1000u
+#define DUMP_CRC_WORDS      ((DUMP_FLASH_END - ADDR_FLASH) / 4u)
+#define DUMP_IDLE_MS        600000u
 
 /* PHASE_OB_WRITTEN: the factory firmware may be gone (the protection change
  * erased the flash): the install goes on at every power-up until it is done. */
@@ -201,24 +218,27 @@ typedef struct {
 
 extern hal_uart_config_t mcu_uart_config; /* config_parser.c: the W token */
 
-static hal_gpio_pin_t g_clk = HAL_INVALID_PIN;
-static hal_gpio_pin_t g_dio = HAL_INVALID_PIN;
-static uint8_t        g_enabled;
-static uint8_t        g_control;
-static uint8_t        g_abort;
-static uint8_t        g_tries;
-static uint16_t       g_word;      /* words done in the current CRC step */
-static uint32_t       g_crc;
-static uint32_t       g_started;
-static uint32_t       g_last_report;
-static uint8_t        g_was_joined; /* ARMED: on the network at the last pass */
-static uint8_t        g_page;       /* STEP_PROGRAM: next page, 1..31 then 0 */
-static uint8_t        g_rewrites;   /* STEP_OB_CHECK / STEP_VERIFY: written again */
-static uint8_t        g_resumed;    /* an install taken up after its option bytes (or RESUMED_AT_0) */
-static uint8_t        g_keep;       /* this install stays armed when it stops: see finish() */
-static uint32_t       g_confirm_at;
-static uint32_t       g_step_at;    /* when the current wait step began */
-static uint16_t       g_rx_mark;    /* the MCU's UART frames so far when a job was armed */
+static hal_gpio_pin_t     g_clk = HAL_INVALID_PIN;
+static hal_gpio_pin_t     g_dio = HAL_INVALID_PIN;
+static uint8_t            g_enabled;
+static uint8_t            g_control;
+static uint8_t            g_abort;
+static uint8_t            g_tries;
+static uint16_t           g_word;  /* words done in the current CRC step */
+static uint32_t           g_crc;
+static uint32_t           g_started;
+static uint32_t           g_last_report;
+static uint8_t            g_was_joined; /* ARMED: on the network at the last pass */
+static uint8_t            g_page;       /* STEP_PROGRAM: next page, 1..31 then 0 */
+static uint8_t            g_rewrites;   /* STEP_OB_CHECK / STEP_VERIFY: written again */
+static uint8_t            g_resumed;    /* an install taken up after its option bytes (or RESUMED_AT_0) */
+static uint8_t            g_keep;       /* this install stays armed when it stops: see finish() */
+static uint32_t           g_confirm_at;
+static uint32_t           g_step_at;    /* when the current wait step began */
+static uint16_t           g_rx_mark;    /* the MCU's UART frames so far when a job was armed */
+static uint8_t            g_halted;     /* dump: the core halted by this job (released at its end) */
+static uint32_t           g_dump_addr;  /* dump address attribute (Basic 0xff53) */
+static mcu_flasher_dump_t g_dump = { 4, MCU_FLASHER_DUMP_NONE, { 0 } };
 
 /* Confirm attribute (Basic 0xff52, char string): a writing job's own name.
  * The SDK copies a written string without checking its length against the
@@ -287,6 +307,16 @@ uint8_t mcu_flasher_register_attrs(hal_zigbee_attribute *table, uint8_t start_in
     a[2].flag         = ATTR_WRITABLE;
     a[2].size         = 0xFFu;   /* the field's most (uint8_t); the buffer has 256 */
     a[2].value        = (uint8_t *)&g_confirm;
+    a[3].attribute_id = ZCL_ATTR_BASIC_MCU_FLASHER_DUMP_ADDR;
+    a[3].data_type_id = ZCL_DATA_TYPE_UINT32;
+    a[3].flag         = ATTR_WRITABLE;
+    a[3].size         = (uint8_t)sizeof(g_dump_addr);
+    a[3].value        = (uint8_t *)&g_dump_addr;
+    a[4].attribute_id = ZCL_ATTR_BASIC_MCU_FLASHER_DUMP_DATA;
+    a[4].data_type_id = ZCL_DATA_TYPE_OCTET_STR;
+    a[4].flag         = ATTR_READONLY;
+    a[4].size         = (uint8_t)sizeof(g_dump);
+    a[4].value        = (uint8_t *)&g_dump;
     return MCU_FLASHER_ATTRS;
 }
 
@@ -298,6 +328,27 @@ static void report(void) {
 }
 
 static void arm(uint8_t phase, uint8_t boots_left);
+
+static uint8_t is_install(void);
+
+static uint8_t is_dump(void) {
+    return g_status.job == MCU_FLASHER_JOB_DUMP;
+}
+
+/* The end of a dump with the core halted: the reset catch and debug off,
+ * then a system reset, so the MCU's own firmware starts from its reset
+ * vector, nothing of the halt left (the gates were driven low by it). Best
+ * effort: the link may be gone. Nothing written to the flash either way. */
+static void dump_release(void) {
+    uint32_t demcr = 0;
+
+    if (swd_mem_read32(ADDR_DEMCR, &demcr) == SWD_OK) {
+        swd_mem_write32(ADDR_DEMCR, demcr & ~DEMCR_VC_CORERESET);
+    }
+    swd_mem_write32(ADDR_DHCSR, DHCSR_KEY);           /* C_DEBUGEN off: runs, never halts */
+    swd_mem_write32(ADDR_AIRCR, AIRCR_SYSRESETREQ);
+    g_halted = 0;
+}
 
 static void finish(uint8_t state, uint8_t error, swd_err_t swd_err) {
     if (g_status.job == MCU_FLASHER_JOB_INSTALL && g_keep && state != MCU_FLASHER_STATE_DONE) {
@@ -312,19 +363,26 @@ static void finish(uint8_t state, uint8_t error, swd_err_t swd_err) {
         arm(g_keep == RESUME_ALWAYS ? PHASE_OB_WRITTEN : PHASE_RETAKEN, g_keep);
         return;
     }
+    uint8_t released = is_dump() && g_halted;
+
+    if (released) {
+        dump_release();
+    }
     if (g_status.step > STEP_POWER) {
         swd_power_down();   /* best effort: the link may be gone */
     }
     swd_end();
+    g_dump.len           = 4;
+    g_dump.addr          = MCU_FLASHER_DUMP_NONE;
     g_status.state       = state;
     g_status.error       = error;
     g_status.swd_err     = (uint8_t)swd_err;
     g_status.duration_ms = sat16(hal_millis() - g_started);
     report();
-    if (g_status.job == MCU_FLASHER_JOB_INSTALL) {
+    if (is_install() || is_dump()) {
         hal_nvm_delete(NV_ITEM_MCU_FLASHER_JOB);   /* ended either way */
     }
-    if (g_status.step == STEP_RUN && state == MCU_FLASHER_STATE_DONE) {
+    if ((g_status.step == STEP_RUN && state == MCU_FLASHER_STATE_DONE) || released) {
         tuya_mcu_app_mcu_restarted(); /* its next query is a first contact */
     }
 }
@@ -367,8 +425,59 @@ static uint8_t confirmed(uint8_t job) {
     return ok;
 }
 
+/* A write of the dump address: the words there into the dump data attribute,
+ * read now (a few ms of SWD), so that the read that follows gets them. Only
+ * word-aligned addresses inside the two areas; the address is in the answer,
+ * so a reader can tell an answer from an older one. */
+static void dump_fill(void) {
+    uint32_t addr = g_dump_addr;
+    uint32_t end  = addr >= ADDR_FLASH && addr < DUMP_FLASH_END ? DUMP_FLASH_END :
+                    addr >= DUMP_SYS_BASE && addr < DUMP_SYS_END ? DUMP_SYS_END : 0;
+    uint32_t w[MCU_FLASHER_DUMP_WORDS];
+    uint32_t n = (end - addr) / 4u;
+
+    g_dump.len  = 4;
+    g_dump.addr = MCU_FLASHER_DUMP_NONE;
+    if (g_status.state != MCU_FLASHER_STATE_RUNNING || !is_dump() ||
+        g_status.step != STEP_DUMP || end == 0 || (addr & 3u)) {
+        return;
+    }
+    if (n > MCU_FLASHER_DUMP_WORDS) {
+        n = MCU_FLASHER_DUMP_WORDS;
+    }
+    g_step_at = hal_millis();
+    if (swd_mem_read_block(addr, w, (uint16_t)n) != SWD_OK) {
+        /* a word the bus does not answer (a hole in the system memory): the
+         * words before it, read one by one once the link is up again; none
+         * at all is told as a failed read (the reader goes on a word later) */
+        uint32_t dpidr;
+        uint32_t k = 0;
+
+        if (swd_connect(&dpidr) == SWD_OK && swd_power_up() == SWD_OK) {
+            while (k < n && swd_mem_read32(addr + 4u * k, &w[k]) == SWD_OK) {
+                k++;
+            }
+            if (k < n && swd_connect(&dpidr) == SWD_OK) {
+                swd_power_up();   /* the link again for the next read */
+            }
+        }
+        n = k;
+    }
+    if (n == 0) {
+        g_dump.addr = MCU_FLASHER_DUMP_FAILED;
+        return;
+    }
+    memcpy(g_dump.data, w, 4u * n);
+    g_dump.len  = (uint8_t)(4u + 4u * n);
+    g_dump.addr = addr;
+}
+
 void mcu_flasher_on_write(uint16_t attribute_id) {
     if (!g_enabled) {
+        return;
+    }
+    if (attribute_id == ZCL_ATTR_BASIC_MCU_FLASHER_DUMP_ADDR) {
+        dump_fill();
         return;
     }
     if (attribute_id == ZCL_ATTR_BASIC_MCU_FLASHER_CONFIRM) {
@@ -385,7 +494,7 @@ void mcu_flasher_on_write(uint16_t attribute_id) {
 
     g_control = 0;
     if (job == MCU_FLASHER_JOB_ABORT) {
-        g_abort = g_status.state == MCU_FLASHER_STATE_RUNNING;
+        g_abort = g_status.state == MCU_FLASHER_STATE_RUNNING;   /* a dump: its end */
         if (g_status.state == MCU_FLASHER_STATE_ARMED) {
             /* A job kept over failures (g_keep) is dropped only when the MCU
              * has sent a frame on the UART since the job was armed: then it
@@ -405,12 +514,12 @@ void mcu_flasher_on_write(uint16_t attribute_id) {
     if (g_status.state == MCU_FLASHER_STATE_RUNNING) {
         return; /* one job at a time; the running one is not disturbed */
     }
-    if (job < MCU_FLASHER_JOB_SURVEY_DP || job > MCU_FLASHER_JOB_INSTALL) {
+    if (job < MCU_FLASHER_JOB_SURVEY_DP || job > MCU_FLASHER_JOB_DUMP) {
         g_status.error = MCU_FLASHER_ERR_BAD_JOB;
         report();
         return;
     }
-    if (job >= MCU_FLASHER_JOB_UPDATE_BOOT && !confirmed(job)) {
+    if (job >= MCU_FLASHER_JOB_UPDATE_BOOT && job <= MCU_FLASHER_JOB_INSTALL && !confirmed(job)) {
         g_status.error = MCU_FLASHER_ERR_NOT_CONFIRMED;
         report();
         return;
@@ -418,16 +527,21 @@ void mcu_flasher_on_write(uint16_t attribute_id) {
 
     /* install: only an MCU that told a factory version (1.x) on the UART in
      * this run; a silent one is refused too */
-    if (job == MCU_FLASHER_JOB_INSTALL) {
+    if (job == MCU_FLASHER_JOB_INSTALL || job == MCU_FLASHER_JOB_DUMP) {
         armed_t a;
 
         /* nor while an install past its option bytes waits in NV for the next
-         * power-up: a new one would fail on what it finds and drop that record */
-        uint8_t kept = hal_nvm_read(NV_ITEM_MCU_FLASHER_JOB, sizeof(a), (uint8_t *)&a) ==
-                       HAL_NVM_SUCCESS && a.magic == ARMED_MAGIC && a.phase != PHASE_ARMED;
+         * power-up: a new one would fail on what it finds and drop that record;
+         * a dump not over any armed job (it would take its place) */
+        uint8_t armed = hal_nvm_read(NV_ITEM_MCU_FLASHER_JOB, sizeof(a), (uint8_t *)&a) ==
+                        HAL_NVM_SUCCESS && a.magic == ARMED_MAGIC;
+        uint8_t kept  = armed && (a.phase == PHASE_OB_WRITTEN || a.phase == PHASE_RETAKEN);
+        uint8_t error = kept ? MCU_FLASHER_ERR_KEPT :
+                        job == MCU_FLASHER_JOB_DUMP ? (armed ? MCU_FLASHER_ERR_BUSY : 0) :
+                        !tuya_mcu_app_mcu_is_stock() ? MCU_FLASHER_ERR_WRONG_CLASS : 0;
 
-        if (kept || !tuya_mcu_app_mcu_is_stock()) {
-            g_status.error = kept ? MCU_FLASHER_ERR_KEPT : MCU_FLASHER_ERR_WRONG_CLASS;
+        if (error) {
+            g_status.error = error;
             report();
             return;
         }
@@ -446,6 +560,7 @@ void mcu_flasher_on_write(uint16_t attribute_id) {
     g_rewrites      = 0;
     g_resumed       = 0;
     g_keep          = 0;
+    g_halted        = 0;
     report();
 }
 
@@ -711,6 +826,16 @@ static swd_err_t halt_now(uint8_t *halted) {
     return err;
 }
 
+/* A dump refused at read protection level 1: the debug port powered to read
+ * the protection has already closed the flash to the running core (it locks
+ * up, its timers running on), so it is halted with the gate outputs low and
+ * stays so, nothing written, until the module's next power cycle. */
+static void dump_refuse_halt(void) {
+    uint8_t halted;
+
+    halt_now(&halted);
+}
+
 /* HAL_FLASH_OBProgram: both locks open, the three registers staged, OPTSTRT,
  * the trigger write. Only the constants OB_*: nothing read from the target goes
  * into them. */
@@ -799,9 +924,10 @@ void mcu_flasher_early(void) {
         return;
     }
     uint8_t resumed = a.phase == PHASE_OB_WRITTEN;
+    uint8_t dump    = a.phase == PHASE_DUMP;   /* else an install */
 
     g_status.state = MCU_FLASHER_STATE_RUNNING;
-    g_status.job   = MCU_FLASHER_JOB_INSTALL;
+    g_status.job   = dump ? MCU_FLASHER_JOB_DUMP : MCU_FLASHER_JOB_INSTALL;
     g_status.step  = STEP_BEGIN;
     g_started      = hal_millis();
     g_resumed      = resumed || a.phase == PHASE_RETAKEN;
@@ -849,10 +975,11 @@ void mcu_flasher_early(void) {
         if (err == SWD_OK) {
             /* read protection first, the core untouched: level 0 is not a
              * factory MCU (Open Dimmer runs there) and keeps running; for a
-             * taken-up install it is the state after the protection change */
+             * taken-up install it is the state after the protection change.
+             * A dump the other way round: only level 0 is read. */
             stage = STEP_IDENTITY;
             err   = read_optr(&optr);
-            if (err == SWD_OK && (uint8_t)optr == 0xAAu) {
+            if (err == SWD_OK && ((uint8_t)optr == 0xAAu) != dump) {
                 break;
             }
         }
@@ -869,13 +996,18 @@ void mcu_flasher_early(void) {
         next_step(STEP_REATTACH);   /* the link is up: the checks, then the bootloader */
         return;
     }
-    if (err == SWD_OK && (uint8_t)optr == 0xAAu) {
+    if (err == SWD_OK && ((uint8_t)optr == 0xAAu) != dump) {
+        /* an install at level 0: refused, the core untouched; a dump at level 1:
+         * refused, the core held (dump_refuse_halt) */
+        if (dump) {
+            dump_refuse_halt();
+        }
         swd_power_down();
         swd_end();
         hal_nvm_delete(NV_ITEM_MCU_FLASHER_JOB);
         g_status.optr        = optr;
         g_status.state       = MCU_FLASHER_STATE_FAILED;
-        g_status.error       = MCU_FLASHER_ERR_WRONG_CLASS;
+        g_status.error       = dump ? MCU_FLASHER_ERR_PROTECTED : MCU_FLASHER_ERR_WRONG_CLASS;
         g_status.duration_ms = sat16(hal_millis());
         return;
     }
@@ -895,6 +1027,11 @@ void mcu_flasher_early(void) {
     }
     if (err == SWD_OK && halted) {
         g_status.app_build = sat16(hal_millis());   /* attach time: shown for an install */
+        if (dump) {
+            /* once: a dump cut short is armed again by hand */
+            hal_nvm_delete(NV_ITEM_MCU_FLASHER_JOB);
+            g_halted = 1;
+        }
         next_step(STEP_IDENTITY);
         return;
     }
@@ -947,7 +1084,9 @@ void mcu_flasher_task(void) {
         return;
     }
     if (g_abort) {
-        finish(MCU_FLASHER_STATE_ABORTED, MCU_FLASHER_ERR_NONE, SWD_OK);
+        /* a dump serving its reads ends this way when the reader is done */
+        finish(is_dump() && g_status.step == STEP_DUMP ? MCU_FLASHER_STATE_DONE :
+               MCU_FLASHER_STATE_ABORTED, MCU_FLASHER_ERR_NONE, SWD_OK);
         return;
     }
     swd_err_t err      = SWD_OK;
@@ -958,8 +1097,9 @@ void mcu_flasher_task(void) {
     switch (g_status.step) {
     case STEP_BEGIN:
         if (swd_begin(g_clk, g_dio) != SWD_OK) {
-            if (is_install()) {
-                arm(PHASE_ARMED, ARMED_BOOTS);   /* the factory firmware holds the pins */
+            if (is_install() || is_dump()) {
+                /* the factory firmware holds the pins */
+                arm(is_dump() ? PHASE_DUMP : PHASE_ARMED, ARMED_BOOTS);
             } else {
                 finish(MCU_FLASHER_STATE_FAILED, MCU_FLASHER_ERR_PINS_DRIVEN, SWD_ERR_PINS);
             }
@@ -988,28 +1128,33 @@ void mcu_flasher_task(void) {
 
     case STEP_POWER:
         err = swd_power_up();
-        if (err == SWD_OK && is_install()) {
+        if (err == SWD_OK && (is_install() || is_dump())) {
             /* read protection before the core is stopped: at level 0 it is not a
              * factory MCU, and it keeps running (a halted one would stay so
-             * until a power cycle) */
+             * until a power cycle); a dump only reads level 0 (at level 1 the
+             * flash reads are bus errors) */
             uint32_t optr = 0;
 
             err           = read_optr(&optr);
             g_status.optr = optr;   /* packed: assigned, never through a pointer */
-            if (err == SWD_OK && (uint8_t)optr == 0xAAu) {
-                fail = MCU_FLASHER_ERR_WRONG_CLASS;
+            if (err == SWD_OK && ((uint8_t)optr == 0xAAu) != is_dump()) {
+                if (is_dump()) {
+                    dump_refuse_halt();
+                }
+                fail = is_dump() ? MCU_FLASHER_ERR_PROTECTED : MCU_FLASHER_ERR_WRONG_CLASS;
                 break;
             }
         }
         if (err == SWD_OK) {
-            next_step(is_install() ? STEP_STOP : STEP_IDENTITY);
+            next_step(is_install() || is_dump() ? STEP_STOP : STEP_IDENTITY);
         }
         break;
 
     case STEP_STOP: {
         uint8_t halted;
 
-        err = halt_now(&halted);
+        err      = halt_now(&halted);
+        g_halted = halted;
         if (err == SWD_OK && !halted) {
             fail = MCU_FLASHER_ERR_HALT;
             break;
@@ -1069,12 +1214,16 @@ void mcu_flasher_task(void) {
             fail = MCU_FLASHER_ERR_WRONG_TARGET;
             break;
         }
+        if (err == SWD_OK && complete && rom && is_dump()) {
+            next_step(STEP_DUMP_CRC);
+            break;
+        }
         if (err == SWD_OK && complete && rom && is_install() && g_resumed != RESUMED_AT_0) {
             g_rewrites = 0;
             next_step(STEP_OB);
             break;
         }
-        if (err == SWD_OK && complete && !rom && g_status.job >= MCU_FLASHER_JOB_UPDATE_BOOT) {
+        if (err == SWD_OK && complete && !rom && (is_update() || is_install())) {
             /* the carried bootloader there already: nothing to write (an
              * install taken up at level 0 ends here, the core never touched) */
             if (g_status.sector0_crc == secondary_mcu_boot_crc &&
@@ -1331,6 +1480,23 @@ void mcu_flasher_task(void) {
         }
         break;
 
+    case STEP_DUMP_CRC:
+        err = crc_slice(ADDR_FLASH, (uint16_t)DUMP_CRC_WORDS, STATUS_AT(sector0_crc), &complete);
+        if (err == SWD_OK && complete) {
+            next_step(STEP_DUMP);
+            g_step_at = hal_millis();
+            report();   /* serving: the reader starts from this */
+        }
+        break;
+
+    case STEP_DUMP:
+        /* the reads are served by dump_fill (each refreshes g_step_at); no
+         * report every second while the reader is at it */
+        if (hal_millis() - g_step_at >= DUMP_IDLE_MS) {
+            finish(MCU_FLASHER_STATE_DONE, MCU_FLASHER_ERR_NONE, SWD_OK);
+        }
+        return;
+
     default:
         finish(MCU_FLASHER_STATE_DONE, MCU_FLASHER_ERR_NONE, SWD_OK);
         return;
@@ -1343,8 +1509,9 @@ void mcu_flasher_task(void) {
     if (err != SWD_OK) {
         /* A failed transfer: line reset and the step again, a few times. */
         if (++g_tries >= TRIES_PER_STEP) {
-            if (is_install() && g_status.step <= STEP_POWER) {
-                arm(PHASE_ARMED, ARMED_BOOTS);   /* no attach now: at the next power-up */
+            if ((is_install() || is_dump()) && g_status.step <= STEP_POWER) {
+                /* no attach now: at the next power-up */
+                arm(is_dump() ? PHASE_DUMP : PHASE_ARMED, ARMED_BOOTS);
                 return;
             }
             finish(MCU_FLASHER_STATE_FAILED,

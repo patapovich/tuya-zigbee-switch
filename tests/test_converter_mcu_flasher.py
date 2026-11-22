@@ -252,3 +252,23 @@ def test_configure_binds_basic_for_the_swd_master_with_a_stock_mcu():
     assert out["master"] == {"basicBind": True, "statusRead": True}
     assert out["none"] == {"basicBind": False, "statusRead": True}
     assert out["own"] == {"basicBind": True, "statusRead": False}
+
+
+def test_the_dump_job_and_its_serving_state():
+    """dump (6) is one write like the surveys (no confirm: it only reads); while it serves its
+    reads the status says so and that abort ends it; sector0_crc is then the whole flash's."""
+    out = json.loads(run_node(FLASHER + """
+(async () => {
+    console.log(JSON.stringify({dump: await set(h.device(), "dump", {mcu_flasher: "show"})}));
+})();
+"""))
+    assert out["dump"] == [["write", 1, "genBasic", {"65361": {"value": 6, "type": 0x20}}]]
+    serving = decode(status(state=1, job=6, step=21, dpidr=0x0BC11477, optr=0xBEAA,
+                            sector0_crc=0x12345678, app_build=150))
+    assert serving == [{"mcu_flasher_status":
+                        "running dump; serving reads (abort ends the dump and restarts the MCU); "
+                        "DPIDR 0x0BC11477; OPTR 0x0000BEAA (RDP 0), WRPR 0x00000000, option bytes "
+                        "CRC 0x00000000; flash (32 KB) CRC 0x12345678; attached 150 ms after the "
+                        "module's start"}]
+    refused = decode(status(state=3, job=6, step=3, error=8, optr=0xF000))
+    assert refused[0]["mcu_flasher_status"].startswith("failed dump; error: read-protected")

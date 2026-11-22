@@ -14,6 +14,17 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
 
 ## Next
 
+- SWD job `dump` (control 6): reads a dimmer chip at read protection level 0 over Zigbee, without
+  writing it: a factory chip that left its flash open (seen on a `_TZE204_o9gyszw2`) or one
+  running Open Dimmer. It attaches at once or, when the factory firmware holds the SWD pins, at
+  the next power-up (armed like `install`); the core is halted, the CRC-32 of the 32 KB flash
+  (the hidden 12 KB included) goes to `sector0_crc`, and then each write of the dump address
+  (Basic 0xff53, uint32) fills the dump data (0xff54: the address and the 44 bytes there; flash
+  0x08000000..0x08007FFF, system memory 0x1FFF0000..0x1FFF0FFF). The abort job, or 10 minutes
+  without a read, ends it with a reset of the chip, so its own firmware starts again. A
+  read-protected chip is refused; reading its protection has already closed its flash to the
+  running core, so it is held halted with the gate outputs low until the next power cycle.
+
 - Carries Open Dimmer's bootloader v3 for the SWD job `update_bootloader`: images up to 26 KB,
   their part past 14 KB in the dimmer chip's hidden flash (open-dimmer docs/BOOTLOADER.md
   section 18). The carried image may now be up to 26 KB (`IMAGE_MAX`); a chip under bootloader

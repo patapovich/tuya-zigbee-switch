@@ -63,6 +63,8 @@
 #define ZCL_ATTR_BASIC_MCU_FLASHER_STATUS         0xff50 /* SW token only (mcu_flasher.c) */
 #define ZCL_ATTR_BASIC_MCU_FLASHER_CONTROL        0xff51
 #define ZCL_ATTR_BASIC_MCU_FLASHER_CONFIRM        0xff52
+#define ZCL_ATTR_BASIC_MCU_FLASHER_DUMP_ADDR      0xff53 /* dump job: the address to read */
+#define ZCL_ATTR_BASIC_MCU_FLASHER_DUMP_DATA      0xff54 /* dump job: what is there */
 // Open Dimmer health report (see zigbee/tuya_mcu_ota.h)
 #define ZCL_ATTR_BASIC_MCU_HEALTH                 0xff48
 #define ZCL_ATTR_BASIC_STATUS_LED_STATE           0xff01

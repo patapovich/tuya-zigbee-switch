@@ -63,7 +63,7 @@
 
 /* Memory areas */
 #define FLASH_BASE             0x08000000u
-#define FLASH_SIZE             0x5000u
+#define FLASH_SIZE             0x8000u   /* 20 KB + the hidden 12 KB of the PY32F030x6 die */
 #define FLASH_PAGE             128u
 #define FLASH_PAGE_WORDS       (FLASH_PAGE / 4u)
 #define FLASH_SECTOR           4096u
@@ -243,6 +243,7 @@ typedef enum {
 typedef enum {
     PRESET_OPEN_DIMMER,
     PRESET_STOCK,
+    PRESET_STOCK_RDP0,   /* a factory unit that left its flash open (as _TZE204_o9gyszw2's) */
 } preset_t;
 
 typedef enum {
@@ -391,6 +392,13 @@ static const uint8_t k_optb_default[OPTB_SIZE] = {
 /* A factory unit's option bytes: RDP 0x00 (level 1), user byte 0xF0 */
 static const uint8_t k_optb_stock[OPTB_SIZE] = {
     0x00, 0xf0, 0xff, 0x0f, 0xff, 0x00, 0x00, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00,
+};
+
+/* The open factory unit measured on a _TZE204_o9gyszw2 (OPTR 0x0000BEAA):
+ * RDP 0xAA (level 0), user byte 0xBE */
+static const uint8_t k_optb_stock_rdp0[OPTB_SIZE] = {
+    0xaa, 0xbe, 0x55, 0x41, 0xff, 0x00, 0x00, 0xff,
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00,
 };
 
@@ -759,14 +767,14 @@ static void power_on(void) {
     s_flog_dropped = 0;
 }
 
-/* A factory unit: its firmware in the flash, RDP level 1, running. */
-static void preset_stock(void) {
+/* A factory unit: its firmware in the flash, RDP level 1 (or 0), running. */
+static void preset_stock(uint8_t open) {
     for (uint32_t i = 0; i < STOCK_IMAGE_SIZE; i++) {
         s_flash[i] = (uint8_t)(i * 131u + 7u);
     }
     put32(s_flash, SRAM_BASE + SRAM_SIZE);
     put32(s_flash + 4, STOCK_ENTRY | 1u);
-    memcpy(s_optb, k_optb_stock, sizeof(s_optb));
+    memcpy(s_optb, open ? k_optb_stock_rdp0 : k_optb_stock, sizeof(s_optb));
     options_load();
     core_take_vectors(0);
     m.stock_fw = 1;
@@ -785,6 +793,9 @@ static uint8_t env_preset(void) {
 
     if (v && strcmp(v, "stock") == 0) {
         return PRESET_STOCK;
+    }
+    if (v && strcmp(v, "stock_rdp0") == 0) {
+        return PRESET_STOCK_RDP0;
     }
     if (v && strcmp(v, "open_dimmer") != 0) {
         fprintf(stderr, "[SWD_TARGET] unknown SWD_TARGET_PRESET '%s': open_dimmer\n",
@@ -823,8 +834,8 @@ static void env_stock_pins(void) {
 static void start_preset(uint8_t preset) {
     power_on();
     m.preset = preset;
-    if (preset == PRESET_STOCK) {
-        preset_stock();
+    if (preset == PRESET_STOCK || preset == PRESET_STOCK_RDP0) {
+        preset_stock(preset == PRESET_STOCK_RDP0);
     }
     if (env_str("SWD_TARGET_FLASH")) {
         env_flash();
@@ -2052,6 +2063,8 @@ int swd_target_preset(const char *name) {
     ensure_ready();
     if (strcmp(name, "stock") == 0) {
         preset = PRESET_STOCK;
+    } else if (strcmp(name, "stock_rdp0") == 0) {
+        preset = PRESET_STOCK_RDP0;
     } else if (strcmp(name, "open_dimmer") == 0) {
         preset = PRESET_OPEN_DIMMER;
     } else {
@@ -2196,13 +2209,14 @@ void swd_target_get_state(swd_target_state_t *out) {
     out->xpsr      = m.regs.core[CORE_XPSR];
     out->gates_low = (m.regs.gpioa_moder & MODER_GATES_MASK) == MODER_GATES_OUT &&
                      !(m.regs.gpioa_odr & 0x3u);
-    out->iwdg_frozen    = (m.regs.dbgmcu_apb_fz1 & DBGMCU_FZ1_IWDG) ? 1 : 0;
-    out->timing_set     = m.regs.timing_written == FLASH_TIMING_ALL;
-    out->flash_locked   = (m.regs.flash_cr & FCR_LOCK) ? 1 : 0;
-    out->key_lockout    = m.regs.key_state == KEY_LOCKOUT;
-    out->flash_busy     = m.regs.busy;
-    out->swd_lost       = m.swd_lost;
-    out->preset         = m.preset == PRESET_STOCK ? "stock" : "open_dimmer";
+    out->iwdg_frozen  = (m.regs.dbgmcu_apb_fz1 & DBGMCU_FZ1_IWDG) ? 1 : 0;
+    out->timing_set   = m.regs.timing_written == FLASH_TIMING_ALL;
+    out->flash_locked = (m.regs.flash_cr & FCR_LOCK) ? 1 : 0;
+    out->key_lockout  = m.regs.key_state == KEY_LOCKOUT;
+    out->flash_busy   = m.regs.busy;
+    out->swd_lost     = m.swd_lost;
+    out->preset       = m.preset == PRESET_STOCK ? "stock" :
+                        m.preset == PRESET_STOCK_RDP0 ? "stock_rdp0" : "open_dimmer";
     out->rdp            = m.rdp;
     out->optlock        = (m.regs.flash_cr & FCR_OPTLOCK) ? 1 : 0;
     out->optkey_lockout = m.regs.optkey_state == KEY_LOCKOUT;
