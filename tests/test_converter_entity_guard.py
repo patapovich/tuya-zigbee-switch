@@ -66,6 +66,7 @@ ZDMS16_2_EXTENDS = [
     "romasku.mcuHealth()",
     # the SWD master: no expose unless the device option mcu_flasher is show
     "romasku.mcuFlasher()",
+    "romasku.factoryIdentity()",
     "romasku.multiPressResetCount(multi_press_reset_count)",
     "romasku.deviceConfig(device_config)",
     "romasku.deviceConfigExt(device_config_ext)",
@@ -199,10 +200,12 @@ console.log(JSON.stringify({
 # converter of 4c3558a1 does it: the version read, then per dimmer bind, reporting, the reads.
 # Since the SWD master: one read of its status (Basic 0xff50) after the version; a module
 # without the master (no SW token) does not have it, so no genBasic bind follows
-# (test_converter_mcu_flasher: with the master the Basic cluster is bound).
+# (test_converter_mcu_flasher: with the master the Basic cluster is bound). Then one read of
+# the factory identity (Basic 0xff59, factory_identity).
 STOCK_CONFIGURE = [
     ["read", 1, "genBasic", [0xFF12]],
     ["read", 1, "genBasic", [0xFF50]],
+    ["read", 1, "genBasic", [0xFF59]],
     *[call for ep in (1, 2) for call in (
         ["bind", ep, ["genOnOff", "genLevelCtrl"]],
         ["report", ep, "genOnOff", {"min": 0, "max": 65000, "change": 1}],

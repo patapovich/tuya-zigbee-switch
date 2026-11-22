@@ -73,6 +73,7 @@ SOURCES := \
 	$(SRC_DIR)/zigbee/tuya_mcu_ota.c \
 	$(SRC_DIR)/zigbee/crc32_nibble.c \
 	$(SRC_DIR)/zigbee/stock_nv.c \
+	$(SRC_DIR)/zigbee/factory_identity.c \
 	$(MCU_IMAGE_SRC) \
 	$(SRC_DIR)/zigbee/dimmer_cluster.c \
 	$(SRC_DIR)/zigbee/scene_cluster.c \

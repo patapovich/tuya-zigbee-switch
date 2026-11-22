@@ -67,4 +67,7 @@
  * to a config stored before the default had it (config_nv.c). */
 #define NV_ITEM_CONFIG_SWD_DEFAULT    65
 
+/* Boards that carry an MCU image: the module's factory identity (zigbee/factory_identity.h). */
+#define NV_ITEM_FACTORY_IDENTITY      66
+
 #endif /* DEVICE_CONFIG_NVM_ITEMS_H_ */

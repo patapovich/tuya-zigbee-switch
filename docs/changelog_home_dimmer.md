@@ -29,6 +29,13 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
   trust centre link key are taken before the stack starts; the factory network information is
   then erased, so a factory reset later never brings it back.
 
+- The module keeps its factory identity over the conversion: the manufacturer name of its
+  factory Zigbee firmware (from the factory NV, Tuya's module 10, e.g. `_TZE284_jtbgusdc`; also
+  on modules converted before this build, while their factory NV is there) and the version of
+  the factory dimmer chip as the module first heard it (before Open Dimmer replaced it). Kept
+  in this firmware's NV, shown as Basic 0xff59 (character string, "_TZE284_jtbgusdc, MCU
+  1.0.7") and in Zigbee2MQTT as the diagnostic `factory_identity`, read at configure.
+
 - The SWD job `install` (and the automatic install of the first start-up with the wires) takes
   any factory dimmer chip, whatever its firmware: also one that left its flash open (read
   protection level 0, seen on a `_TZE204_o9gyszw2`). There no protection change erases the

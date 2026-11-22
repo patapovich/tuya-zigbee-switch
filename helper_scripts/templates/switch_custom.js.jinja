@@ -374,6 +374,29 @@ const romasku = {
             }],
         };
     },
+    // The module's factory identity (Basic 0xff59 on endpoint 1, device level): the
+    // manufacturer name of the factory Zigbee firmware and the factory MCU's version, which
+    // the module keeps over the conversion (src/zigbee/factory_identity.h). Empty while not
+    // known; an older build has no such attribute.
+    factoryIdentity: () => {
+        const result = text({
+            name: "factory_identity",
+            access: "STATE_GET",
+            cluster: "genBasic",
+            attribute: { ID: 0xff59, type: 0x42 }, // char str
+            description: "What the module was from the factory: the manufacturer name of its factory Zigbee firmware and the factory MCU's version, kept by the module over the conversion (empty while not known)",
+            entityCategory: "diagnostic",
+        });
+        result.exposes = result.exposes.map((expose) => expose.withLabel("Factory identity"));
+        result.fromZigbee = result.fromZigbee.map((converter) => ({
+            ...converter,
+            convert: (model, msg, publish, options, meta) => {
+                if (msg.endpoint?.ID !== 1) return;
+                return converter.convert(model, msg, publish, options, meta);
+            },
+        }));
+        return result;
+    },
     mcuVersionMeta: () => ({
         isModernExtend: true,
         fromZigbee: [{
@@ -1717,6 +1740,7 @@ const definitions = [
             romasku.mcuFirmware(),
             romasku.mcuHealth(),
             romasku.mcuFlasher(),
+            romasku.factoryIdentity(),
             {% endif %}
             {% endif %}
             romasku.multiPressResetCount("multi_press_reset_count"),
@@ -1810,6 +1834,13 @@ const definitions = [
                     }
                 } catch (error) {
                     // no SWD master (no SW token, an older build) or not answered now
+                }
+            }
+            if (mcuVersion !== undefined) {
+                try {
+                    await mcuEndpoint.read("genBasic", [0xff59]); // factory_identity
+                } catch (error) {
+                    // an older build without it, or not answered now
                 }
             }
             {% endif %}

@@ -12,7 +12,9 @@
 #include "zigbee/general_commands.h"
 #include "zigbee/tuya_mcu_app.h"
 #ifdef SECONDARY_MCU_IMAGE
+#include "zigbee/factory_identity.h"
 #include "zigbee/mcu_flasher.h"
+#include "zigbee/stock_nv.h"
 #endif
 #ifdef END_DEVICE
 #include "zigbee/poll_control_cluster.h"
@@ -53,6 +55,10 @@ void app_init(void) {
     parse_config();      // Does most of the setup, including all callbacks
                          // registration
 #ifdef SECONDARY_MCU_IMAGE
+    // The factory identity, once from the factory NV (hal_zigbee_init in parse_config looked at
+    // the flash: the factory NV is only on a 1 MB chip).
+    factory_identity_init(g_stock_nv_diag.flash_cap >= STOCK_NV_FLASH_CAP_1M ?
+                          g_stock_nv_flash_read : NULL);
     mcu_flasher_early(); // an install armed for this power-up attaches now
 #endif
     tuya_mcu_app_init(); // secondary MCU devices only

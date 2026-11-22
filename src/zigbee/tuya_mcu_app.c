@@ -13,6 +13,9 @@
 #include "zigbee/tuya_dp_relay.h"
 #include "zigbee/tuya_mcu_diag.h"
 #include "zigbee/tuya_secondary_mcu.h"
+#ifdef SECONDARY_MCU_IMAGE
+#include "zigbee/factory_identity.h"
+#endif
 
 extern hal_uart_config_t mcu_uart_config;
 
@@ -324,6 +327,9 @@ static void on_mcu_command(uint8_t cmd, uint16_t seq, const uint8_t *data, uint1
         /* The answer to our query, or sent on its own after pairing. */
         if (data_len >= 1) {
             version_answered();
+#ifdef SECONDARY_MCU_IMAGE
+            factory_identity_note_mcu(data[0]); /* a factory MCU's version, kept once */
+#endif
             g_mcu_packed = data[0];
             g_mcu_known  = 1;
 

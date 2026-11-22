@@ -293,8 +293,10 @@ const configure = async (versions) => {
     const reads = h.log.filter((l) => l[0] === "read");
     return {
         versionReads: reads.filter((l) => l[2] === "genBasic" && l[3][0] === 0xff12).length,
-        // Open Dimmer's settings (not the SWD master's status 0xff50: test_converter_mcu_flasher)
-        ownReads: reads.filter((l) => l[2] === "genBasic" && l[3][0] !== 0xff12 && l[3][0] !== 0xff50).map((l) => l[3][0].toString(16)),
+        // Open Dimmer's settings (not the SWD master's status 0xff50: test_converter_mcu_flasher;
+        // not the factory identity 0xff59: factoryReads)
+        ownReads: reads.filter((l) => l[2] === "genBasic" && ![0xff12, 0xff50, 0xff59].includes(l[3][0])).map((l) => l[3][0].toString(16)),
+        factoryReads: reads.filter((l) => l[2] === "genBasic" && l[3][0] === 0xff59).length,
         dimmerReads: reads.filter((l) => l[2] !== "genBasic").map((l) => `${l[1]}:${l[2]}:${l[3].join("+")}`),
         reporting: h.log.filter((l) => l[0] === "report").map((l) => [l[1], l[2], ...(l[3].map ? l[3].map((r) => [r.attribute.ID ?? r.attribute, r.minimumReportInterval, r.maximumReportInterval]) : [l[3]])]),
         delays: [...h.delays],
@@ -340,6 +342,16 @@ def test_configure_stops_waiting_for_a_module_that_does_not_answer():
     assert out["ownReads"] == []
     assert out["delays"] == [2000]
     assert len(out["dimmerReads"]) == 8
+
+
+def test_configure_reads_the_factory_identity_once_from_a_module_that_answered():
+    """Basic 0xff59 (the factory name and MCU version the module kept): read once, whatever
+    the MCU runs; not from a module that did not answer (offline)."""
+    out = json.loads(run_node(CONFIGURE + """
+(async () => console.log(JSON.stringify([await configure(["1.0.7"]), await configure(["2.2.8 own"]),
+                                         await configure([new Error("timeout")])])))();
+"""))
+    assert [run["factoryReads"] for run in out] == [1, 1, 0]
 
 
 def test_configure_keeps_waiting_after_single_failed_reads():

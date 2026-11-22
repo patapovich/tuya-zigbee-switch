@@ -68,6 +68,7 @@
 #define ZCL_ATTR_BASIC_STOCK_NV                   0xff55 /* the start-up's look at the factory NV (W4c) */
 #define ZCL_ATTR_BASIC_STOCK_NV_LOG_PAGE_NO       0xff56 /* debug builds: the W4c log page to read */
 #define ZCL_ATTR_BASIC_STOCK_NV_LOG_PAGE          0xff57 /* debug builds: that page */
+#define ZCL_ATTR_BASIC_FACTORY_IDENTITY           0xff59 /* the factory name and MCU version (zigbee/factory_identity.h) */
 #define ZCL_ATTR_BASIC_STOCK_NV_WIPE              0xff58 /* debug builds: 0xA5 empties the own network NV, restarts */
 // Open Dimmer health report (see zigbee/tuya_mcu_ota.h)
 #define ZCL_ATTR_BASIC_MCU_HEALTH                 0xff48

@@ -1,6 +1,8 @@
 #include <getopt.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifndef HAL_STUB
@@ -12,8 +14,39 @@
 #include "stub/hal/stub.h"
 #include "stub/hal/swd_target.h"
 #include "stub_app.h"
+#include "zigbee/stock_nv.h"
 
 volatile sig_atomic_t g_should_exit = 0;
+
+/* STUB_FACTORY_FLASH: a dump of a module's 1 MB flash as the factory NV the start-up reads
+ * (the Telink start-up's flash read and 1 MB chip; zigbee/factory_identity.h). */
+static uint8_t  s_factory_flash[0x100000];
+static uint32_t s_factory_len;
+
+static void factory_flash_read(uint32_t addr, uint32_t len, uint8_t *buf) {
+    for (uint32_t i = 0; i < len; i++) {
+        buf[i] = addr + i < s_factory_len ? s_factory_flash[addr + i] : 0xFF;
+    }
+}
+
+static void factory_flash_start(void) {
+    const char *path = getenv("STUB_FACTORY_FLASH");
+    FILE *      f;
+
+    if (!path || !*path) {
+        return;
+    }
+    f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "[STUB] cannot read STUB_FACTORY_FLASH '%s'\n", path);
+        return;
+    }
+    s_factory_len = (uint32_t)fread(s_factory_flash, 1, sizeof(s_factory_flash), f);
+    fclose(f);
+    g_stock_nv_flash_read     = factory_flash_read;
+    g_stock_nv_diag.flash_cap = STOCK_NV_FLASH_CAP_1M;
+}
+
 static void on_sigint(int sig) {
     (void)sig;
     g_should_exit = 1;
@@ -79,6 +112,7 @@ int main(int argc, char **argv) {
 
     /* The dimmer MCU model from its environment, before the app can use it. */
     swd_target_start();
+    factory_flash_start();
 
     stub_app_init(device_conf_buf[0] ? device_conf_buf : NULL,
                   dp_conf_buf[0] ? dp_conf_buf : NULL,

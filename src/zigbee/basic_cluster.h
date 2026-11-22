@@ -14,11 +14,13 @@
 #else
 #define BASIC_MCU_FLASHER_ATTRS    0
 #endif
-/* The start-up's look at the factory NV (zigbee/stock_nv.h), ZDMS16-2 builds. */
+
+/* The start-up's look at the factory NV (zigbee/stock_nv.h) and the factory identity
+ * (zigbee/factory_identity.h), ZDMS16-2 builds. */
 #if defined(SECONDARY_MCU_IMAGE) && defined(MCU_FLASHER_DUMP)
-#define BASIC_STOCK_NV_ATTRS    4   /* + the log page number, page and wipe (debug builds) */
+#define BASIC_STOCK_NV_ATTRS    5   /* + the log page number, page and wipe (debug builds) */
 #elif defined(SECONDARY_MCU_IMAGE)
-#define BASIC_STOCK_NV_ATTRS    1
+#define BASIC_STOCK_NV_ATTRS    2
 #else
 #define BASIC_STOCK_NV_ATTRS    0
 #endif

@@ -17,6 +17,7 @@
 #include "hal/tasks.h"
 #include <stddef.h>
 #ifdef SECONDARY_MCU_IMAGE
+#include "zigbee/factory_identity.h"
 #include "zigbee/mcu_flasher.h"
 #include "zigbee/stock_nv.h"
 #endif
@@ -148,6 +149,9 @@ void basic_cluster_add_to_endpoint(zigbee_basic_cluster *cluster,
     attr_idx += mcu_flasher_register_attrs(cluster->attr_infos, attr_idx);
     SETUP_ATTR(attr_idx, ZCL_ATTR_BASIC_STOCK_NV, ZCL_DATA_TYPE_OCTET_STR, ATTR_READONLY,
                g_stock_nv_diag);
+    attr_idx++;
+    SETUP_ATTR(attr_idx, ZCL_ATTR_BASIC_FACTORY_IDENTITY, ZCL_DATA_TYPE_CHAR_STR, ATTR_READONLY,
+               g_factory_identity_attr);
     attr_idx++;
 #ifdef MCU_FLASHER_DUMP
     SETUP_ATTR(attr_idx, ZCL_ATTR_BASIC_STOCK_NV_LOG_PAGE_NO, ZCL_DATA_TYPE_UINT8, ATTR_WRITABLE,

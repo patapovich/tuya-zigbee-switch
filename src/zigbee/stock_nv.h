@@ -13,6 +13,8 @@
 #define STOCK_NV_BASE            0x000D8000u
 #define STOCK_NV_MODULE_BYTES    0x2000u
 #define STOCK_NV_SECTOR_BYTES    0x1000u
+/* stock_nv_diag_t.flash_cap of a 1 MB chip (flash MID >> 16): the factory NV is past 512 KB. */
+#define STOCK_NV_FLASH_CAP_1M    0x14u
 
 typedef void (*stock_nv_read_t)(uint32_t addr, uint32_t len, uint8_t *buf);
 
