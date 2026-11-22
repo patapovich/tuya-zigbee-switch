@@ -67,12 +67,12 @@ def test_the_zdms16_2_counts_and_headroom(tmp_path):
     # switches' endpoints 3 / 4 (DIMMER_BINDINGS): On/Off, Level Control and Scenes clients each,
     # and per dimmer 3 binding settings (genOnOffSwitchCfg); attributes: also the SWD master's 5
     # (status, control, confirm, and in the stub's debug build dump address and data; SWD3D7 in
-    # the board's config) and the start-up's look at the factory NV (0xff55); per
+    # the board's config) and the start-up's look at the factory NV (0xff55; the stub's debug build: its log, 0xff56/0xff57); per
     # dimmer Open Dimmer 2.2.8's lamp
     # compensation and custom curve (lightingBallastCfg 0xff11, 0xff12), the long press from off
     # and the double tap (genOnOffSwitchCfg 0xff15, 0xff16).
     assert got == {"endpoints": (4, 8), "in_clusters": (17, 32), "out_clusters": (7, 32),
-                   "zcl_clusters": (24, 32), "attributes": (110, 128)}    # 23 + the SDK's OTA
+                   "zcl_clusters": (24, 32), "attributes": (112, 128)}    # 23 + the SDK's OTA
 
 
 def test_a_config_over_the_limits_is_said_so(tmp_path):

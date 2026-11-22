@@ -2,8 +2,45 @@
 
 #include "zigbee/crc32_nibble.h"
 
-stock_nv_diag_t g_stock_nv_diag = { sizeof(stock_nv_diag_t) - 1u, 1, 0, 0, 0, 0, 0, 0, 0, 0,
-                                    { 0 } };
+stock_nv_diag_t     g_stock_nv_diag = { sizeof(stock_nv_diag_t) - 1u, 2, 0, 0, 0, 0, 0, 0, 0, 0,
+                                        { 0 } };
+uint8_t             g_stock_nv_log_page_no;
+stock_nv_log_page_t g_stock_nv_log_page = { 3, 0, 0, { { 0 } } };
+stock_nv_read_t     g_stock_nv_flash_read;
+
+void stock_nv_log_fill_page(void) {
+    uint32_t magic = 0;
+    uint16_t total = 0;
+    uint8_t  n     = 0;
+
+    g_stock_nv_log_page.page  = g_stock_nv_log_page_no;
+    g_stock_nv_log_page.total = 0;
+    g_stock_nv_log_page.len   = 3;
+    if (!g_stock_nv_flash_read) {
+        return;
+    }
+    g_stock_nv_flash_read(STOCK_NV_MARKER_ADDR, 4, (uint8_t *)&magic);
+    if (magic != STOCK_NV_MARKER_MAGIC) {
+        return;
+    }
+    for (uint32_t at = STOCK_NV_MARKER_ADDR + STOCK_NV_LOG_START;
+         at + sizeof(stock_nv_rec_t) <= STOCK_NV_MARKER_ADDR + STOCK_NV_SECTOR_BYTES;
+         at += sizeof(stock_nv_rec_t)) {
+        stock_nv_rec_t r;
+
+        g_stock_nv_flash_read(at, sizeof(r), (uint8_t *)&r);
+        if (r.boot == 0xFFu && r.kind == 0xFFu) {
+            break;
+        }
+        if (total / STOCK_NV_LOG_PAGE_RECS == g_stock_nv_log_page_no &&
+            n < STOCK_NV_LOG_PAGE_RECS) {
+            g_stock_nv_log_page.rec[n++] = r;
+        }
+        total++;
+    }
+    g_stock_nv_log_page.total = total;
+    g_stock_nv_log_page.len   = (uint8_t)(3u + n * sizeof(stock_nv_rec_t));
+}
 
 #define SECT_VALID          0x5A5Au /* NV_SECTOR_VALID */
 #define SECT_VALID_CRC      0x7A7Au /* NV_SECTOR_VALID_CHECKCRC */

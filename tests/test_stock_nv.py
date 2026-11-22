@@ -89,8 +89,13 @@ def test_the_newest_intact_copy_wins(stub, tmp_path, kind):
 
 
 def test_the_start_up_look_is_an_attribute_of_the_zdms16_2():
-    """Basic 0xff55 (stock_nv_diag_t without its length byte): format 1; the stub has no factory
-    NV and no Telink start-up, so the rest is zero (own network)."""
+    """Basic 0xff55 (stock_nv_diag_t without its length byte): format 2; the stub has no factory
+    NV and no Telink start-up, so the rest is zero (own network). The debug build's log pages
+    (0xff56 written, 0xff57 read) are empty there: no flash to read."""
     with StubProc(device_config=ZDMS16_2) as proc:
-        raw = bytes.fromhex(Device(proc).read_zigbee_attr(1, 0x0000, 0xFF55))
-        assert len(raw) == 19 and raw[0] == 1 and raw[1:] == bytes(18)
+        device = Device(proc)
+        raw = bytes.fromhex(device.read_zigbee_attr(1, 0x0000, 0xFF55))
+        assert len(raw) == 19 and raw[0] == 2 and raw[1:] == bytes(18)
+        device.write_zigbee_attr(1, 0x0000, 0xFF56, 2)
+        page = bytes.fromhex(device.read_zigbee_attr(1, 0x0000, 0xFF57))
+        assert page == bytes([2, 0, 0])            # page 2, no records

@@ -67,6 +67,11 @@ void basic_cluster_callback_attr_write_trampoline(uint16_t attribute_id) {
     dp_attr_on_write(attribute_id);
 #ifdef SECONDARY_MCU_IMAGE
     mcu_flasher_on_write(attribute_id);
+#ifdef MCU_FLASHER_DUMP
+    if (attribute_id == ZCL_ATTR_BASIC_STOCK_NV_LOG_PAGE_NO) {
+        stock_nv_log_fill_page();
+    }
+#endif
 #endif
     if (tuya_mcu_diag_on_write(attribute_id) == TUYA_MCU_DIAG_CONTROL_QUERY_ALL) {
         tuya_mcu_app_query_all();
@@ -136,6 +141,14 @@ void basic_cluster_add_to_endpoint(zigbee_basic_cluster *cluster,
     SETUP_ATTR(attr_idx, ZCL_ATTR_BASIC_STOCK_NV, ZCL_DATA_TYPE_OCTET_STR, ATTR_READONLY,
                g_stock_nv_diag);
     attr_idx++;
+#ifdef MCU_FLASHER_DUMP
+    SETUP_ATTR(attr_idx, ZCL_ATTR_BASIC_STOCK_NV_LOG_PAGE_NO, ZCL_DATA_TYPE_UINT8, ATTR_WRITABLE,
+               g_stock_nv_log_page_no);
+    attr_idx++;
+    SETUP_ATTR(attr_idx, ZCL_ATTR_BASIC_STOCK_NV_LOG_PAGE, ZCL_DATA_TYPE_OCTET_STR, ATTR_READONLY,
+               g_stock_nv_log_page);
+    attr_idx++;
+#endif
 #endif
 
     endpoint->clusters[endpoint->cluster_count].cluster_id      = ZCL_CLUSTER_BASIC;

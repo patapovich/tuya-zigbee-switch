@@ -17,33 +17,57 @@
 typedef void (*stock_nv_read_t)(uint32_t addr, uint32_t len, uint8_t *buf);
 
 /* What the start-up found (stock_nv_diag_t.result). */
-#define STOCK_NV_OWN_NETWORK     0 /* this firmware's NV is on a network: not looked at */
-#define STOCK_NV_NOT_1MB         1 /* the chip has no flash up there */
-#define STOCK_NV_NO_ZB_INFO      2 /* no intact factory network information */
-#define STOCK_NV_NO_SECURITY     3 /* ... but no intact security material */
-#define STOCK_NV_IMPLAUSIBLE     4 /* found, but not on a network (or no PAN / address) */
-#define STOCK_NV_TAKEN           5 /* taken into this firmware's NV at this start-up */
+#define STOCK_NV_OWN_NETWORK      0 /* this firmware's NV is on a network: not looked at */
+#define STOCK_NV_NOT_1MB          1 /* the chip has no flash up there */
+#define STOCK_NV_NO_ZB_INFO       2 /* no intact factory network information */
+#define STOCK_NV_NO_SECURITY      3 /* ... but no intact security material */
+#define STOCK_NV_IMPLAUSIBLE      4 /* found, but not on a network (or no PAN / address) */
+#define STOCK_NV_TAKEN            5 /* taken into this firmware's NV at this start-up */
+#define STOCK_NV_TAKEN_BEFORE     6 /* the marker says it was taken before: not again */
+#define STOCK_NV_MARKER_IN_USE    7 /* the marker sector holds something else: nothing taken */
 
 /* What is at STOCK_NV_BASE (stock_nv_diag_t.area). */
-#define STOCK_NV_AREA_BLANK      0
-#define STOCK_NV_AREA_FACTORY    1 /* a factory NV sector */
-#define STOCK_NV_AREA_MARKER     2 /* the marker this firmware leaves when it took the network */
-#define STOCK_NV_AREA_OTHER      3
+#define STOCK_NV_AREA_BLANK       0
+#define STOCK_NV_AREA_FACTORY     1 /* a factory NV sector */
+#define STOCK_NV_AREA_MARKER      2 /* (format 1: the marker was here) */
+#define STOCK_NV_AREA_OTHER       3
 
-/* Left at STOCK_NV_BASE when the network was taken (the factory sectors erased): never an NV
- * sector again, so nothing is taken twice; it tells what was taken (its diag fields). */
-#define STOCK_NV_MARKER_MAGIC    0x31433457u /* "W4C1" */
+/* Written when the network was taken, in a sector the factory firmware never uses (blank in
+ * the factory dump: Tuya's NV is 0xD8000..0xEFFFF): the factory NV is left as it is. The marker
+ * (magic + the diag fields then) stops a second take (a factory reset later must not bring
+ * the old network back; debug builds take it again, for tests), and after it a log of the
+ * start-ups and network events (stock_nv_rec_t), until the sector is full. */
+#define STOCK_NV_MARKER_ADDR      0x000D0000u
+#define STOCK_NV_MARKER_MAGIC     0x32433457u /* "W4C2" */
+#define STOCK_NV_LOG_START        32u         /* records from here in the sector */
+
+/* A log record. */
+typedef struct __attribute__((packed)) {
+    uint8_t  boot;  /* start-up number since the take (1 = it) */
+    uint8_t  kind;  /* STOCK_NV_LOG_* */
+    uint8_t  a;
+    uint8_t  b;
+    uint32_t ms;    /* since that start-up */
+} stock_nv_rec_t;
+
+#define STOCK_NV_LOG_BOOT        1 /* a = diag result, b = area at STOCK_NV_BASE */
+#define STOCK_NV_LOG_BDB_INIT    2 /* a = status, b = joined */
+#define STOCK_NV_LOG_BDB_COMM    3 /* a = commissioning status */
+#define STOCK_NV_LOG_REJOIN      4 /* a rejoin with back-off started */
+#define STOCK_NV_LOG_LEAVE       5 /* a = 1 indication, 2 confirmation */
+#define STOCK_NV_LOG_NET         6 /* a = hal network status */
 
 /* Basic 0xff55 (octet string, ZDMS16-2 builds): the start-up's look at the factory NV. The
  * network fields are the factory copy's (read at this start-up), or, with the marker there,
  * what was taken then. */
 typedef struct __attribute__((packed)) {
-    uint8_t  len;         /* ZCL octet string length byte */
-    uint8_t  format;      /* 1 */
-    uint8_t  result;      /* STOCK_NV_* of this start-up */
-    uint8_t  flash_cap;   /* flash MID >> 16: 0x13 = 512 KB, 0x14 = 1 MB */
-    uint8_t  area;        /* STOCK_NV_AREA_* at this start-up */
-    uint8_t  found;       /* intact factory copies: bit 0 network information, 1 security, 2 TC link key */
+    uint8_t len;          /* ZCL octet string length byte */
+    uint8_t format;       /* 1 */
+    uint8_t result;       /* STOCK_NV_* of this start-up */
+    uint8_t flash_cap;    /* flash MID >> 16: 0x13 = 512 KB, 0x14 = 1 MB */
+    uint8_t area;         /* STOCK_NV_AREA_* at this start-up */
+    uint8_t found;        /* intact factory copies: bit 0 network information, 1 security, 2 TC link key;
+                           * bit 7: the marker (taken earlier) */
     uint8_t  on_network;  /* bdbAttr.nodeIsOnANetwork */
     uint8_t  channel;     /* macPib.phyChannelCur */
     uint16_t pan_id;
@@ -52,6 +76,22 @@ typedef struct __attribute__((packed)) {
 } stock_nv_diag_t;
 
 extern stock_nv_diag_t g_stock_nv_diag;
+
+/* Debug builds (MCU_FLASHER_DUMP): the log read 5 records at a time. A write of the page
+ * attribute (Basic 0xff56) fills the page attribute (0xff57) from the flash. */
+#define STOCK_NV_LOG_PAGE_RECS    5
+typedef struct __attribute__((packed)) {
+    uint8_t        len;    /* ZCL octet string length byte */
+    uint8_t        page;
+    uint16_t       total;  /* records in the log */
+    stock_nv_rec_t rec[STOCK_NV_LOG_PAGE_RECS];
+} stock_nv_log_page_t;
+
+extern uint8_t             g_stock_nv_log_page_no;
+extern stock_nv_log_page_t g_stock_nv_log_page;
+/* The HAL's flash read, set by the Telink start-up (NULL elsewhere: pages stay empty). */
+extern stock_nv_read_t g_stock_nv_flash_read;
+void stock_nv_log_fill_page(void);
 
 /* The newest intact copy of item item_id of module module (both sectors looked at): exactly
  * len payload bytes into buf, its byte sum or CRC checked. 1 = found (buf holds it); 0 =
