@@ -29,6 +29,9 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
   trust centre link key are taken before the stack starts; the factory network information is
   then erased, so a factory reset later never brings it back.
 
+- Release builds carry no debug parts: the MCU link diagnostics (the event log and the Basic
+  attributes 0xff40..0xff45 and 0xff4f, read by helper_scripts/decode_mcu_diag.py) are built
+  only with `make MCU_DUMP=1`; the counters the MCU update and the SWD master use stay.
 - The module keeps its factory identity over the conversion: the manufacturer name of its
   factory Zigbee firmware (from the factory NV, Tuya's module 10, e.g. `_TZE284_jtbgusdc`; also
   on modules converted before this build, while their factory NV is there) and the version of
