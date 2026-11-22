@@ -174,6 +174,7 @@ typedef struct {
      * instead of overwriting current_level. */
     hal_task_t           holdoff_task;
     uint8_t              level_holdoff;
+    uint32_t             off_at;      /* hal_millis() | 1 of the MCU's own last off (0: none) */
     uint8_t              has_held_report;
     uint32_t             held_report_value;
     uint32_t             last_written_value;

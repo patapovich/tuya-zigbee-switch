@@ -931,6 +931,31 @@ def test_first_report_after_boot_is_not_a_switch_press():
         proc.stop()
 
 
+
+def test_a_wall_switch_on_soon_after_an_off_brings_the_light_back_as_it_was():
+    """Tapped off and on again within 5 s: no OnLevel (an automation's night level there would
+    replace a level set by hand a moment before); the MCU goes back to its own level. Later, the
+    OnLevel again."""
+    proc, device = start()
+    try:
+        dump_range(proc, 276, 591)
+        set_on_level(device, 100)
+        known_off(proc)
+        mcu_report(proc, bool_dp(DP_ON_L1, 1))
+        assert ack_writes(proc, device) == [(DP_LEVEL_L1, scaled_to_tuya(100, 276, 591))]
+        device.step_time(10_000)
+        mcu_report(proc, bool_dp(DP_ON_L1, 0))           # tapped off ...
+        device.step_time(1_000)
+        mcu_report(proc, bool_dp(DP_ON_L1, 1))           # ... and on again a second later
+        assert ack_writes(proc, device) == []
+        assert onoff(device) == 1
+        mcu_report(proc, bool_dp(DP_ON_L1, 0))
+        device.step_time(5_100)
+        mcu_report(proc, bool_dp(DP_ON_L1, 1))           # off long enough: the OnLevel
+        assert ack_writes(proc, device) == [(DP_LEVEL_L1, scaled_to_tuya(100, 276, 591))]
+    finally:
+        proc.stop()
+
 def test_answer_to_our_query_is_not_a_switch_press():
     proc, device = start()
     try:

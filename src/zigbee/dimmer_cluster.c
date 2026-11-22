@@ -180,6 +180,7 @@ static void dimmer_set_on(zigbee_dimmer_cluster *cluster, uint8_t on) {
     } else {
         cluster->fade_ms = 0;
         cluster->hold    = 0;       /* an off ends a wall switch hold */
+        cluster->off_at  = 0;       /* set again below for the MCU's own off */
     }
     dimmer_notify_onoff(cluster);
     /* Open Dimmer: any off (ours, the wall switch, the countdown's own end) ends it. */
@@ -663,12 +664,19 @@ static void dimmer_turn_on_default(zigbee_dimmer_cluster *cluster) {
  * wall switch's OnLevel (Open Dimmer from OPEN_DIMMER_FEATURES_BUILD only: any
  * other MCU gets exactly what it got before), else OnLevel, else a level set
  * while off for a stock MCU (pending: as it was before the on). */
-static uint8_t dimmer_local_on_level(const zigbee_dimmer_cluster *cluster, uint8_t pending) {
-    if (dimmer_od_features(cluster) && dimmer_level_set(cluster->on_level_local))
-        return cluster->on_level_local;
+/* A wall switch on this soon after the MCU's own off (tapped off and on again) brings the light
+ * back as it was, with no OnLevel: e.g. a night level an automation keeps in OnLevel does not
+ * replace a level set by hand a moment before. After an off of ours the OnLevel as before. */
+#define DIMMER_QUICK_REON_MS    5000
 
-    if (dimmer_on_level_set(cluster))
-        return cluster->on_level;
+static uint8_t dimmer_local_on_level(const zigbee_dimmer_cluster *cluster, uint8_t pending) {
+    if (!cluster->off_at || hal_millis() - cluster->off_at >= DIMMER_QUICK_REON_MS) {
+        if (dimmer_od_features(cluster) && dimmer_level_set(cluster->on_level_local))
+            return cluster->on_level_local;
+
+        if (dimmer_on_level_set(cluster))
+            return cluster->on_level;
+    }
 
     return pending ? cluster->current_level : 0;
 }
@@ -1479,9 +1487,17 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
             cluster->bind_after_on = switched_on;
 #endif
 
+            /* The MCU switching off by itself (wall switch, button, its countdown): a wall
+             * switch on soon after it is no fresh on (dimmer_local_on_level). */
+            uint8_t own_off = !value[0] && cluster->state_known && cluster->on &&
+                              !tuya_secondary_mcu_report_is_passive() &&
+                              !tuya_secondary_mcu_report_acks_write();
+
             if (!value[0])
                 dimmer_stop_move(cluster);
             dimmer_set_on(cluster, value[0]);
+            if (own_off)
+                cluster->off_at = hal_millis() | 1u;
             if (!cluster->state_known) {
                 cluster->state_known = 1;
                 dimmer_reports_known();

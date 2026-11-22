@@ -14,6 +14,10 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
 
 ## Next
 
+- A wall switch on within 5 s of the dimmer's own off (tapped off and on again) brings the light
+  back at the level it had: no OnLevel then, so an automation's night level kept in OnLevel no
+  longer replaces a level set by hand a moment before. After an off from the network the OnLevel
+  as before.
 - Open Dimmer 2.2.8: `fade_off_slow_zone` and `hold_slow_zone` are a share of the channel's
   min..max (before: of the whole scale); the labels say so. Defaults 15 / 25 %.
 - `multi_press_reset_count` works on the ZDMS16-2 with Open Dimmer 2.2.8: the dimmer chip counts
