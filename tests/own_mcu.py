@@ -68,6 +68,8 @@ LAMP_COMP_BUILD = 1300    # 2.2.8: the lamp compensation, DP 172 / 173 (in its d
 DP_CUSTOM_BASE = 174      # 2.2.8: custom curve, + 3 * channel + part, raw 6 little-endian u16 (saved, in the dump)
 DP_SWITCH_OPTS = 180      # 2.2.8: both channels' switch options, bits set = off: 0 / 1 the long press
                           # from off's rise, 2 / 3 the double tap; written as mask << 8 | bits
+DP_RESET_PRESSES = 181    # 2.2.8: wall switch presses of a network reset (0 never; not saved:
+                          # 8 at every start; in the dump)
 COUNTDOWN_MAX = 86400
 UART_C = Path(__file__).resolve().parent.parent / "src/telink/hal/uart.c"
 
@@ -102,6 +104,7 @@ class OwnMcu:
         self.build, self.boot = build, boot   # a v2 app says them in its identity answer
         self.ch = [channel(po) for po in power_on]
         self.custom = [[0] * 17, [0] * 17]   # its tables (DPs 174..179), saved with its settings
+        self.reset_presses = 8               # DP 181 (2.2.8)
         self.query_seq = 0
         self.report_seq = 0
         # The module's first answer to a query of ours makes us dump our state
@@ -130,6 +133,8 @@ class OwnMcu:
         return t[0] == 0 and t[16] == 10000 and all(b >= a for a, b in zip(t, t[1:]))
 
     def _dp(self, dpid: int) -> bytes:
+        if dpid == DP_RESET_PRESSES:
+            return dp_payload(dpid, TUYA_TYPE_VALUE, self.reset_presses.to_bytes(4, "big"))
         if dpid == DP_SWITCH_OPTS:
             v = sum((1 - c["dark_hold"]) << i | (1 - c["double_full"]) << (2 + i) for i, c in enumerate(self.ch))
             return dp_payload(dpid, TUYA_TYPE_VALUE, v.to_bytes(4, "big"))
@@ -166,7 +171,8 @@ class OwnMcu:
     def dump(self) -> list[str]:
         """dimmer_report_all(): the 5 frames of a full dump."""
         frames = [self._report([self._dp(DP_POWER_ON)] +
-                               ([self._dp(DP_SWITCH_OPTS)] if self.has(LAMP_COMP_BUILD) else []))]
+                               ([self._dp(DP_SWITCH_OPTS), self._dp(DP_RESET_PRESSES)]
+                                if self.has(LAMP_COMP_BUILD) else []))]
         for ch in range(2):
             base = ch * 6 + 1
             fast = [self._dp(DP_EXTRA_BASE + 8 + ch)] if self.has(FEATURES_BUILD) else []
@@ -213,6 +219,11 @@ class OwnMcu:
             for i in range(6):
                 if 6 * part + i < 17:
                     self.custom[ch][6 * part + i] = int.from_bytes(data[4 + 2 * i:6 + 2 * i], "little")
+            return True
+        if dpid == DP_RESET_PRESSES:
+            if not self.has(LAMP_COMP_BUILD) or vlen != 4 or value > 255:
+                return False
+            self.reset_presses = value
             return True
         if dpid == DP_SWITCH_OPTS:
             if not self.has(LAMP_COMP_BUILD) or vlen != 4 or value > 0x0F0F:
@@ -299,6 +310,7 @@ class OwnMcu:
         self.told_state = False
         for c in self.ch:                    # not saved: gone with the restart
             c["countdown"] = c["identify"] = 0
+        self.reset_presses = 8
 
 
     # ---- answering the module --------------------------------------------

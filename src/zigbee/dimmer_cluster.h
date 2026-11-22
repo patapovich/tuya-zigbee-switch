@@ -211,6 +211,9 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
 
 /** The MCU (re)starts or makes contact again: what only lived in it is gone (an identify
  *  blink) or to be written again (a countdown). */
+/* The multi-press reset count changed: to Open Dimmer, which counts its wall switch presses
+ * (DP 181, from 2.2.8), if it has said it has them since its start. */
+void dimmer_cluster_reset_presses_changed(void);
 void dimmer_cluster_mcu_restarted(void);
 
 

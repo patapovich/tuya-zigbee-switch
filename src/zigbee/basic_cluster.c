@@ -3,6 +3,7 @@
 #include "build_date.h"
 #include "cluster_common.h"
 #include "dp_attr.h"
+#include "dimmer_cluster.h"
 #include "tuya_mcu_app.h"
 #include "tuya_mcu_diag.h"
 #include "tuya_mcu_ota.h"
@@ -52,6 +53,7 @@ void basic_cluster_callback_attr_write_trampoline(uint16_t attribute_id) {
     }
     if (attribute_id == ZCL_ATTR_BASIC_MULTI_PRESS_RESET_COUNT) {
         device_params_set_multi_press_reset_count(g_multi_press_reset_count);
+        dimmer_cluster_reset_presses_changed();   /* Open Dimmer counts wall switch presses */
     }
     if (attribute_id == ZCL_ATTR_BASIC_DP_CONFIG) {
         dp_config_str.data[dp_config_str.size] = 0; // NULL terminate the string

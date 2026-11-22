@@ -592,6 +592,41 @@ def test_an_open_dimmer_without_the_switch_options_gets_no_write(build):
         proc.stop()
 
 
+
+# ---- network reset by wall switch presses (2.2.8) -------------------------------
+BASIC = 0x0000
+ATTR_MULTI_PRESS_RESET_COUNT = 0xFF02
+DP_RESET_PRESSES = 181
+
+
+def test_open_dimmer_takes_the_multi_press_reset_count():
+    """DP 181 (not saved in the MCU: 8 at its every start, in its dump): the module writes its
+    multi-press reset count whenever the dump says another, and at every write of the count."""
+    proc, device, mcu = own(build=LAMP_COMP_BUILD)
+    try:
+        assert mcu.reset_presses == 10                   # the module's default, after the dump
+        assert write(device, mcu, 1, BASIC, ATTR_MULTI_PRESS_RESET_COUNT, 6) == [(DP_RESET_PRESSES, 6)]
+        assert mcu.reset_presses == 6
+        assert write(device, mcu, 1, BASIC, ATTR_MULTI_PRESS_RESET_COUNT, 0) == [(DP_RESET_PRESSES, 0)]
+        mcu.restart()                                    # 8 again: written once its dump says so
+        device.step_time(300)
+        mcu.query_network()
+        mcu.serve(1000)
+        assert [w for w in mcu.writes if w[0] == DP_RESET_PRESSES] == [(DP_RESET_PRESSES, 0)]
+        assert mcu.reset_presses == 0
+    finally:
+        proc.stop()
+
+
+def test_an_open_dimmer_without_the_reset_presses_gets_no_write():
+    proc, device, mcu = own(build=FEATURES_BUILD)
+    try:
+        assert write(device, mcu, 1, BASIC, ATTR_MULTI_PRESS_RESET_COUNT, 6) == []
+        assert attr(device, 1, BASIC, ATTR_MULTI_PRESS_RESET_COUNT) == 6   # the module's own
+    finally:
+        proc.stop()
+
+
 # ---- custom curve (2.2.8) -------------------------------------------------------
 CURVE = [0, 100, 250, 450, 700, 1000, 1400, 1900, 2500, 3200, 4000, 4900, 5900, 7000, 8100, 9100,
          10000]

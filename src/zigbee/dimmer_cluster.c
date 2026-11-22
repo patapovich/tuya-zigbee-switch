@@ -1,6 +1,7 @@
 #include "zigbee/dimmer_cluster.h"
 #include <string.h>
 #include "device_config/nvm_items.h"
+#include "device_config/device_params_nv.h"
 #include "hal/nvm.h"
 #include "zigbee/cluster_common.h"
 #include "zigbee/consts.h"
@@ -1062,8 +1063,20 @@ static void dimmer_on_custom_part(zigbee_dimmer_cluster *cluster, uint8_t dpid,
     }
 }
 
+/* Its network reset by wall switch presses (2.2.8; DP 181, not saved: 8 at its every start, in its
+ * dump): the module's multi-press reset count, written whenever its dump or ack says another. */
+#define DIMMER_RESET_PRESSES_DP    181
+static uint8_t g_od_reset_presses;   /* the MCU has it (seen in its dump since its start) */
+
 static void dimmer_on_od_value(zigbee_dimmer_cluster *cluster, uint8_t dpid, uint32_t number) {
     uint16_t v = (uint16_t)(number > 0xFFFF ? 0xFFFF : number);
+
+    if (dpid == DIMMER_RESET_PRESSES_DP) {
+        g_od_reset_presses = 1;
+        if (cluster->dimmer_idx == 0 && number != g_multi_press_reset_count)
+            dimmer_write_tuya_value(DIMMER_RESET_PRESSES_DP, g_multi_press_reset_count);
+        return;
+    }
 
     if (dpid == DIMMER_SWITCH_OPTS_DP) {
         if (number <= 0x0F) {
@@ -2038,7 +2051,17 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
     }
 }
 
+void dimmer_cluster_reset_presses_changed(void) {
+#ifdef SECONDARY_MCU_IMAGE
+    if (g_od_reset_presses)
+        dimmer_write_tuya_value(DIMMER_RESET_PRESSES_DP, g_multi_press_reset_count);
+#endif
+}
+
 void dimmer_cluster_mcu_restarted(void) {
+#ifdef SECONDARY_MCU_IMAGE
+    g_od_reset_presses = 0;
+#endif
     for (int i = 0; i < DIMMER_MAX_ENDPOINTS; i++) {
         zigbee_dimmer_cluster *cluster = dimmer_cluster_by_endpoint[i];
         if (cluster == NULL)
