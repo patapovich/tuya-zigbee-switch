@@ -14,6 +14,9 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
 
 ## Next
 
+## 1.1.3-d903f5ea (2026-11-24), carries Open Dimmer 2.2.8
+
+- Carries Open Dimmer 2.2.8.
 - The `_TZE204_o9gyszw2` variant of the AVATTO ZDMS16-2 is a board of its own
   (`MODULE_AVATTO_ZDMS16_2_O9GYSZW2`, the same firmware as the other two): the converter's stock
   definition gets OTA for it and the OTA index offers it the conversion, so the fork's converter
