@@ -11,11 +11,11 @@ points at its files, so these are GitHub's download counts of those files.
 
 | | Downloads |
 |---|---:|
-| Updates | 8 |
-| Conversions | 4 |
-| Forced | 4 |
+| Updates | 9 |
+| Conversions | 5 |
+| Forced | 5 |
 
-Counts as of 2026-11-23 01:58 UTC (the last change; checked every hour by `.github/workflows/ota-downloads.yml` on `main`, GitHub's counts lag a few minutes). History:
+Counts as of 2026-11-24 07:05 UTC (the last change; checked every hour by `.github/workflows/ota-downloads.yml` on `main`, GitHub's counts lag a few minutes). History:
 [history.csv](history.csv).
 
 ## Per build
@@ -24,6 +24,7 @@ Newest first. Builds nobody downloaded are deleted beyond the 10 newest.
 
 | Build | Released | Open Dimmer | Updates | Conversions | Forced |
 |---|---|---|---:|---:|---:|
+| [1.1.3-d903f5ea](https://github.com/patapovich/tuya-zigbee-switch/releases/tag/zdms16-2-1.1.3-d903f5ea) | 2026-11-24 | 2.2.8 | 1 | 1 | 1 |
 | [1.1.3-d983b68a](https://github.com/patapovich/tuya-zigbee-switch/releases/tag/zdms16-2-1.1.3-d983b68a) | 2026-11-21 | 2.2.6 | 2 | 1 | 1 |
 | [1.1.3-09a180fa](https://github.com/patapovich/tuya-zigbee-switch/releases/tag/zdms16-2-1.1.3-09a180fa) | 2026-11-20 | 2.2.6 | 2 | 1 | 1 |
 | [1.1.3-8ea2f5f2](https://github.com/patapovich/tuya-zigbee-switch/releases/tag/zdms16-2-1.1.3-8ea2f5f2) | 2026-11-20 | 2.2.6 | 2 | 1 | 1 |
