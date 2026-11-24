@@ -194,7 +194,8 @@ const fakes = {
     "zigbee-herdsman-converters/devices/avatto": {definitions: [
         {zigbeeModel: ["other"], model: "ZMS-other", vendor: "AVATTO", description: "another one"},
         {fingerprint: [{modelID: "TS0601", manufacturerName: "_TZE204_o9gyszw2"},
-                       {modelID: "TS0601", manufacturerName: "_TZE284_jtbgusdc"}],
+                       {modelID: "TS0601", manufacturerName: "_TZE284_jtbgusdc"},
+                       {modelID: "TS0601", manufacturerName: "_TZE204_xxxxxxxx"}],
          model: "ZDMS16-2", vendor: "AVATTO", description: "Zigbee Module 2 channels Dimmer",
          exposes: ["stock exposes"], fromZigbee: ["stock fz"], toZigbee: ["stock tz"]},
     ]},

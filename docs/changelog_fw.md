@@ -24,7 +24,8 @@ Please describe what you are working on, under ## Upcoming
   - Frames to a factory MCU never add up to more than 23 bytes within 2 ms (the later one
     waits 2 ms, in order), and none is longer than 29 bytes
   - Board builds check that only boards that carry an MCU image have Open Dimmer support
-- **AVATTO ZDMS16-2 2-gang dimmer module** (`TS0601`, `_TZE284_jtbgusdc`, `_TZE204_jtbgusdc`)
+- **AVATTO ZDMS16-2 2-gang dimmer module** (`TS0601`, `_TZE284_jtbgusdc`, `_TZE204_jtbgusdc`,
+  `_TZE204_o9gyszw2`)
   - Level Control (on, off, move, step, move to level, OnLevel), levels scaled to the MCU's
     min/max brightness, wall switch type and power-on behaviour
   - OnLevel is kept across restarts; On to a channel that is already on keeps its level

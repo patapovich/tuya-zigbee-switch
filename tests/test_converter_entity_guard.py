@@ -140,15 +140,16 @@ def test_zdms16_2_entities_are_as_deployed():
     Assistant (mutations that passed every test before: min_level renamed,
     switch_type or mcu_version removed)."""
     blocks = zdms16_2_definitions()
-    assert len(blocks) == 2  # _TZE284 and _TZE204
+    assert len(blocks) == 3  # _TZE284_jtbgusdc, _TZE204_jtbgusdc and _TZE204_o9gyszw2
     for block in blocks:
         assert [summary(e) for e in extend_entries(block)] == ZDMS16_2_EXTENDS
 
 
 def test_both_zdms16_2_definitions_are_identical():
-    """Zigbee2MQTT uses the last definition of a model; the tests read the first."""
-    first, second = zdms16_2_definitions()
-    assert first == second
+    """Zigbee2MQTT uses the last definition of a model; the tests read the first (all three
+    ZDMS16-2 boards make the same one)."""
+    first, *others = zdms16_2_definitions()
+    assert others and all(d == first for d in others)
 
 
 def test_no_extend_is_commented_out():
@@ -189,9 +190,9 @@ console.log(JSON.stringify({
     od21: dynamic(defs[0], ver("2.1.14 own")).filter(([n]) => n === "action"),
 }));
 """))
-    assert out["models"] == [["TS0601-ZDMS16-2"], ["TS0601-ZDMS16-2"]]
+    assert out["models"] == [["TS0601-ZDMS16-2"]] * 3
     stock = [["power_on_behavior", None, ["off", "on", "previous"]], ["mcu_firmware", None, None]]
-    assert out["stock"] == [stock, stock]
+    assert out["stock"] == [stock] * 3
     assert out["od21"] == [["action", None, [f"{k}_{n}" for n in ("l1", "l2")
                                              for k in ("single", "double", "triple", "hold", "release")]]]
 

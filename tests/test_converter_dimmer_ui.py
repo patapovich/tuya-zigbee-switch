@@ -190,7 +190,7 @@ def test_the_device_db_times_are_in_ms_shown_in_seconds():
     units = {name: unit for name, unit in found}
     assert units == {"fade_on_time": "s", "fade_off_time": "s", "hold_time": "s",
                      "fade_off_slow_zone": "%", "hold_slow_zone": "%"}
-    assert js.count("divisor: 1000,") == 2 * 2 * 3      # 2 definitions, 2 channels, 3 times
+    assert js.count("divisor: 1000,") == 3 * 2 * 3      # 3 definitions, 2 channels, 3 times
 
 
 def test_the_custom_curve_is_17_numbers_written_as_little_endian_u16():

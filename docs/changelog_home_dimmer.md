@@ -14,6 +14,11 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
 
 ## Next
 
+- The `_TZE204_o9gyszw2` variant of the AVATTO ZDMS16-2 is a board of its own
+  (`MODULE_AVATTO_ZDMS16_2_O9GYSZW2`, the same firmware as the other two): the converter's stock
+  definition gets OTA for it and the OTA index offers it the conversion, so the fork's converter
+  alone converts it (tested on one unit, which needed a temporary converter before). Its factory
+  MCU is not read-protected; the SWD install of this build takes it (below).
 - A wall switch on within 5 s of the dimmer's own off (tapped off and on again) brings the light
   back at the level it had: no OnLevel then, so an automation's night level kept in OnLevel no
   longer replaces a level set by hand a moment before. After an off from the network the OnLevel

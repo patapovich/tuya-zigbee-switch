@@ -18,10 +18,11 @@ console.log(JSON.stringify(stock.map((d) => ({vendor: d.vendor, ota: d.ota, fing
 """))
     assert out == [{
         "vendor": "AVATTO", "ota": True, "zigbeeModel": None,
-        # both ZDMS16-2 boards (device_db stock_manufacturer_name); not the other dimmers the
-        # stock definition matches (here _TZE204_o9gyszw2)
+        # the three ZDMS16-2 boards (device_db stock_manufacturer_name); not the other dimmers
+        # the stock definition matches
         "fingerprint": [{"modelID": "TS0601", "manufacturerName": "_TZE284_jtbgusdc"},
-                        {"modelID": "TS0601", "manufacturerName": "_TZE204_jtbgusdc"}],
+                        {"modelID": "TS0601", "manufacturerName": "_TZE204_jtbgusdc"},
+                        {"modelID": "TS0601", "manufacturerName": "_TZE204_o9gyszw2"}],
         # everything else as the stock definition has it
         "exposes": ["stock exposes"], "fromZigbee": ["stock fz"],
     }]

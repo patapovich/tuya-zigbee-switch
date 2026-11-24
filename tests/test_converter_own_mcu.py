@@ -261,12 +261,12 @@ console.log(JSON.stringify({
               "category": "diagnostic",
               "description": "Firmware of the secondary MCU (the chip that drives the outputs): Open Dimmer or the stock Tuya "
                              "firmware; while not Open Dimmer, also an Open Dimmer install that waits for a power cycle, runs or failed"}
-    assert out["firmware"] == [[[expose], [expose]], [[]], [[]]]
+    assert out["firmware"] == [[[expose]] * 3, [[]], [[]]]
     text_args = {"name": "mcu_version", "access": "STATE_GET", "cluster": "genBasic",   # device level
                  "attribute": {"ID": 0xFF12, "type": 0x42},
                  "description": "Firmware version of the secondary MCU (the chip that drives the outputs)",
                  "entityCategory": "diagnostic"}
-    assert out["version"] == [[[text_args, [{"key": ["mcu_version"]}]]]] * 2
+    assert out["version"] == [[[text_args, [{"key": ["mcu_version"]}]]]] * 3
 
 
 def test_no_user_visible_text_says_own():
