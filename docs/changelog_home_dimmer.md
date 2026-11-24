@@ -19,6 +19,10 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
   definition gets OTA for it and the OTA index offers it the conversion, so the fork's converter
   alone converts it (tested on one unit, which needed a temporary converter before). Its factory
   MCU is not read-protected; the SWD install of this build takes it (below).
+- OTA index: an image is also offered to the stock names of the boards with the same
+  `config_str` (the same image). CI builds the ZDMS16-2 board only, so its conversion entry
+  listed `_TZE284_jtbgusdc` alone and Zigbee2MQTT never offered the conversion to a stock
+  `_TZE204_jtbgusdc` or `_TZE204_o9gyszw2` module, though the converter gave them OTA.
 - A wall switch on within 5 s of the dimmer's own off (tapped off and on again) brings the light
   back at the level it had: no OnLevel then, so an automation's night level kept in OnLevel no
   longer replaces a level set by hand a moment before. After an off from the network the OnLevel

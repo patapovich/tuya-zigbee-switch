@@ -137,6 +137,14 @@ if __name__ == "__main__":
       
         if device.get("stock_manufacturer_name"):
             manufacturer_names.append(device["stock_manufacturer_name"])
+        # Boards with the same config_str build the same image (e.g. the three AVATTO ZDMS16-2
+        # boards, which only CI's one board build makes): their stock names get it too.
+        for other_name, other in db.items():
+            if (other_name != args.board and isinstance(other, dict)
+                    and other.get("config_str") == device["config_str"]
+                    and other.get("stock_manufacturer_name")
+                    and other["stock_manufacturer_name"] not in manufacturer_names):
+                manufacturer_names.append(other["stock_manufacturer_name"])
         if device.get("old_manufacturer_names"):
             manufacturer_names.extend(device["old_manufacturer_names"])
         manufacturer_names.append(
