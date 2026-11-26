@@ -161,8 +161,14 @@ def test_the_elf_check(tmp_path, listing, answers, ok):
 
 def check_line(**overrides) -> str:
     args = [f"{k}={v}" for k, v in overrides.items()]
-    out = subprocess.run(["make", "-s", "-C", str(TELINK_DIR), "-n", "check-mgmt-rtg", *args],
-                         capture_output=True, text=True, timeout=60).stdout
+    res = subprocess.run(["make", "-s", "-C", str(TELINK_DIR), "-n", "check-mgmt-rtg", *args],
+                         capture_output=True, text=True, timeout=60)
+    out = res.stdout
+    if "check_mgmt_rtg_symbol.py" not in out:
+        # CI has no SDK / tc32 toolchain under telink_tools: the Makefile stops before the rule
+        if not ((TC32_BIN / "tc32-elf-gcc").is_file() and SDK_ZDP_C.is_file()):
+            pytest.skip("no tc32 toolchain or SDK at telink_tools")
+        raise AssertionError("make -n check-mgmt-rtg printed no check line:\n" + out + res.stderr)
     line = " ".join(out[out.index("check_mgmt_rtg_symbol.py"):].replace("\\\n", " ").split())
     return line.splitlines()[0]
 
