@@ -1,10 +1,15 @@
 #include "hal/zigbee.h"
 #include "hal/zigbee_limits.h"
+#include "device_config/reset.h"
+#include "stub/hal/stub.h"
 #include "stub/machine_io.h"
+#include "zigbee/nwk_sec.h"
+#include "zigbee/tclk_check.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static void bytes_to_hexstr(const uint8_t *bytes, size_t len, char *out) {
     static const char HEX_DIGITS[] = "0123456789ABCDEF";
@@ -52,6 +57,92 @@ static struct {
     uint8_t  endpoint; /* 0: free */
 } groups[STUB_GROUPS];
 static hal_group_removed_callback_t group_removed_callback = NULL;
+
+/* The Telink stack's security record as far as the module's own NWK commands go
+ * (zigbee/nwk_sec.h): byte 62 of ss_info_base_t, the security level in bits 0..2, the "secure
+ * all" flag in bit 3, the active key slot in bits 4..5 and the global link key flag in bits 6..7,
+ * in RAM and in NV (the NV item APS/SSIB: a file next to the NV items). As the stack and the
+ * Telink HAL do (telink/hal/zigbee_network.c):
+ * - a start-up on a network takes NV's (none: the factory-new values, level 5, the flag, slot 0
+ *   and the default trust centre link key's flag); a factory-new one takes those always; then the
+ *   start-up's check;
+ * - a join saves RAM's (the commissioning save), then the join's check;
+ * - a leave empties the NV (nv_resetToFactoryNew) and keeps RAM's (where the module restarts
+ *   after its leave, device_config/reset.c, the restart comes before any join). */
+#define STUB_SSIB_FILE     "./stub_nvm_data/ssib.bin"
+#define STUB_SS_FRESH      0x4Du
+#define STUB_SS_SEC_ALL    0x08u
+#define STUB_SS_SLOT       0x30u
+#define STUB_SS_SLOT_1     0x10u
+#define STUB_SS_GLK        0xC0u
+#define STUB_SS_GLK_TC     0x40u /* SS_GLB_LK_TC_DEFAULT */
+
+static uint8_t ss_byte = STUB_SS_FRESH;
+static bool    ss_started;
+
+int stub_zigbee_ssib_nv(void) {
+    FILE *f = fopen(STUB_SSIB_FILE, "rb");
+    int   v = -1;
+
+    if (f != NULL) {
+        v = fgetc(f);
+        fclose(f);
+    }
+    return v == EOF ? -1 : v;
+}
+
+static void ssib_save(uint8_t value) {
+    FILE *f;
+
+    mkdir("./stub_nvm_data", 0700);
+    f = fopen(STUB_SSIB_FILE, "wb");
+    if (f != NULL) {
+        fputc(value, f);
+        fclose(f);
+    }
+}
+
+uint8_t stub_zigbee_ssib_ram(void) {
+    return ss_byte;
+}
+
+void stub_zigbee_ssib_set(uint8_t value, bool in_ram, bool in_nv) {
+    if (in_ram) {
+        ss_byte = value;
+    }
+    if (in_nv) {
+        ssib_save(value);
+    }
+}
+
+static void ssib_check(uint8_t repaired) {
+    bool slot_ok = (ss_byte & STUB_SS_SLOT) < 2u * STUB_SS_SLOT_1;
+
+    if (!nwk_sec_check_state(ss_byte & 7u, (ss_byte & STUB_SS_SEC_ALL) && slot_ok, repaired)) {
+        return;
+    }
+    ss_byte |= STUB_SS_SEC_ALL;
+    if (!slot_ok) {
+        ss_byte = (uint8_t)((ss_byte & ~STUB_SS_SLOT) | STUB_SS_SLOT_1);
+    }
+    if (!(ss_byte & STUB_SS_GLK)) {
+        ss_byte |= STUB_SS_GLK_TC;
+    }
+    if (network_status == HAL_ZIGBEE_NETWORK_JOINED) {
+        ssib_save(ss_byte);
+    }
+    io_evt("nwk_sec_repaired state=%u ssib=0x%02X", g_nwk_sec_state, ss_byte);
+}
+
+#ifdef MCU_FLASHER_DUMP
+void hal_zigbee_nwk_sec_clear(uint8_t in_nv) {
+    ss_byte &= (uint8_t) ~STUB_SS_SEC_ALL;
+    if (in_nv) {
+        ssib_save(ss_byte);
+    }
+}
+
+#endif
 
 void hal_zigbee_init(hal_zigbee_endpoint *ep_list, uint8_t ep_count) {
     if (!ep_list && ep_count > 0) {
@@ -141,6 +232,13 @@ void hal_zigbee_init(hal_zigbee_endpoint *ep_list, uint8_t ep_count) {
             }
         }
     }
+
+    /* what bdb_init() does with the record, then the HAL's check after it */
+    int nv = stub_zigbee_ssib_nv();
+    ss_byte = network_status == HAL_ZIGBEE_NETWORK_JOINED &&
+              nv >= 0 ? (uint8_t)nv : STUB_SS_FRESH;
+    ss_started = true;
+    ssib_check(NWK_SEC_REPAIRED_AT_START);
 }
 
 hal_zigbee_network_status_t hal_zigbee_get_network_status(void) {
@@ -175,13 +273,47 @@ void hal_zigbee_leave_network(void) {
 #endif
     io_evt("zcl_leave_network");
     io_log("ZIGBEE", "Leaving network");
+    remove(STUB_SSIB_FILE);   /* nv_resetToFactoryNew: RAM keeps the record */
     network_status = HAL_ZIGBEE_NETWORK_NOT_JOINED;
+#ifdef LEAVE_RESTART
+    restart_after_leave(1);   /* the stack's leave confirm: a network was left */
+#endif
+    if (network_status_change_callback != NULL) {
+        network_status_change_callback(hal_zigbee_get_network_status());
+    }
+}
+
+/* A factory reset of a unit that is on no network (the Telink stack's zb_factoryReset when it is
+ * factory new): the NV emptied (nv_resetToFactoryNew), then the same leave confirm as after a
+ * leave, status 0, but no network was left. */
+void stub_zigbee_reset_factory_new(void) {
+#ifdef DIMMER_SCENES
+    if (network_left_callback != NULL)
+        network_left_callback();
+#endif
+    io_evt("zcl_reset_factory_new");
+    io_log("ZIGBEE", "Factory reset while not on a network");
+    remove(STUB_SSIB_FILE);
+#ifdef LEAVE_RESTART
+    restart_after_leave(0);
+#endif
     if (network_status_change_callback != NULL) {
         network_status_change_callback(hal_zigbee_get_network_status());
     }
 }
 
 void hal_zigbee_start_network_steering() {
+    if (restart_after_leave_pending()) {
+        /* asked at every main loop pass until the restart: said once (a stub left waiting with
+         * its clock frozen would else fill the log) */
+        static bool said;
+
+        if (!said) {
+            io_log("ZIGBEE", "No network steering: the restart after the leave comes first");
+            said = true;
+        }
+        return;
+    }
     io_log("ZIGBEE", "Starting network steering (joining)");
     io_evt("zcl_start_network_steering");
     network_status = HAL_ZIGBEE_NETWORK_JOINING;
@@ -300,7 +432,18 @@ hal_zigbee_status_t hal_zigbee_send_announce(void) {
 }
 
 void stub_zigbee_set_network_status(hal_zigbee_network_status_t status) {
+    bool joins = ss_started && status == HAL_ZIGBEE_NETWORK_JOINED &&
+                 network_status != HAL_ZIGBEE_NETWORK_JOINED;
+    bool steered = network_status == HAL_ZIGBEE_NETWORK_JOINING;
+
     network_status = status;
+    if (joins) {
+        ssib_save(ss_byte);   /* the commissioning save */
+        ssib_check(NWK_SEC_REPAIRED_AT_JOIN);
+        if (steered) {
+            tclk_check_ok();  /* a join of its own: a new trust centre link key */
+        }
+    }
     io_log("ZIGBEE", "Network status set to %d", network_status);
     if (network_status_change_callback != NULL) {
         network_status_change_callback(hal_zigbee_get_network_status());

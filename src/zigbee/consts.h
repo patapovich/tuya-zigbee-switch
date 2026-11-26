@@ -69,9 +69,14 @@
 #define ZCL_ATTR_BASIC_STOCK_NV_LOG_PAGE_NO       0xff56 /* debug builds: the W4c log page to read */
 #define ZCL_ATTR_BASIC_STOCK_NV_LOG_PAGE          0xff57 /* debug builds: that page */
 #define ZCL_ATTR_BASIC_FACTORY_IDENTITY           0xff59 /* the factory name and MCU version (zigbee/factory_identity.h) */
-#define ZCL_ATTR_BASIC_STOCK_NV_WIPE              0xff58 /* debug builds: 0xA5 empties the own network NV, restarts */
-// Open Dimmer health report (see zigbee/tuya_mcu_ota.h)
+#define ZCL_ATTR_BASIC_STOCK_NV_WIPE              0xff58 /* debug builds: 0xA5..0xA8 empty the own network NV, restart (stock_nv.h) */
+/* 0xff5a, 0xff5b are taken on another branch (router diagnostics): not here. */
+#define ZCL_ATTR_BASIC_RESTART_EXCEPTION          0xff5c /* the stack exception that last restarted the module since its power-up, 0: none (telink/hal/zigbee_network.c) */
+#define ZCL_ATTR_BASIC_NWK_SECURITY               0xff5d /* the module's own NWK commands secured or not (zigbee/nwk_sec.h) */
+#define ZCL_ATTR_BASIC_NWK_SEC_TEST               0xff5e /* debug builds: 0xA1..0xA3 clear that on purpose */
+// Open Dimmer health report and build (see zigbee/tuya_mcu_ota.h)
 #define ZCL_ATTR_BASIC_MCU_HEALTH                 0xff48
+#define ZCL_ATTR_BASIC_MCU_BUILD                  0xff5f /* the build Open Dimmer said in its identity answer */
 #define ZCL_ATTR_BASIC_STATUS_LED_STATE           0xff01
 #define ZCL_ATTR_BASIC_MULTI_PRESS_RESET_COUNT    0xff02
 
@@ -115,6 +120,10 @@
                                                                        * (Open Dimmer 2.2.8) */
 #define ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_DARK_HOLD          0xff15 /* dimmer: a long press from off rises
                                                                        * from the min (Open Dimmer 2.2.8) */
+#define ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_FOLLOW             0xff17 /* dimmer: follows another channel's
+                                                                       * wall switch (0 none, its index + 1) */
+#define ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_FOLLOW_ON          0xff18 /* dimmer: its level at that on */
+#define ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_FOLLOW_OFF         0xff19 /* dimmer: its level at that off (0: off) */
 
 
 // Multistate cluster

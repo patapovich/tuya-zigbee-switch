@@ -1,0 +1,32 @@
+--- a/zigbee/bdb/bdb.c
++++ b/zigbee/bdb/bdb.c
+@@ -852,6 +852,13 @@
+  */
+ _CODE_BDB_ void bdb_retrieveTcLinkKeyDone(u8 status)
+ {
++    /* SDK 4.0.x: only while steering (the exchange is part of it). The library calls this for a
++     * Confirm Key that comes late or twice too: on a joined router a failed one cleared
++     * aps_authenticated and nodeIsOnANetwork though nothing was being steered. */
++    if (BDB_STATE_GET() != BDB_STATE_COMMISSIONING_NETWORK_STEER) {
++        return;
++    }
++
+     /* now send permit join command */
+     u32 evt = BDB_EVT_IDLE;
+     bdb_retrieveTcLinkKeyTimerStop();
+@@ -1014,7 +1021,14 @@
+     }
+ #endif
+ 
+-    zb_assocJoinReq();
++    /* SDK 4.0.x: a join the stack could not start (NWK busy, no buffer) ends the steering. The
++     * stack then posts nothing, so the steering stayed in progress and every later one was
++     * refused as busy until a restart. */
++    if (zb_assocJoinReq() != ZDO_SUCCESS) {
++        BDB_STATUS_SET(BDB_COMMISSION_STA_NO_NETWORK);
++        u32 evt = BDB_EVT_COMMISSIONING_NETWORK_STEER_FINISH;
++        TL_SCHEDULE_TASK(bdb_task, (void *)evt);
++    }
+ }
+ 
+ 

@@ -33,8 +33,10 @@ FULL = str(ROOT / "build/stub/stub_device")
 # The tokens a DIMMER_ONLY build parses (config_parser.c): dimmers (DM, DR,
 # Pxx, U), the MCU link (IT, W, Y), the image type (i) and, in a board that
 # carries the MCU image (both dimmer_only boards do), the SWD master's pins
-# (SW); not PT (relays).
+# (SW); not PT (relays). A board with hk_dimmer (the ZH-Z06 dimmers' virtual
+# MCU, built with -DHK_DIMMER) also parses HK.
 DIMMER_TOKENS = ("DM", "DR", "P", "U", "IT", "W", "Y", "i", "SW")
+HK_DIMMER_TOKENS = DIMMER_TOKENS + ("HK",)
 CHECK = ROOT / "helper_scripts" / "check_dimmer_only_symbols.py"
 
 
@@ -79,9 +81,11 @@ def test_there_are_dimmer_only_boards():
 @pytest.mark.parametrize("board", sorted(dimmer_only_boards()))
 def test_a_dimmer_only_board_uses_only_the_tokens_its_build_parses(board):
     config, _ = dimmer_only_boards()[board]
+    db = yaml.safe_load((ROOT / "device_db.yaml").read_text())
+    parsed = HK_DIMMER_TOKENS if db[board].get("hk_dimmer") else DIMMER_TOKENS
     tokens = [t for t in config.split(";")[2:] if t]
     left_out = [t for t in tokens if t != "M" and
-                (t.startswith("PT") or not t.startswith(DIMMER_TOKENS))]
+                (t.startswith("PT") or not t.startswith(parsed))]
     # M (switches momentary) is left out too, a no-op without switches.
     assert not left_out, f"{board}: {left_out} would be ignored by its DIMMER_ONLY build"
 

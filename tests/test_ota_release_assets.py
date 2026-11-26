@@ -265,3 +265,96 @@ def test_nothing_of_ours_in_the_index_is_a_no_op(tree):
     gh = FakeGitHub()
     assert run(tree, gh) == 0
     assert gh.calls == []
+
+
+# ---- two boards in one index (their files have the same names) ------------------------------
+
+HK_DIR = "bin/router/MODULE_TS110E"
+HK_TAG = "ts110e-3mpwqzuu-" + BUILD
+
+
+def add_second_board(tree: Path) -> None:
+    """The TS110E's images next to the first board's: the same names, other bytes, in both
+    index files."""
+    (tree / HK_DIR).mkdir(parents=True)
+    for index_name, names in (("index_router.json", NAMES), ("index_router-FORCE.json", [FORCED])):
+        f = tree / "zigbee2mqtt/ota" / index_name
+        data = json.loads(f.read_text())
+        for n in names:
+            body = b"\x1e\xf1\xee\x0bts110e " + n.encode()
+            (tree / HK_DIR / n).write_bytes(body)
+            data.append(entry(n, body, f"https://github.com/{REPO}/raw/{PIN}/{HK_DIR}/{n}"))
+        f.write_text(json.dumps(data, indent=2))
+
+
+def run_board(tree: Path, gh: FakeGitHub, bin_dir: str, prefix: str, name: str, *extra: str) -> int:
+    idx = [str(tree / "zigbee2mqtt/ota/index_router.json"), str(tree / "zigbee2mqtt/ota/index_router-FORCE.json")]
+    return ora.main([*idx, "--repo", REPO, "--tag-prefix", prefix, "--name", name, "--bin-dir", bin_dir, *extra],
+                    gh=gh, root=tree)
+
+
+def urls(tree: Path, name: str = "index_router.json") -> list[str]:
+    return [e["url"] for e in index(tree, name)]
+
+
+def test_two_boards_without_a_bin_dir_are_refused_before_anything_goes_out(tree):
+    add_second_board(tree)
+    gh = FakeGitHub()
+    with pytest.raises(SystemExit, match="two different files of the same name"):
+        run(tree, gh)
+    assert gh.calls == []
+
+
+def test_each_board_gets_its_own_release_and_only_its_own_links_move(tree):
+    add_second_board(tree)
+    gh = FakeGitHub()
+    assert run_board(tree, gh, BOARD_DIR, "zdms16-2", "AVATTO ZDMS16-2") == 0
+    assert gh.calls == [("create", TAG, PIN, sorted(NAMES + [FORCED]))]
+    after = urls(tree)
+    assert after[:2] == [ora.release_url(REPO, TAG, n) for n in NAMES]
+    assert after[2] == OTHER
+    assert after[3:] == [f"https://github.com/{REPO}/raw/{PIN}/{HK_DIR}/{n}" for n in NAMES]  # not moved
+
+    gh.calls.clear()
+    assert run_board(tree, gh, HK_DIR, "ts110e-3mpwqzuu", "Tuya TS110E (ZH-Z06)", "--carried-image", "") == 0
+    assert gh.calls == [("create", HK_TAG, PIN, sorted(NAMES + [FORCED]))]
+    rel = gh.releases_[HK_TAG]
+    assert rel["title"] == f"Tuya TS110E (ZH-Z06) {BUILD}"                     # no Open Dimmer
+    assert f"Module firmware build {BUILD} for the Tuya TS110E (ZH-Z06).\n" in rel["body"]
+    assert "Open Dimmer" not in rel["body"]
+    # its assets are its own files (the same names, its bytes)
+    want = {n: hashlib.sha256((tree / HK_DIR / n).read_bytes()).hexdigest() for n in NAMES + [FORCED]}
+    assert {a["name"]: a["digest"] for a in rel["assets"]} == {n: "sha256:" + d for n, d in want.items()}
+    after = urls(tree)
+    assert after[:2] == [ora.release_url(REPO, TAG, n) for n in NAMES]          # stays the first board's
+    assert after[3:] == [ora.release_url(REPO, HK_TAG, n) for n in NAMES]
+    assert urls(tree, "index_router-FORCE.json") == [ora.release_url(REPO, TAG, FORCED),
+                                                     ora.release_url(REPO, HK_TAG, FORCED)]
+
+
+def test_two_boards_run_again_change_nothing(tree):
+    add_second_board(tree)
+    gh = FakeGitHub()
+    run_board(tree, gh, BOARD_DIR, "zdms16-2", "AVATTO ZDMS16-2")
+    run_board(tree, gh, HK_DIR, "ts110e-3mpwqzuu", "Tuya TS110E (ZH-Z06)", "--carried-image", "")
+    texts = [(tree / "zigbee2mqtt/ota" / n).read_text() for n in ("index_router.json", "index_router-FORCE.json")]
+    gh.calls.clear()
+    # links on the releases now: each run finds its files in its own directory only
+    assert run_board(tree, gh, BOARD_DIR, "zdms16-2", "AVATTO ZDMS16-2") == 0
+    assert run_board(tree, gh, HK_DIR, "ts110e-3mpwqzuu", "Tuya TS110E (ZH-Z06)", "--carried-image", "") == 0
+    assert gh.calls == []
+    assert [(tree / "zigbee2mqtt/ota" / n).read_text() for n in ("index_router.json", "index_router-FORCE.json")] == texts
+
+
+def test_a_board_not_in_the_index_publishes_nothing(tree):
+    """build.yml runs the step for each board; a build that left one out has nothing of it."""
+    gh = FakeGitHub()
+    assert run_board(tree, gh, HK_DIR, "ts110e-3mpwqzuu", "Tuya TS110E (ZH-Z06)", "--carried-image", "") == 0
+    assert gh.calls == []
+
+
+def test_rewrite_matches_by_name_and_sha512():
+    text = json.dumps([{"fileName": "a.zigbee", "sha512": "1", "url": "x"},
+                       {"fileName": "a.zigbee", "sha512": "2", "url": "y"}], indent=2)
+    out = json.loads(ora.rewrite(text, {("a.zigbee", "2"): "z"}))
+    assert [e["url"] for e in out] == ["x", "z"]

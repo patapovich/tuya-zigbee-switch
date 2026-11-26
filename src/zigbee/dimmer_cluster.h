@@ -15,11 +15,11 @@ typedef struct {
     uint8_t              max_level_dpid;
     uint8_t              power_on_behavior_dpid;
 
-    /* Own PY32 firmware only (the MCU answered the identity query): its
-     * per-channel power-on DP, used instead of the shared DP 14, and its
-     * wall switch gesture DP (1 single, 2 double, 3 triple, 4 hold,
-     * 5 release), reported as genMultistateInput presentValue
-     * (sequence << 4 | gesture, so every gesture is a change). */
+    /* Own PY32 firmware only (the MCU answered the identity query), and the
+     * HK builds' virtual MCU: its per-channel power-on DP, used instead of the
+     * shared DP 14, and its wall switch gesture DP (1 single, 2 double,
+     * 3 triple, 4 hold, 5 release, 6 press), reported as genMultistateInput
+     * presentValue (sequence << 4 | gesture, so every gesture is a change). */
     uint8_t              own_power_on_dpid;
     uint8_t              action_dpid;
 
@@ -33,16 +33,16 @@ typedef struct {
 
     /* genOnOff: onoff, startup, [countdown]; genLevelCtrl after them: current level, on
      * level, default move rate, options, on level local, brightness transition, [start-up
-     * level] ([]: boards with an image only). */
+     * level] ([]: boards with an image and the HK builds only). */
     hal_zigbee_attribute attr_infos[10];
-    hal_zigbee_attribute multistate_attr_infos[4];  // wall switch gestures (own MCU)
-    hal_zigbee_attribute ballast_attr_infos[5];     // min/max level, [start boost, lamp compensation, custom curve] (lightingBallastCfg)
+    hal_zigbee_attribute multistate_attr_infos[4];   // wall switch gestures (own MCU, HK)
+    hal_zigbee_attribute ballast_attr_infos[5];      // min/max level, [start boost, lamp compensation, custom curve] (lightingBallastCfg)
 #ifdef DIMMER_BINDINGS
-    hal_zigbee_attribute switch_type_attr_infos[8]; // ..., bind mode, double / triple press action
+    hal_zigbee_attribute switch_type_attr_infos[11]; // ..., bind mode, double / triple press action, follow (3)
 #else
-    hal_zigbee_attribute switch_type_attr_infos[5]; // switch type, [wall switch mode, fast press, long press from off, double tap] (genOnOffSwitchCfg)
+    hal_zigbee_attribute switch_type_attr_infos[5];  // switch type, [wall switch mode, fast press, long press from off, double tap] (genOnOffSwitchCfg)
 #endif
-    hal_zigbee_attribute identify_attr_infos[1];    // [IdentifyTime] (genIdentify)
+    hal_zigbee_attribute identify_attr_infos[1];     // [IdentifyTime] (genIdentify)
 
     /* Open Dimmer from OPEN_DIMMER_FEATURES_BUILD (2.2.0), as its dump and the answers to our
      * writes tell (any other MCU: never written, they keep the values of "none"): the auto-off
@@ -113,19 +113,22 @@ typedef struct {
 
     /* The OnLevel of the wall switch (Level Control 0xff11, same values, NV-kept like it):
      * when set, a wall switch on goes there instead of to OnLevel; 0xFF (default): OnLevel.
-     * Used with Open Dimmer from OPEN_DIMMER_FEATURES_BUILD only (kept for any MCU). */
+     * Used with Open Dimmer from OPEN_DIMMER_FEATURES_BUILD and the HK builds' virtual MCU
+     * only (kept for any MCU). */
     uint8_t              on_level_local;
     uint8_t              on_level_local_saved;
 
     /* The fade of a level change without a time while lit, as the time for the whole range
      * (Level Control 0xff12, 1/10 s, NV-kept; 0xFFFF: none, the MCU's own rate, 2 s for the
-     * whole range), for Open Dimmer from OPEN_DIMMER_TRANSITION_BUILD. */
+     * whole range), for Open Dimmer from OPEN_DIMMER_TRANSITION_BUILD and the HK builds'
+     * virtual MCU. */
     uint16_t             brightness_fade_time;
     uint16_t             brightness_fade_time_saved;
 
     /* The last timed lit-to-lit move sent (MCU values from / to, its ms, when; fade_ms 0:
      * none running): where the light is during it, the "from" of the next change (a slider
-     * drag sends one before the move ends). fade_pending: the level write that follows it. */
+     * drag sends one before the move ends). fade_pending: the level write that follows it.
+     * (Not for the HK builds' virtual MCU: the module asks it, hk_dimmer_fading().) */
     uint16_t             fade_from;
     uint16_t             fade_to;
     uint16_t             fade_ms;
@@ -162,7 +165,7 @@ typedef struct {
      * NV like OnLevel (default_move_rate_saved). */
     hal_task_t           ramp_task;
     uint8_t              move_direction; /* 0 = down, 1 = up */
-    uint8_t              move_active;
+    uint8_t              move_active;    /* HK builds: 2 once the ramp has written a step */
     uint8_t              move_with_onoff;
     uint8_t              move_rate;
     uint16_t             move_acc;
@@ -204,6 +207,12 @@ typedef struct {
     /* Kept in NV (NV_ITEM_DIMMER_BIND): bind mode (DIMMER_BIND_*), double and triple press
      * action (DIMMER_ACT_*). */
     uint8_t              bind_cfg[3];
+
+    /* Kept in NV (NV_ITEM_DIMMER_FOLLOW): the channel follows another channel's wall switch
+     * (0: none, else that channel's dimmer_idx + 1), the level it goes to at that wall
+     * switch's on, the level at its off (0: off). */
+    uint8_t              follow_cfg[3];
+    uint8_t              follow_saved[3]; /* as in NV: only a change is written */
 #endif
 } zigbee_dimmer_cluster;
 

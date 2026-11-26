@@ -12,10 +12,14 @@ change: the index files stay where they are (users' Zigbee2MQTT settings name th
 Steps; each can be run again, nothing is overwritten:
 1. the entries of the index files whose image is a raw link into this repo's bin/ (entries of
    other repos are left alone), each matched to its file in this checkout by name and sha512;
+   with --bin-dir only those of one board's directory (every board names its files
+   tlc_switch-<build>[-from_tuya|-forced].zigbee: run once per board, each with its own
+   --tag-prefix);
 2. one release per build, tag <prefix>-<build> at the commit the raw links pin (else --commit);
 3. the files the release lacks are uploaded, then every asset's size and sha256 digest is
    checked against the file (GitHub's digest, so the check downloads nothing and counts nothing);
-4. the url fields become the release download links;
+4. the url fields become the release download links (of the entries with the file's name and
+   sha512 only: another board's file of the same name keeps its link);
 5. with --keep N, releases of this prefix older than the N newest that nobody downloaded are
    deleted; their tags stay, so the commits (and old raw links) stay too.
 """
@@ -64,25 +68,35 @@ def repo_of(m: re.Match) -> str:
     return f"{m['o1'] or m['o2']}/{m['r1'] or m['r2']}"
 
 
-def collect(index_files: list[Path], repo: str, root: Path, tag_prefix: str) -> list[Entry]:
-    """The entries to publish: raw links into this repo, or (run again) its release links."""
+def under(rel: str, bin_dir: str | None) -> bool:
+    """rel (a path in the checkout) is in bin_dir (None: anywhere)."""
+    return bin_dir is None or rel.startswith(bin_dir.strip("/") + "/")
+
+
+def collect(index_files: list[Path], repo: str, root: Path, tag_prefix: str,
+            bin_dir: str | None = None) -> list[Entry]:
+    """The entries to publish: raw links into this repo (into bin_dir only, when given), or
+    (run again) its release links of this prefix, their file looked for in bin_dir."""
     ours = f"https://github.com/{repo}/releases/download/{tag_prefix}-"
+    where = bin_dir.strip("/") if bin_dir else "bin"
     entries = []
     for index in index_files:
         for meta in json.loads(index.read_text()):
             url, name = meta.get("url", ""), meta["fileName"]
             m = RAW.match(url)
             if m and repo_of(m).lower() == repo.lower():
+                if not under(m["path"], bin_dir):
+                    continue  # another board's image
                 pinned = m["ref"] if re.fullmatch(r"[0-9a-f]{40}", m["ref"]) else None
                 rel = m["path"]
             elif url.startswith(ours):
                 pinned, rel = None, None
             else:
                 continue
-            files = [root / rel] if rel else sorted(root.glob(f"bin/**/{name}"))
+            files = [root / rel] if rel else sorted(root.glob(f"{where}/**/{name}"))
             files = [f for f in files if f.is_file()]
             if len(files) != 1 or files[0].name != name:
-                raise SystemExit(f"{index}: no single file {name} in {root / 'bin'}")
+                raise SystemExit(f"{index}: no single file {name} in {root / where}")
             if hashlib.sha512(files[0].read_bytes()).hexdigest() != meta["sha512"]:
                 raise SystemExit(f"{index}: {files[0]} does not match the sha512 of {name}")
             entries.append(Entry(index, name, meta["sha512"], files[0], pinned))
@@ -108,12 +122,14 @@ def pinned_of(entries: list[Entry]) -> str | None:
     return pinned.pop() if pinned else None
 
 
-def rewrite(text: str, urls: dict[str, str]) -> str:
-    """The index text with the url of each named file replaced, written as the generator does."""
+def rewrite(text: str, urls: dict[tuple[str, str], str]) -> str:
+    """The index text with the url of each file (name, sha512) replaced, written as the generator
+    does. By the sha512 too: every board's files have the same names."""
     data = json.loads(text)
     for meta in data:
-        if meta["fileName"] in urls:
-            meta["url"] = urls[meta["fileName"]]
+        key = (meta["fileName"], meta.get("sha512"))
+        if key in urls:
+            meta["url"] = urls[key]
     out = json.dumps(data, indent=2)
     return out + "\n" if text.endswith("\n") else out
 
@@ -248,12 +264,15 @@ def main(argv: list[str], gh: GitHub | None = None, root: Path = Path(".")) -> i
     ap.add_argument("--index-url", help="the index users point Zigbee2MQTT at, for the text")
     ap.add_argument("--link", action="append", default=[], help="extra line for the text")
     ap.add_argument("--changelog", type=Path, default=Path("docs/changelog_home_dimmer.md"))
-    ap.add_argument("--carried-image", type=Path, default=Path("src/zigbee/secondary_mcu_image.c"))
+    ap.add_argument("--carried-image", default="src/zigbee/secondary_mcu_image.c",
+                    help="the MCU image the firmware carries, for the text (\"\": none, e.g. the TS110E)")
+    ap.add_argument("--bin-dir", help="only the images of this board's directory, e.g. "
+                                      "bin/router/MODULE_TUYA_TS110E_3MPWQZUU")
     ap.add_argument("--dry-run", action="store_true", help="change nothing, print the gh writes")
     args = ap.parse_args(argv)
     gh = gh or GitHub(args.repo, args.dry_run)
 
-    entries = collect(args.index_files, args.repo, root, args.tag_prefix)
+    entries = collect(args.index_files, args.repo, root, args.tag_prefix, args.bin_dir)
     if not entries:
         print("no image of this repo in the index files: nothing to publish")
         return 0
@@ -272,7 +291,7 @@ def main(argv: list[str], gh: GitHub | None = None, root: Path = Path(".")) -> i
         raise SystemExit("the links pin no commit: give --commit")
     release = gh.release(tag)
     if release is None:
-        carries = carries_of(root / args.carried_image)
+        carries = carries_of(root / args.carried_image if args.carried_image else None)
         title = f"{args.name} {build}" + (f" (Open Dimmer {carries})" if carries else "")
         body = notes(build, args.name, carries, [f.name for f in files],
                      changes_of(root / args.changelog, build), args.index_url, args.link)
@@ -300,7 +319,7 @@ def main(argv: list[str], gh: GitHub | None = None, root: Path = Path(".")) -> i
         raise SystemExit(f"release {tag} does not match the files: {'; '.join(bad)}")
     print(f"release {tag}: {len(files)} asset(s) match the files (size, sha256)")
 
-    urls = {e.name: release_url(args.repo, tag, e.name) for e in entries}
+    urls = {(e.name, e.sha512): release_url(args.repo, tag, e.name) for e in entries}
     for index in args.index_files:
         text = index.read_text()
         new = rewrite(text, urls)

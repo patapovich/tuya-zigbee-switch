@@ -10,6 +10,7 @@ static uint64_t start_ms;
 static int      initialized   = 0;
 static int      time_frozen   = 0;
 static uint64_t frozen_millis = 0;
+static uint32_t skew_reads    = 0;
 
 void stub_millis_init() {
     struct timeval current_time;
@@ -39,9 +40,22 @@ void stub_millis_step(uint64_t step) {
     frozen_millis += step;
 }
 
+/* The next `reads` looks at the frozen clock move it on by 1 ms each (after the look), as the
+ * real clock runs on during a main loop pass: code that reads it twice in one pass sees two
+ * times. 0 stops it. */
+void stub_millis_skew(uint32_t reads) {
+    skew_reads = reads;
+}
+
 uint32_t hal_millis() {
     if (time_frozen) {
-        return (uint32_t)frozen_millis;
+        uint32_t now = (uint32_t)frozen_millis;
+
+        if (skew_reads) {
+            skew_reads--;
+            frozen_millis++;
+        }
+        return now;
     }
 
     struct timeval current_time;

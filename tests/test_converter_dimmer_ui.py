@@ -58,9 +58,10 @@ console.log(JSON.stringify(h.fakeExtends(def)
 
 
 def test_other_boards_keep_their_settings_on_the_first_endpoint():
-    """Only dimmer boards moved: every other board's device_config stays on its first endpoint."""
+    """Only dimmer boards moved (ZDMS16-2, TS110E): every other board's device_config stays on
+    its first endpoint."""
     out = json.loads(run_node("""
-console.log(JSON.stringify(definitions.filter((d) => d.model !== "ZDMS16-2").map((d) => {
+console.log(JSON.stringify(definitions.filter((d) => !["ZDMS16-2", "TS110E_2gang_2"].includes(d.model)).map((d) => {
     const ext = h.fakeExtends(d);
     const first = Object.keys(ext.find((x) => x.fake === "deviceEndpoints").args.endpoints)[0];
     return [first, ext.find((x) => x.args?.name === "device_config")?.args.endpointName];
@@ -68,6 +69,17 @@ console.log(JSON.stringify(definitions.filter((d) => d.model !== "ZDMS16-2").map
 """))
     assert len(out) == 212
     assert all(first == endpoint for first, endpoint in out), [x for x in out if x[0] != x[1]][:5]
+
+
+def test_the_ts110e_has_the_dimmer_face_too():
+    out = json.loads(run_node("""
+console.log(JSON.stringify(definitions.filter((d) => d.extend && d.model === "TS110E_2gang_2").map((d) => {
+    const ext = h.fakeExtends(d);
+    return [ext.find((x) => x.fake === "deviceEndpoints").args.endpoints,
+            ext.find((x) => x.args?.name === "device_config")?.args.endpointName ?? null];
+})));
+"""))
+    assert out == [[{"l1": 1, "l2": 2}, None]]
 
 
 def test_mcu_version_comes_from_endpoint_1_only():
@@ -190,7 +202,8 @@ def test_the_device_db_times_are_in_ms_shown_in_seconds():
     units = {name: unit for name, unit in found}
     assert units == {"fade_on_time": "s", "fade_off_time": "s", "hold_time": "s",
                      "fade_off_slow_zone": "%", "hold_slow_zone": "%"}
-    assert js.count("divisor: 1000,") == 3 * 2 * 3      # 3 definitions, 2 channels, 3 times
+    # ZDMS16-2: 3 definitions, 2 channels, 3 times; TS110E: 1 definition, 2 channels, 3 times
+    assert js.count("divisor: 1000,") == 3 * 2 * 3 + 2 * 3
 
 
 def test_the_custom_curve_is_17_numbers_written_as_little_endian_u16():

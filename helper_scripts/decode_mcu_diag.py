@@ -32,8 +32,12 @@ COUNTER_FIELDS = (
 KINDS = {
     1: "TX_DP", 2: "TX_CMD", 3: "RX_DP", 4: "RX_DP_PASSIVE", 5: "RX_CMD",
     6: "ACK", 7: "ACK_TIMEOUT", 8: "RX_BAD", 9: "TX_DROP", 10: "TX_FAIL",
-    11: "UART_REINIT", 12: "IDENT", 13: "BOOT_REQUEST",
+    11: "UART_REINIT", 12: "IDENT", 13: "BOOT_REQUEST", 14: "HK_FRAME", 15: "HK_EVENT",
 }
+
+# The ZH-Z06 dimmers' events (hk_dimmer.c HK_EV_*): id = what << 4 | the channel's index (0: L1).
+HK_EVENTS = {1: "at once, the MCU's ramp runs", 2: "at once on", 3: "at once off",
+             4: "to the fader", 5: "the fader", 6: "hold begin", 7: "hold end"}
 
 # Block request modes of the v2 bootloader (open-dimmer src/ota_proto.h).
 MODES = {0: "v1 bootloader", 1: "asked update", 2: "no app", 3: "power-on probe",
@@ -83,6 +87,21 @@ def describe(e: dict) -> str:
     if e["kind"] == "BOOT_REQUEST":
         return (f"  ({MODES.get(e['id'], e['id'])}, {length} B, bootloader {boot}, "
                 f"installed build {build})")
+    if e["kind"] == "HK_FRAME":
+        refused = ", the UART did not take it" if e["id"] & 0x80 else ""
+        return f"  (L{e['id'] & 0x7F}: level {v >> 16}, ramp {v & 0xFFFF}{refused})"
+    if e["kind"] == "HK_EVENT":
+        what, ch = e["id"] >> 4, e["id"] & 0x0F
+        text = HK_EVENTS.get(what, what)
+        if what == 4:
+            text += ", no time" if v == 0xFFFFFFFF else f", {v} ms"
+        elif what == 5:
+            text += f" at {v >> 16}, to {v & 0xFFFF}"
+        elif what == 6:
+            text += f" {'down' if (v >> 16) & 0x80 else 'up'} from {v & 0xFFFF}"
+        elif what in (1, 2, 7):
+            text += f": {v}"
+        return f"  (L{ch + 1}: {text})"
     return ""
 
 

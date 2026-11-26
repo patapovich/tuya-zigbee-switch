@@ -254,6 +254,54 @@ def test_a_stop_after_the_timed_move_ended_sends_nothing():
         proc.stop()
 
 
+def test_the_same_level_again_during_a_timed_move_keeps_the_move_as_it_runs():
+    """A scene or an automation that fires twice: Open Dimmer keeps the running move for the same
+    end (open-dimmer dim_fader_set_timed(), "the same move going on"), and so does the module's
+    estimate: a Stop in it is where the first move has the light, one after its end nothing."""
+    proc, device, mcu, t0 = slow_move()
+    try:
+        device.step_time(t0 + 10000 - uptime(device))
+        send_now(device, mcu, bytes([10]) + tt(SLOW))             # the same again, at 10 s
+        device.step_time(t0 + 20000 - uptime(device))
+        mcu.writes.clear()
+        device.call_zigbee_cmd(1, LEVEL, STOP, b"")
+        mcu.serve()
+        at = slow_at(20000)
+        assert mcu.writes == [(DP_TIME, 1), (DP_LEVEL, scaled_to_tuya(at, MN, MX))]
+        assert level(device) == at
+    finally:
+        proc.stop()
+    proc, device, mcu, t0 = slow_move()
+    try:
+        device.step_time(t0 + 10000 - uptime(device))
+        send_now(device, mcu, bytes([10]) + tt(SLOW))
+        device.step_time(t0 + SLOW * 100 + 1000 - uptime(device))  # 1 s after the first's end
+        mcu.writes.clear()
+        device.call_zigbee_cmd(1, LEVEL, STOP, b"")
+        mcu.serve()
+        assert mcu.writes == [] and level(device) == 10
+    finally:
+        proc.stop()
+
+
+def test_another_level_during_a_timed_move_starts_a_new_one_from_where_the_light_is():
+    proc, device, mcu, t0 = slow_move()
+    try:
+        device.step_time(t0 + 10000 - uptime(device))
+        t1 = uptime(device)
+        send_now(device, mcu, bytes([20]) + tt(SLOW))             # 30 s from where it is
+        device.step_time(t1 + 15000 - uptime(device))
+        mcu.writes.clear()
+        device.call_zigbee_cmd(1, LEVEL, STOP, b"")
+        mcu.serve()
+        top, end = scaled_to_tuya(254, MN, MX), scaled_to_tuya(10, MN, MX)
+        a, b = top - (top - end) * (t1 - t0) // (SLOW * 100), scaled_to_tuya(20, MN, MX)
+        at = scaled_to_zcl(a - (a - b) * 15000 // (SLOW * 100), MN, MX)
+        assert mcu.writes == [(DP_TIME, 1), (DP_LEVEL, scaled_to_tuya(at, MN, MX))]
+    finally:
+        proc.stop()
+
+
 def test_a_step_during_a_timed_move_steps_from_where_the_light_is():
     proc, device, mcu, t0 = slow_move()
     try:

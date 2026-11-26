@@ -1,0 +1,83 @@
+--- a/zigbee/mac/mac_phy.c
++++ b/zigbee/mac/mac_phy.c
+@@ -1,3 +1,14 @@
++/* Backported from later SDKs (patch_sdk/zigbee/mac/mac_phy.c.patch, sdk.mk SDK_PATCHED), two
++ * changes in rf_rx_irq_handler(), marked SDK 4.0.x below:
++ * - the ACK of a received frame is timed as SDK 4.0.2.0 times it ("optimize ACK sending timing
++ *   to improve compatibility"): no earlier than 128 + 32 us after the frame's end, counted from
++ *   its RX timestamp. 3.7.2.0 counted only from its own switch to TX, so an early interrupt could
++ *   start the ACK ~140 us after the frame, under the 192 us turnaround a receiver may need. The
++ *   120 us after the switch to TX stays too (the PLL settles in it; 4.0.2.0 drops it when the
++ *   interrupt came late), so an ACK never goes earlier than under 3.7.2.0;
++ * - the ACK to a sleepy child's Data Request has the pending bit while the child's frame is
++ *   already being sent, as SDK 4.0.x's library gives it;
++ * and in rf_performCCA() the receiver settles before the clear channel assessment (SDK 4.0.2.0). */
+ /********************************************************************************************************
+  * @file    mac_phy.c
+  *
+@@ -37,6 +48,11 @@
+  */
+ #define	LOGICCHANNEL_TO_PHYSICAL(p)             (((p)-10)*5)
+ 
++/* SDK 4.0.2.0 phy.c: ZB_PHR_LENGTH, ZB_OCTET_DURATION_US, ZB_ACK_TX_WAIT_US */
++#define ACK_PHR_LENGTH                          1
++#define ACK_OCTET_US                            32
++#define ZB_ACK_TX_WAIT_US                       (128 + 32)
++
+ #define RF_DROP_REASON_INVALID_CRC              0x01
+ #define RF_DROP_REASON_RF_BUSY                  0x02
+ #define RF_DROP_REASON_EXPECT_ACK               0x03
+@@ -467,6 +483,15 @@
+     s32 rssiSum = 0;
+     s32 cnt = 1;
+ 
++    /* SDK 4.0.2.0: a settled reading. In TX, or while no frame is being received, the receiver
++     * starts again and settles 85 us before the RSSI is sampled (3.7.2.0 sampled at once: a
++     * stale reading, right after a TX). The 128 us window counts from before it, as in 4.0.2.0. */
++    if (rfMode == RF_STATE_TX || !RF_DMA_BUSY()) {
++        rf_setTrxState(RF_STATE_OFF);
++        rf_setTrxState(RF_STATE_RX);
++        WaitUs(85);
++    }
++
+     rssi_cur = ZB_RADIO_RSSI_GET();
+     rssiSum += rssi_cur;
+     while (!clock_time_exceed(t1, 128)) {
+@@ -634,6 +659,8 @@
+     /* Parse necessary field to be used later */
+     u8 len = (u8)ZB_RADIO_ACTUAL_PAYLOAD_LEN(p);
+     u8 *macPld = p + ZB_RADIO_RX_HDR_LEN;
++    /* SDK 4.0.2.0: the frame's end, its RX timestamp + (length + PHR) octets of 32 us */
++    u32 rxFrameEnd = ZB_RADIO_TIMESTAMP_GET(p) + (u32)(len + ACK_PHR_LENGTH) * ACK_OCTET_US * S_TIMER_CLOCK_1US;
+ 
+     /*----------------------------------------------------------
+      *  Do the filter
+@@ -701,7 +728,13 @@
+         }
+         if (cmdDataReq && srcAddrMode) {
+             extern u8 tl_zbMacPendingDataCheck(u8 addrMode, u8 *addr, u8 send);
+-            if (MAC_SUCCESS == tl_zbMacPendingDataCheck(srcAddrMode, pSrcAddr, 1)) {
++            /* SDK 4.0.x: the pending bit also while the child's frame is already being sent
++             * (3.7.2.0's check answers "no data" then, so the child went back to sleep with its
++             * frame still queued); the library's own count of the entries queued for it, in any
++             * state (read only; tl_zbMacMlmeDataRequestCb uses it so for the data frame's bit). */
++            extern u8 tl_zbMacPendingDataSearch(u8 addrMode, u8 *addr);
++            if (MAC_SUCCESS == tl_zbMacPendingDataCheck(srcAddrMode, pSrcAddr, 1) ||
++                tl_zbMacPendingDataSearch(srcAddrMode, pSrcAddr) != 0) {
+                 rf_ack_buf[ZB_RADIO_TX_HDR_LEN] |= (1 << 4);// (rf_framePending<<4 );
+             }
+         }
+@@ -713,6 +746,13 @@
+         if (txDelayUs < ZB_TX_WAIT_US) {
+             WaitUs(ZB_TX_WAIT_US - txDelayUs);
+         }
++        /* SDK 4.0.2.0: and no earlier than ZB_ACK_TX_WAIT_US after the frame's end (a frame end
++         * that reads as in the future, a timer wrap, gives a huge value: no wait, as 4.0.2.0) */
++        u32 sinceEndUs = (clock_time() - rxFrameEnd) / S_TIMER_CLOCK_1US;
++        if (sinceEndUs < ZB_ACK_TX_WAIT_US) {
++            u32 waitTick = clock_time();
++            while (!clock_time_exceed(waitTick, ZB_ACK_TX_WAIT_US - sinceEndUs));
++        }
+ 
+         /* wait until tx done,
+          * disable tx irq here, rfMode still is RF_STATE_RX;

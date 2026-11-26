@@ -67,13 +67,16 @@ def test_the_zdms16_2_counts_and_headroom(tmp_path):
     # switches' endpoints 3 / 4 (DIMMER_BINDINGS): On/Off, Level Control and Scenes clients each,
     # and per dimmer 3 binding settings (genOnOffSwitchCfg); attributes: also the SWD master's 5
     # (status, control, confirm, and in the stub's debug build dump address and data; SWD3D7 in
-    # the board's config), the start-up's look at the factory NV (0xff55; the stub's debug build: its log, 0xff56/0xff57, wipe 0xff58)
-    # and the factory identity (0xff59); per
+    # the board's config), the start-up's look at the factory NV (0xff55; the stub's debug build: its log, 0xff56/0xff57, wipe 0xff58),
+    # the factory identity (0xff59), the stack exception that last restarted it (0xff5c), the
+    # NWK command security (0xff5d; the stub's debug build: its test hook, 0xff5e) and the Open
+    # Dimmer build (0xff5f); per
     # dimmer Open Dimmer 2.2.8's lamp
     # compensation and custom curve (lightingBallastCfg 0xff11, 0xff12), the long press from off
-    # and the double tap (genOnOffSwitchCfg 0xff15, 0xff16).
+    # and the double tap (genOnOffSwitchCfg 0xff15, 0xff16), and per dimmer the 3 follow
+    # settings (genOnOffSwitchCfg 0xff17..0xff19).
     assert got == {"endpoints": (4, 8), "in_clusters": (17, 32), "out_clusters": (7, 32),
-                   "zcl_clusters": (24, 32), "attributes": (114, 128)}    # 23 + the SDK's OTA
+                   "zcl_clusters": (24, 32), "attributes": (124, 128)}    # 23 + the SDK's OTA
 
 
 def test_a_config_over_the_limits_is_said_so(tmp_path):

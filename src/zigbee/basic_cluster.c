@@ -14,12 +14,18 @@
 #include "device_config/nvm_items.h"
 #include "device_config/reset.h"
 #include "hal/nvm.h"
+#include "hal/system.h"
 #include "hal/tasks.h"
 #include <stddef.h>
 #ifdef SECONDARY_MCU_IMAGE
-#include "zigbee/factory_identity.h"
 #include "zigbee/mcu_flasher.h"
+#endif
+#ifdef BASIC_STOCK_NV
+#include "zigbee/factory_identity.h"
 #include "zigbee/stock_nv.h"
+#endif
+#ifdef BASIC_NWK_SEC
+#include "zigbee/nwk_sec.h"
 #endif
 
 #ifdef HAL_SILABS
@@ -70,17 +76,26 @@ void basic_cluster_callback_attr_write_trampoline(uint16_t attribute_id) {
     dp_attr_on_write(attribute_id);
 #ifdef SECONDARY_MCU_IMAGE
     mcu_flasher_on_write(attribute_id);
-#ifdef MCU_FLASHER_DUMP
+#endif
+#ifdef HK_DIMMER
+    hk_dimmer_on_attr_write(attribute_id);
+#endif
+#if defined(BASIC_STOCK_NV) && defined(MCU_FLASHER_DUMP)
     if (attribute_id == ZCL_ATTR_BASIC_STOCK_NV_LOG_PAGE_NO) {
         stock_nv_log_fill_page();
     }
     if (attribute_id == ZCL_ATTR_BASIC_STOCK_NV_WIPE) {
-        if (g_stock_nv_wipe_cmd == STOCK_NV_WIPE_MAGIC && g_stock_nv_wipe) {
-            g_stock_nv_wipe();
+        if (g_stock_nv_wipe_cmd >= STOCK_NV_WIPE_MAGIC &&
+            g_stock_nv_wipe_cmd <= STOCK_NV_WIPE_RST_FLAG_FORCE_MAGIC && g_stock_nv_wipe) {
+            g_stock_nv_wipe((uint8_t)(g_stock_nv_wipe_cmd - STOCK_NV_WIPE_MAGIC));
         }
         g_stock_nv_wipe_cmd = 0;
     }
 #endif
+#if defined(BASIC_NWK_SEC) && defined(MCU_FLASHER_DUMP)
+    if (attribute_id == ZCL_ATTR_BASIC_NWK_SEC_TEST) {
+        nwk_sec_test_on_write();
+    }
 #endif
     if (tuya_mcu_diag_on_write(attribute_id) == TUYA_MCU_DIAG_CONTROL_QUERY_ALL) {
         tuya_mcu_app_query_all();
@@ -147,11 +162,19 @@ void basic_cluster_add_to_endpoint(zigbee_basic_cluster *cluster,
     }
 #ifdef SECONDARY_MCU_IMAGE
     attr_idx += mcu_flasher_register_attrs(cluster->attr_infos, attr_idx);
+#endif
+#ifdef HK_DIMMER
+    attr_idx += hk_dimmer_register_attrs(cluster->attr_infos, attr_idx);
+#endif
+#ifdef BASIC_STOCK_NV
     SETUP_ATTR(attr_idx, ZCL_ATTR_BASIC_STOCK_NV, ZCL_DATA_TYPE_OCTET_STR, ATTR_READONLY,
                g_stock_nv_diag);
     attr_idx++;
     SETUP_ATTR(attr_idx, ZCL_ATTR_BASIC_FACTORY_IDENTITY, ZCL_DATA_TYPE_CHAR_STR, ATTR_READONLY,
                g_factory_identity_attr);
+    attr_idx++;
+    SETUP_ATTR(attr_idx, ZCL_ATTR_BASIC_RESTART_EXCEPTION, ZCL_DATA_TYPE_UINT8, ATTR_READONLY,
+               g_restart_exception);
     attr_idx++;
 #ifdef MCU_FLASHER_DUMP
     SETUP_ATTR(attr_idx, ZCL_ATTR_BASIC_STOCK_NV_LOG_PAGE_NO, ZCL_DATA_TYPE_UINT8, ATTR_WRITABLE,
@@ -162,6 +185,16 @@ void basic_cluster_add_to_endpoint(zigbee_basic_cluster *cluster,
     attr_idx++;
     SETUP_ATTR(attr_idx, ZCL_ATTR_BASIC_STOCK_NV_WIPE, ZCL_DATA_TYPE_UINT8, ATTR_WRITABLE,
                g_stock_nv_wipe_cmd);
+    attr_idx++;
+#endif
+#endif
+#ifdef BASIC_NWK_SEC
+    SETUP_ATTR(attr_idx, ZCL_ATTR_BASIC_NWK_SECURITY, ZCL_DATA_TYPE_ENUM8, ATTR_READONLY,
+               g_nwk_sec_state);
+    attr_idx++;
+#ifdef MCU_FLASHER_DUMP
+    SETUP_ATTR(attr_idx, ZCL_ATTR_BASIC_NWK_SEC_TEST, ZCL_DATA_TYPE_UINT8, ATTR_WRITABLE,
+               g_nwk_sec_test_cmd);
     attr_idx++;
 #endif
 #endif

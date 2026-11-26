@@ -13,6 +13,9 @@ uint8_t stub_gpio_get_output(hal_gpio_pin_t gpio_pin);
 // Tasks stub functions
 void stub_tasks_poll(void);
 
+// System stub functions: a power cut clears the kept byte (hal_system_kept_*)
+void stub_system_power_cut(void);
+
 // NVM stub functions
 void stub_nvm_enable_debug(int enable);
 void stub_nvm_set_data_dir(const char *dir);
@@ -20,6 +23,15 @@ void stub_nvm_set_data_dir(const char *dir);
 // Zigbee stub functions
 void stub_zigbee_enable_debug(int enable);
 void stub_zigbee_set_network_status(hal_zigbee_network_status_t status);
+
+/* A factory reset of a unit on no network (src/stub/hal/zigbee.c): hal_factory_reset's. */
+void stub_zigbee_reset_factory_new(void);
+
+/* The stack's security record, byte 62 (zigbee/nwk_sec.h; src/stub/hal/zigbee.c): in RAM, in NV
+ * (-1: none), and set in either or both, e.g. to the fault of a record taken over as it was. */
+uint8_t stub_zigbee_ssib_ram(void);
+int     stub_zigbee_ssib_nv(void);
+void    stub_zigbee_ssib_set(uint8_t value, bool in_ram, bool in_nv);
 
 /* A binding of the endpoint's cluster to a group (hal_zigbee_bound_group). */
 void stub_zigbee_add_group_binding(uint8_t endpoint, uint16_t cluster_id, uint16_t group);
@@ -58,6 +70,7 @@ void stub_millis_init();
 void stub_millis_freeze();
 void stub_millis_unfreeze();
 void stub_millis_step(uint64_t step);
+void stub_millis_skew(uint32_t reads);
 
 /* UART test hooks, see src/stub/hal/uart.c. Chunk max 0: injected bytes are
  * a plain byte stream; N: every injection is one DMA chunk (what the MCU sent

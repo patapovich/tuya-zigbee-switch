@@ -56,6 +56,8 @@ ZDMS16_2_EXTENDS = [
             f"romasku.dimmerBindSetting(bind_mode, {dimmer}, auto, off, mirror, remote)",
             f"romasku.dimmerBindSetting(double_press_action, {dimmer}, none, full, off, scene_1, scene_2)",
             f"romasku.dimmerBindSetting(triple_press_action, {dimmer}, none, full, off, scene_1, scene_2)",
+            # following another channel's wall switch (any MCU): new entities, none lost
+            f"...romasku.dimmerFollow({dimmer}, l1, l2)",
         )
     ],
     "romasku.dimmerGestures(l1, l2)",
@@ -63,10 +65,12 @@ ZDMS16_2_EXTENDS = [
     "romasku.dimmerIdentify(l1, l2)",
     "romasku.mcuVersion(mcu_version)",
     "romasku.mcuFirmware()",
+    "romasku.mcuBuild()",             # the Open Dimmer build (Basic 0xff5f): new, none lost
     "romasku.mcuHealth()",
     # the SWD master: no expose unless the device option mcu_flasher is show
     "romasku.mcuFlasher()",
     "romasku.factoryIdentity()",
+    "romasku.nwkCommandSecurity()",   # whether its own NWK commands are secured: new, none lost
     "romasku.multiPressResetCount(multi_press_reset_count)",
     "romasku.deviceConfig(device_config)",
     "romasku.deviceConfigExt(device_config_ext)",
@@ -145,6 +149,63 @@ def test_zdms16_2_entities_are_as_deployed():
         assert [summary(e) for e in extend_entries(block)] == ZDMS16_2_EXTENDS
 
 
+# The TS110E's (TS110E_2gang_2: converted units are in use): as deployed, plus
+# romasku.dimmerTransition (converters and the transition option, no entity of its own), the
+# settings of the virtual MCU's Open Dimmer paths and those of Open Dimmer 2.2.0 it has (new
+# entities, none lost: the device's power_on_behavior stays, from dimmerPowerOnPerChannel, beside
+# the new power_on_behavior_l1 / _l2; test_converter_hk_dimmer.py checks it).
+TS110E_EXTENDS = [
+    "deviceEndpoints(l1=1, l2=2)",
+    "romasku.dimmerTransition(l1, l2)",
+    *[x for ch in ("l1", "l2") for x in (
+        f"light({ch})",
+        f"romasku.dimmerMinLevel(min_level, {ch})",
+        f"romasku.dimmerMaxLevel(max_level, {ch})",
+        f"romasku.dimmerOnLevel(on_level, {ch})",
+        f"romasku.ownMcuEnum(dimming_curve, {ch})",
+        f"romasku.dimmerPowerOnChannel({ch})",
+        f"romasku.dimmerSwitchType(switch_type, {ch})",
+        f"romasku.hkCustomCurve({ch})",
+        f"romasku.ownMcuNumeric(mcu_ramp, {ch})",
+        f"romasku.ownMcuNumeric(fade_on_time, {ch})",
+        f"romasku.ownMcuNumeric(fade_off_time, {ch})",
+        f"romasku.ownMcuNumeric(hold_time, {ch})",
+        f"romasku.dimmerCountdown({ch})",
+        f"romasku.dimmerSwitchMode({ch})",
+        f"romasku.dimmerFastPress({ch})",
+        f"romasku.dimmerStartupLevel({ch})",
+        f"romasku.dimmerStartBoost({ch})",
+        f"romasku.dimmerLongPressFromOff({ch})",
+        f"romasku.dimmerDoubleTapFull({ch})",
+        f"romasku.dimmerLampCompensation({ch})",
+        f"romasku.ownMcuNumeric(fade_off_slow_zone, {ch})",
+        f"romasku.ownMcuNumeric(hold_slow_zone, {ch})",
+        f"romasku.dimmerExecuteIfOff({ch})",
+        f"romasku.dimmerOnLevelLocal({ch})",
+        f"romasku.dimmerBrightnessFadeTime({ch})",
+        f"romasku.dimmerBindSetting(bind_mode, {ch}, auto, off, mirror, remote)",
+        f"romasku.dimmerBindSetting(double_press_action, {ch}, none, full, off, scene_1, scene_2)",
+        f"romasku.dimmerBindSetting(triple_press_action, {ch}, none, full, off, scene_1, scene_2)",
+        f"...romasku.dimmerFollow({ch}, l1, l2)",
+    )],
+    "romasku.dimmerGestures(l1, l2)",
+    "romasku.dimmerPowerOnPerChannel(l1, l2)",
+    "romasku.dimmerIdentify(l1, l2)",
+    "romasku.mcuVersion(mcu_version)",
+    "romasku.factoryIdentity()",
+    "romasku.nwkCommandSecurity()",
+    "romasku.multiPressResetCount(multi_press_reset_count)",
+    "romasku.deviceConfig(device_config)",
+    "romasku.deviceConfigExt(device_config_ext)",
+]
+
+
+def test_ts110e_entities_are_as_deployed():
+    blocks = [d for d in definitions() if model_of(d) == "TS110E_2gang_2"]
+    assert len(blocks) == 1
+    assert [summary(e) for e in extend_entries(blocks[0])] == TS110E_EXTENDS
+
+
 def test_both_zdms16_2_definitions_are_identical():
     """Zigbee2MQTT uses the last definition of a model; the tests read the first (all three
     ZDMS16-2 boards make the same one)."""
@@ -174,7 +235,10 @@ def test_the_entry_parser_sees_a_commented_out_extend():
 def test_zdms16_2_matching_and_the_entities_of_a_stock_unit_stay():
     """Zigbee2MQTT picks the definition by the model id (the device id and the new clusters do
     not take part); a module with the stock MCU (the house units) keeps exactly the entities it
-    had: no Open Dimmer expose, no action. An Open Dimmer before 2.2 keeps its action list."""
+    had: no Open Dimmer expose, no action; the one new is the diagnostic nwk_command_security
+    (the module's, any MCU), whose values grew by tc_link_key_stale (the trust centre link key
+    check, test_tclk_check.py: a value more, none lost). An Open Dimmer before 2.2 keeps its
+    action list."""
     import json
 
     from generated_converter import run_node
@@ -191,7 +255,9 @@ console.log(JSON.stringify({
 }));
 """))
     assert out["models"] == [["TS0601-ZDMS16-2"]] * 3
-    stock = [["power_on_behavior", None, ["off", "on", "previous"]], ["mcu_firmware", None, None]]
+    stock = [["power_on_behavior", None, ["off", "on", "previous"]], ["mcu_firmware", None, None],
+             ["nwk_command_security", None, ["unsecured", "secured", "repaired_at_start",
+                                             "repaired_at_join", "tc_link_key_stale"]]]
     assert out["stock"] == [stock] * 3
     assert out["od21"] == [["action", None, [f"{k}_{n}" for n in ("l1", "l2")
                                              for k in ("single", "double", "triple", "hold", "release")]]]
@@ -202,11 +268,13 @@ console.log(JSON.stringify({
 # Since the SWD master: one read of its status (Basic 0xff50) after the version; a module
 # without the master (no SW token) does not have it, so no genBasic bind follows
 # (test_converter_mcu_flasher: with the master the Basic cluster is bound). Then one read of
-# the factory identity (Basic 0xff59, factory_identity).
+# the factory identity (Basic 0xff59, factory_identity) and one of the NWK command security
+# (Basic 0xff5d, nwk_command_security).
 STOCK_CONFIGURE = [
     ["read", 1, "genBasic", [0xFF12]],
     ["read", 1, "genBasic", [0xFF50]],
     ["read", 1, "genBasic", [0xFF59]],
+    ["read", 1, "genBasic", [0xFF5D]],
     *[call for ep in (1, 2) for call in (
         ["bind", ep, ["genOnOff", "genLevelCtrl"]],
         ["report", ep, "genOnOff", {"min": 0, "max": 65000, "change": 1}],

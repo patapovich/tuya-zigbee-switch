@@ -5,13 +5,17 @@
 
 #include "zigbee/stock_nv.h"
 
-/* The module's factory identity, kept over the conversion (builds that carry an MCU image):
+/* The module's factory identity, kept over the conversion (builds that carry an MCU image, and
+ * the HK builds: the TS110E):
  * - the manufacturer name the factory Zigbee firmware reported: its NV module 10, item 3, a ZCL
  *   character string in 33 bytes (length byte + up to 32 characters), e.g. "_TZE284_jtbgusdc".
  *   The factory firmware first stores its built-in default there and later the name made of its
- *   prefix and the MCU's product ID; the newest intact copy is the one it used last;
+ *   prefix and the MCU's product ID; the newest intact copy is the one it used last. With the
+ *   HK token (the TS110E, whose factory firmware is no TS0601 one) the item's id is not known:
+ *   the first of the module's 33-byte items that holds a Tuya name (_T....._xxxxxxxx);
  * - the factory MCU's version, as this firmware first heard it from the MCU (a version below
- *   2.x: Open Dimmer is 2.x), so it is known after Open Dimmer has replaced it.
+ *   2.x: Open Dimmer is 2.x), so it is known after Open Dimmer has replaced it. Never on the
+ *   TS110E: its factory MCU never answers (the version 1.0.0 is the virtual MCU's).
  * The factory NV is still there after a conversion (only the image moves, ensure_ota_scheme.c).
  * What is found goes into this firmware's NV once (NV_ITEM_FACTORY_IDENTITY), so it stays when
  * the factory area is gone. Shown as Basic 0xff59, a character string: "<name>",

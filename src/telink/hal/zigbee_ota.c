@@ -9,6 +9,9 @@
 #include "hal/zigbee_ota.h"
 #include "telink_zigbee_hal.h"
 #include "version_cfg.h"
+#ifdef HK_DIMMER
+#include "zigbee/hk_dimmer.h"
+#endif
 
 // Forward declarations
 
@@ -38,6 +41,9 @@ void hal_ota_cluster_setup(hal_zigbee_cluster *cluster) {
 void ota_process_msg_callback(u8 evt, u8 status) {
     if (evt == OTA_EVT_COMPLETE) {
         if (status == ZCL_STA_SUCCESS) {
+#ifdef HK_DIMMER
+            hk_dimmer_before_reboot();  /* its state saved now (the light stays as it is) */
+#endif
             ota_mcuReboot();
         } else {
             ota_queryStart(OTA_PERIODIC_QUERY_INTERVAL);

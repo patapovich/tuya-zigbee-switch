@@ -627,6 +627,76 @@ def test_an_open_dimmer_without_the_reset_presses_gets_no_write():
         proc.stop()
 
 
+ZDMS16_2_BOARDS = ["MODULE_AVATTO_ZDMS16_2", "MODULE_AVATTO_ZDMS16_2_TZE204",
+                   "MODULE_AVATTO_ZDMS16_2_O9GYSZW2"]
+OD_BEFORE_RESET_PRESSES = 1213    # a 2.2.8 test build from before DP 181 (its dump has none)
+
+
+def board_start(name: str):
+    """The module as the board's release build is configured (device_db: config_str and the
+    dp attributes), on the network."""
+    import yaml
+    from pathlib import Path
+
+    from client import StubProc
+    from conftest import Device
+    b = yaml.safe_load((Path(__file__).resolve().parent.parent / "device_db.yaml").read_text())[name]
+    dp = "".join(a["dp"] + a["type"] + a["attr"] + ";" for a in b.get("dp_attributes") or [])
+    proc = StubProc(device_config=b["config_str"], dp_config=dp).start()
+    device = Device(proc)
+    pump(proc)
+    take_tx(proc)
+    return proc, device
+
+
+def reset_writes(mcu) -> list:
+    return [w for w in mcu.writes if w[0] == DP_RESET_PRESSES]
+
+
+@pytest.mark.parametrize("name", ZDMS16_2_BOARDS)
+def test_every_zdms16_2_board_gives_open_dimmer_its_reset_count(name):
+    """multi_press_reset_count reaches Open Dimmer's DP 181 (2.2.8; 8 at its every start, not
+    saved) on every ZDMS16-2 board: at the start-up of both (the count from the module's NV),
+    at every write of it, not again after a restart of the module alone (the MCU kept it), and
+    after a restart of the MCU alone into a build that has the DP (an update from a build
+    before it, whose dump has no DP 181 and which gets nothing)."""
+    proc, device = board_start(name)
+    try:
+        mcu = own_mcu_contact(proc, device, build=LAMP_COMP_BUILD)
+        assert mcu.reset_presses == 10 and reset_writes(mcu) == [(DP_RESET_PRESSES, 10)]
+        mcu.writes.clear()
+        assert write(device, mcu, 1, BASIC, ATTR_MULTI_PRESS_RESET_COUNT, 6) == [(DP_RESET_PRESSES, 6)]
+    finally:
+        proc.stop()
+    proc, device = board_start(name)                    # mains back: both start
+    try:
+        assert attr(device, 1, BASIC, ATTR_MULTI_PRESS_RESET_COUNT) == 6
+        mcu = own_mcu_contact(proc, device, build=LAMP_COMP_BUILD)
+        assert mcu.reset_presses == 6 and reset_writes(mcu) == [(DP_RESET_PRESSES, 6)]
+    finally:
+        proc.stop()
+    proc, device = board_start(name)                    # the module alone (an OTA of it)
+    try:
+        mcu = own_mcu_contact(proc, device, build=LAMP_COMP_BUILD, started=False,
+                              prepare=lambda m: setattr(m, "reset_presses", 6))
+        assert mcu.reset_presses == 6 and reset_writes(mcu) == []
+    finally:
+        proc.stop()
+    proc, device = board_start(name)
+    try:
+        mcu = own_mcu_contact(proc, device, build=OD_BEFORE_RESET_PRESSES)
+        assert reset_writes(mcu) == []                  # no DP 181 in its dump: nothing sent
+        assert write(device, mcu, 1, BASIC, ATTR_MULTI_PRESS_RESET_COUNT, 7) == []
+        mcu.build = LAMP_COMP_BUILD                     # updated: it restarts alone
+        mcu.restart()
+        device.step_time(300)
+        mcu.query_network()
+        mcu.serve(1000)
+        assert mcu.reset_presses == 7 and reset_writes(mcu) == [(DP_RESET_PRESSES, 7)]
+    finally:
+        proc.stop()
+
+
 # ---- custom curve (2.2.8) -------------------------------------------------------
 CURVE = [0, 100, 250, 450, 700, 1000, 1400, 1900, 2500, 3200, 4000, 4900, 5900, 7000, 8100, 9100,
          10000]

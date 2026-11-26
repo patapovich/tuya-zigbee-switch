@@ -68,11 +68,15 @@ SOURCES := \
 	$(SRC_DIR)/device_config/nvm_migrations.c \
 	$(SRC_DIR)/zigbee/basic_cluster.c \
 	$(SRC_DIR)/zigbee/tuya_secondary_mcu.c \
+	$(SRC_DIR)/zigbee/hk_dimmer.c \
+	$(SRC_DIR)/zigbee/hk_fader.c \
 	$(SRC_DIR)/zigbee/tuya_mcu_diag.c \
 	$(SRC_DIR)/zigbee/tuya_mcu_app.c \
 	$(SRC_DIR)/zigbee/tuya_mcu_ota.c \
 	$(SRC_DIR)/zigbee/crc32_nibble.c \
 	$(SRC_DIR)/zigbee/stock_nv.c \
+	$(SRC_DIR)/zigbee/nwk_sec.c \
+	$(SRC_DIR)/zigbee/tclk_check.c \
 	$(SRC_DIR)/zigbee/factory_identity.c \
 	$(MCU_IMAGE_SRC) \
 	$(SRC_DIR)/zigbee/dimmer_cluster.c \
@@ -93,7 +97,7 @@ INCLUDES := \
 
 CFLAGS := -Wall -Wno-unused-parameter -Wno-unused-variable -g -O0 \
     -DHAL_STUB -DSTACK_BUILD=1001 -D_DEFAULT_SOURCE -DVERSION_STR="0.0.0" \
-	-DNVM_MIGRATIONS_VERSION=1 -DSECONDARY_MCU_IMAGE -DMCU_FLASHER_DUMP -DDIMMER_SCENES -DDIMMER_BINDINGS -DTUYA_MCU_SLOW_VALUE_ANSWERS \
+	-DNVM_MIGRATIONS_VERSION=1 -DSECONDARY_MCU_IMAGE -DMCU_FLASHER_DUMP -DDIMMER_SCENES -DDIMMER_BINDINGS -DTUYA_MCU_SLOW_VALUE_ANSWERS -DHK_DIMMER \
 	-std=c99
 
 LDFLAGS := -lpthread

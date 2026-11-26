@@ -2,6 +2,9 @@
 
 #include "device_config/nvm_items.h"
 #include "hal/nvm.h"
+#ifdef HK_DIMMER
+#include "zigbee/hk_dimmer.h"
+#endif
 
 #include <string.h>
 
@@ -31,6 +34,53 @@ static uint8_t name_ok(const uint8_t *rec) {
     }
     return 1;
 }
+
+#ifdef HK_DIMMER
+
+/* A Tuya manufacturer name such as _TZ3210_3mpwqzuu: "_T", 4 or 5 of A-Z / 0-9, "_", then 8 of
+ * a-z / 0-9. Strict: the TS110E's look takes any item of the record's size. */
+static uint8_t tuya_name(const uint8_t *rec) {
+    uint8_t n = rec[0];
+    uint8_t k = (uint8_t)(n - 7u); /* the 8 lowercase ones start here (1-based) */
+
+    if ((n != 15u && n != 16u) || rec[1] != '_' || rec[2] != 'T' || rec[k - 1u] != '_') {
+        return 0;
+    }
+    for (uint8_t i = 3; i <= n; i++) {
+        uint8_t c = rec[i];
+
+        if (i == k - 1u) {
+            continue;
+        }
+        if (!((c >= '0' && c <= '9') ||
+              (i < k ? (c >= 'A' && c <= 'Z') : (c >= 'a' && c <= 'z')))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* The ZH-Z06 dimmers (TS110E): the factory firmware keeps the name under another item id than
+ * the TS0601's 3 (other Tuya ZTU firmwares: 2, 10..14): the first item of the record's size
+ * that holds a Tuya name. */
+static uint8_t hk_name(stock_nv_read_t read, uint8_t *rec) {
+    uint32_t ids = stock_nv_ids_of_size(read, FACTORY_NV_MODULE, FACTORY_NAME_RECORD);
+
+    for (uint8_t id = 0; id < 32u; id++) {
+        if (!(ids >> id & 1u)) {
+            continue;
+        }
+        if (!stock_nv_item(read, FACTORY_NV_MODULE, id, rec, FACTORY_NAME_RECORD)) {
+            continue;
+        }
+        if (tuya_name(rec)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+#endif
 
 static uint8_t put_number(char *at, uint8_t v) {
     uint8_t n = 0;
@@ -76,8 +126,14 @@ void factory_identity_init(stock_nv_read_t read) {
     if (g_id.name_len == 0 && read) {
         uint8_t rec[FACTORY_NAME_RECORD];
 
+#ifdef HK_DIMMER
+        if (hk_dimmer_active() ? hk_name(read, rec) :
+            (stock_nv_item(read, FACTORY_NV_MODULE, FACTORY_NV_NAME_ITEM, rec, sizeof(rec)) &&
+             name_ok(rec))) {
+#else
         if (stock_nv_item(read, FACTORY_NV_MODULE, FACTORY_NV_NAME_ITEM, rec, sizeof(rec)) &&
             name_ok(rec)) {
+#endif
             g_id.name_len = rec[0];
             memcpy(g_id.name, &rec[1], rec[0]);
             save();

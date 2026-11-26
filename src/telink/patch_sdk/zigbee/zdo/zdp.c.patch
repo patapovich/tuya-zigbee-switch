@@ -1,0 +1,97 @@
+--- a/zigbee/zdo/zdp.c
++++ b/zigbee/zdo/zdp.c
+@@ -24,6 +24,16 @@
+  *******************************************************************************************************/
+ #include "../common/includes/zb_common.h"
+ 
++/* Backported (patch_sdk/zigbee/zdo/zdp.c.patch, sdk.mk SDK_PATCHED): a router answers
++ * Mgmt_Rtg_req from its routing table, as SDK 4.0.x's library does (3.7.2.0 answered
++ * NOT_SUPPORTED, so Zigbee2MQTT's network map had no routes). Not with NO_MGMT_RTG_RSP
++ * (src/telink/Makefile sets it for the ZDMS16-2, SECONDARY_MCU_IMAGE: no room left in its
++ * image): that build answers NOT_SUPPORTED, as 3.7.2.0 does. */
++#if defined(ZB_ROUTER_ROLE) && !defined(NO_MGMT_RTG_RSP)
++#define ZDP_MGMT_RTG_RSP
++static void zdo_mgmtRtgIndicate(void *buf);
++#endif
++
+ 
+ typedef void (*zdp_funcCb)(void *ind);
+ 
+@@ -52,6 +62,9 @@
+     {BIND_REQ_CLID,                     TRUE,   zdo_bindOrUnbindIndicate},
+     {UNBIND_REQ_CLID,                   TRUE,   zdo_bindOrUnbindIndicate},
+     {MGMT_LQI_REQ_CLID,                 FALSE,  zdo_mgmtLqiIndicate},
++#ifdef ZDP_MGMT_RTG_RSP
++    {MGMT_RTG_REQ_CLID,                 FALSE,  zdo_mgmtRtgIndicate},
++#endif
+     {MGMT_BIND_REQ_CLID,                FALSE,  zdo_mgmtBindIndicate},
+     {MGMT_LEAVE_REQ_CLID,               TRUE,   zdo_mgmtLeaveIndicate},
+ #ifdef ZB_ROUTER_ROLE
+@@ -186,6 +199,67 @@
+     }
+ }
+ 
++#ifdef ZDP_MGMT_RTG_RSP
++/* Mgmt_Rtg_rsp: status, the routing table's entries in use, the start index, the count and up to
++ * ZDP_MGMT_RTG_LIST_MAX routing descriptors from that index (destination, status: route state in
++ * bits 0-2, many-to-one bit 4, route record required bit 5, next hop). An entry not in use (cleared
++ * by the library: destination 0xFFFE) is left out. The request's buffer carries the answer. */
++#define ZDP_MGMT_RTG_LIST_MAX     10
++#define ZDP_MGMT_RTG_UNUSED       0xFFFE
++
++_CODE_ZDO_ static void zdo_mgmtRtgIndicate(void *buf)
++{
++    aps_data_ind_t *ad = (aps_data_ind_t *)buf;
++    u8 seqNum = ad->asdu[0];
++    u8 startIdx = (ad->asduLength > 1) ? ad->asdu[1] : 0;
++    u16 dstAddr = ad->src_short_addr;
++
++    u8 total = 0;
++    for (u16 i = 0; i < ROUTING_TABLE_SIZE; i++) {
++        if (g_routingTab[i].dstAddr != ZDP_MGMT_RTG_UNUSED) {
++            total++;
++        }
++    }
++
++    zdo_zdp_req_t zzr;
++    TL_SETSTRUCTCONTENT(zzr, 0);
++    TL_BUF_INITIAL_ALLOC((zb_buf_t *)buf, 5 + 5 * ZDP_MGMT_RTG_LIST_MAX, zzr.zdu, u8 *);
++    u8 *ptr = zzr.zdu;
++    *ptr++ = seqNum;
++    *ptr++ = ZDO_SUCCESS;
++    *ptr++ = total;
++    *ptr++ = startIdx;
++    u8 *listCnt = ptr++;
++    *listCnt = 0;
++
++    u8 idx = 0;
++    for (u16 i = 0; i < ROUTING_TABLE_SIZE && *listCnt < ZDP_MGMT_RTG_LIST_MAX; i++) {
++        nwk_routingTabEntry_t *e = &g_routingTab[i];
++        if (e->dstAddr == ZDP_MGMT_RTG_UNUSED) {
++            continue;
++        }
++        if (idx++ < startIdx) {
++            continue;
++        }
++        COPY_U16TOBUFFER(ptr, e->dstAddr);
++        ptr += 2;
++        *ptr++ = (e->status & 0x07) | (e->manyToOne << 4) | (e->routeRecordRequired << 5);
++        COPY_U16TOBUFFER(ptr, e->nextHopAddr);
++        ptr += 2;
++        (*listCnt)++;
++    }
++
++    zzr.cluster_id = MGMT_RTG_RSP_CLID;
++    zzr.zduLen = ptr - zzr.zdu;
++    zzr.buff_addr = buf;
++    zzr.dst_addr_mode = SHORT_ADDR_MODE;
++    zzr.dst_nwk_addr = dstAddr;
++    zzr.zdoRspReceivedIndCb = NULL;
++    zdo_send_req(&zzr);
++    zb_buf_free((zb_buf_t *)buf);
++}
++#endif
++
+ _CODE_ZDO_ void zdp_init(void)
+ {
+     af_endpointRegister(ZDO_EP, (af_simple_descriptor_t *)&zdoSd, zdp_rxDataIndication, zdp_txCnfCb);

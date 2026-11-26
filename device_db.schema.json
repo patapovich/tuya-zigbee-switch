@@ -186,6 +186,10 @@
           "type": "boolean",
           "description": "All endpoints are dimmers driven by the secondary MCU: the firmware leaves out the GPIO buttons, LEDs, relays and battery and the switch, relay and cover endpoints to save flash (-DDIMMER_ONLY, src/device_config/config_parser.c), their config tokens are ignored"
         },
+        "hk_dimmer": {
+          "type": "boolean",
+          "description": "The ZH-Z06 dimmers (TS110E): a virtual Tuya MCU in front of the factory dimming MCU, which only takes level frames over a one-way UART; the module reads the wall switches and the button (-DHK_DIMMER, src/zigbee/hk_dimmer.c, the HK token)"
+        },
         "dp_attributes": {
           "oneOf": [
             {"type": "null"},

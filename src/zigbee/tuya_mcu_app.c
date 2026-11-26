@@ -15,6 +15,7 @@
 #include "zigbee/tuya_secondary_mcu.h"
 #ifdef SECONDARY_MCU_IMAGE
 #include "zigbee/factory_identity.h"
+#include "zigbee/hk_dimmer.h"
 #endif
 
 extern hal_uart_config_t mcu_uart_config;
@@ -355,7 +356,9 @@ static void on_mcu_command(uint8_t cmd, uint16_t seq, const uint8_t *data, uint1
         if (data_len >= 1) {
             version_answered();
 #ifdef SECONDARY_MCU_IMAGE
-            factory_identity_note_mcu(data[0]); /* a factory MCU's version, kept once */
+            if (!hk_dimmer_active()) {              /* the virtual MCU's 1.0.0 is no factory one */
+                factory_identity_note_mcu(data[0]); /* a factory MCU's version, kept once */
+            }
 #endif
             g_mcu_packed = data[0];
             g_mcu_known  = 1;

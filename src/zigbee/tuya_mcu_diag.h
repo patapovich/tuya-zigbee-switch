@@ -49,6 +49,8 @@ typedef enum {
                                        * value = request length << 24 |
                                        * bootloader version << 16 | installed
                                        * build */
+    /* 14, 15: the ZH-Z06 dimmers' frames and events (hk_dimmer.c HK_DIAG_FRAME,
+     * HK_DIAG_EVENT; defined there, so the other boards' builds stay as they were). */
 } tuya_mcu_diag_kind_t;
 
 typedef struct __attribute__((packed)) {

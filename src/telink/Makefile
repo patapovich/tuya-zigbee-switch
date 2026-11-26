@@ -16,6 +16,9 @@ DEVICE_TYPE ?= router
 DEBUG ?= 0
 # The SWD master's dump job (reads an unprotected dimmer MCU over Zigbee): debug builds only
 MCU_DUMP ?= 0
+# The Update Device's copy with the network key alone also with a unique trust centre link
+# key (hal/zigbee_security.c): bench builds only, with MCU_DUMP=1
+UPDDEV_PLAIN_COPY ?= 0
 CONFIG_STR ?= ja5osu5g;TS004F-Loginovo;IC4i;SC2u;BTB5;M;
 # CONFIG_STR ?= jl7qyupf;TS0012-custom;BA0f;LD7;SC2f;RC0;SC3f;RB4;
 MANUFACTURER_ID ?= 4417
@@ -93,6 +96,7 @@ DEVICE_DEFS := \
 	-DDEFAULT_DP_CONFIG="$(DP_CONFIG_STR)" \
 	$(if $(SECONDARY_MCU_IMAGE),-DSECONDARY_MCU_IMAGE) \
 	$(if $(DIMMER_ONLY),-DDIMMER_ONLY -DDIMMER_SCENES -DDIMMER_BINDINGS -DTUYA_MCU_SLOW_VALUE_ANSWERS) \
+	$(if $(HK_DIMMER),-DHK_DIMMER) \
 	-DIMAGE_TYPE=$(IMAGE_TYPE) \
 	-DHAL_TELINK \
 	$(TEL_CHIP) 
@@ -102,6 +106,18 @@ ifeq ($(DEBUG), 1)
 endif
 ifeq ($(MCU_DUMP), 1)
 	DEVICE_DEFS := $(DEVICE_DEFS) -DMCU_FLASHER_DUMP
+endif
+# A router with a unique trust centre link key sends a joining child's Update
+# Device also with the network key alone, as with a global key
+# (hal/zigbee_security.c): bench builds only, until hardware shows that the
+# coordinator takes it. Only with MCU_DUMP=1, as the other bench hooks: a
+# UPDDEV_PLAIN_COPY=1 left in the environment must not go into an image that
+# looks like a release.
+ifeq ($(UPDDEV_PLAIN_COPY), 1)
+ifneq ($(MCU_DUMP), 1)
+$(error UPDDEV_PLAIN_COPY=1 is for bench builds: it needs MCU_DUMP=1)
+endif
+	DEVICE_DEFS := $(DEVICE_DEFS) -DUPDDEV_PLAIN_COPY
 endif
 
 # Include paths (SDK paths first to avoid conflicts)
@@ -165,6 +181,29 @@ ifneq ($(SECONDARY_MCU_IMAGE),)
 TELINK_SOURCES += hal/swd_io.c
 endif
 
+# Routers: the stack's Update Device, its APS Tunnel handler and the ZDO
+# Mgmt_Permit_Joining handler wrapped for the trust centre link key check
+# (hal/zigbee_security.c, src/zigbee/tclk_check.h). libzb_router.a calls the
+# first two from other objects only and the third from zdp.c's table, so ld
+# --wrap reaches every call; libzb_ed.a has none of them. Not the ZDMS16-2
+# (SECONDARY_MCU_IMAGE): its image has no room left for it (a few hundred bytes
+# below the OTA limit, kept for the carried Open Dimmer image).
+ifeq ($(DEVICE_TYPE), router)
+ifeq ($(SECONDARY_MCU_IMAGE),)
+TELINK_SOURCES += hal/zigbee_security.c
+LNK_FLAGS += --wrap=ss_apsmeUpdateDevReq --wrap=ss_apsTunnelCmdHandle --wrap=zdo_mgmtPermitJoinIndicate
+DEVICE_DEFS += -DTCLK_CHECK
+endif
+endif
+
+# Mgmt_Rtg_rsp from the routing table (patch_sdk/zigbee/zdo/zdp.c.patch, ~330 bytes): not in
+# the ZDMS16-2 (SECONDARY_MCU_IMAGE), whose image has no room left for it below the OTA limit;
+# that router answers Mgmt_Rtg_req NOT_SUPPORTED, as SDK 3.7.2.0 does (no routes from it in
+# Zigbee2MQTT's network map). Every other router answers it.
+ifneq ($(SECONDARY_MCU_IMAGE),)
+DEVICE_DEFS += -DNO_MGMT_RTG_RSP
+endif
+
 # Common source files (shared with Silicon Labs build)
 COMMON_SOURCES := \
 	$(SRC_DIR)/app.c \
@@ -181,11 +220,14 @@ COMMON_SOURCES := \
 	$(SRC_DIR)/device_config/nvm_migrations.c \
 	$(SRC_DIR)/zigbee/basic_cluster.c \
 	$(SRC_DIR)/zigbee/tuya_secondary_mcu.c \
+	$(SRC_DIR)/zigbee/hk_dimmer.c \
 	$(SRC_DIR)/zigbee/tuya_mcu_diag.c \
 	$(SRC_DIR)/zigbee/tuya_mcu_app.c \
 	$(SRC_DIR)/zigbee/tuya_mcu_ota.c \
 	$(SRC_DIR)/zigbee/crc32_nibble.c \
 	$(SRC_DIR)/zigbee/stock_nv.c \
+	$(SRC_DIR)/zigbee/nwk_sec.c \
+	$(SRC_DIR)/zigbee/tclk_check.c \
 	$(SRC_DIR)/zigbee/factory_identity.c \
 	$(SRC_DIR)/zigbee/secondary_mcu_image.c \
 	$(SRC_DIR)/zigbee/dimmer_cluster.c \
@@ -205,6 +247,11 @@ COMMON_SOURCES += \
 	$(SRC_DIR)/base_components/swd.c \
 	$(SRC_DIR)/zigbee/mcu_flasher.c \
 	$(SRC_DIR)/zigbee/secondary_mcu_boot.c
+endif
+
+# The ZH-Z06 dimmers' fader (Open Dimmer's, src/zigbee/hk_fader.c): the HK builds only.
+ifneq ($(HK_DIMMER),)
+COMMON_SOURCES += $(SRC_DIR)/zigbee/hk_fader.c
 endif
 
 # All application sources
@@ -305,8 +352,15 @@ check-dimmer-only: $(ELF_FILE)
 check-jump-tables: $(ELF_FILE)
 	@python3 $(PROJECT_ROOT)/helper_scripts/check_jump_tables.py --objdump $(OBJDUMP) $(ELF_FILE)
 
+# Mgmt_Rtg_rsp (patch_sdk/zigbee/zdo/zdp.c.patch) in every router build but the ZDMS16-2's
+# (NO_MGMT_RTG_RSP above), in no end device build. Read from the linked ELF, every board build.
+check-mgmt-rtg: $(ELF_FILE)
+	@python3 $(PROJECT_ROOT)/helper_scripts/check_mgmt_rtg_symbol.py --nm $(NM) \
+	  $(if $(and $(filter router,$(DEVICE_TYPE)),$(if $(SECONDARY_MCU_IMAGE),,1)),--answers,--not-answers) \
+	  $(ELF_FILE)
+
 # Build with tools check
-build: all check-open-dimmer check-dimmer-only check-jump-tables
+build: all check-open-dimmer check-dimmer-only check-jump-tables check-mgmt-rtg
 
 ifdef OTA_VERSION
 OTA_VERSION_ARG := --file-version $(OTA_VERSION)
@@ -331,7 +385,7 @@ OTA_MAX_SIZE_EXPR = printf '\#include "tl_common.h"\nFLASH_OTA_IMAGE_MAX_SIZE\n'
 # Make an ota file. It links the ELF again (sdk-build is phony), so the
 # symbol checks run on that link too: an OTA file made without the board's
 # DIMMER_ONLY / SECONDARY_MCU_IMAGE fails here (board.mk OTA_LINK_VARS).
-ota: $(BIN_FILE) check-open-dimmer check-dimmer-only check-jump-tables
+ota: $(BIN_FILE) check-open-dimmer check-dimmer-only check-jump-tables check-mgmt-rtg
 	@if [ -z "$(OTA_MANUFACTURER_ID)" ] || [ "$(OTA_MANUFACTURER_ID)" = "null" ] || \
       [ -z "$(OTA_IMAGE_TYPE)" ]      || [ "$(OTA_IMAGE_TYPE)" = "null" ]; then \
         echo "Skipping OTA file generation: missing arguments"; \
@@ -427,6 +481,7 @@ help:
 	@echo "  CONFIG_STR          - Device pin configuration string"
 	@echo "  DEBUG               - Enable debug output (0/1, default: $(DEBUG))"
 	@echo "  MCU_DUMP            - The SWD master's dump job, debug builds (0/1, default: $(MCU_DUMP))"
+	@echo "  UPDDEV_PLAIN_COPY   - Update Device also with the network key alone, bench builds with MCU_DUMP=1 (0/1, default: $(UPDDEV_PLAIN_COPY))"
 	@echo "  TLSRPGM_TTY         - Programmer serial port (default: $(TLSRPGM_TTY))"
 	@echo ""
 	@echo "Help Targets:"
@@ -437,4 +492,4 @@ help:
 	@echo "  BIN: $(BIN_FILE)"
 	@echo "  LST: $(LST_FILE)"
 
-.PHONY: check-open-dimmer check-dimmer-only all build clean ota flash restart wipe flasher help
+.PHONY: check-open-dimmer check-dimmer-only check-mgmt-rtg all build clean ota flash restart wipe flasher help

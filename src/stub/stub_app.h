@@ -15,6 +15,12 @@ void stub_app_shutdown(void);
 /* polling (1ms cadence via REPL) */
 void stub_app_poll(void);
 
+/* Polls held (1): the commands that follow run with no main loop pass between them, as the
+ * frames of one pass of the stack do (stub_app_poll does nothing until 0); stub_app_pass: one
+ * pass, held or not. */
+void stub_app_hold_polls(int hold);
+void stub_app_pass(void);
+
 /* UI helpers */
 void stub_app_print_help(void);
 void stub_app_show_status(void);

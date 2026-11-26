@@ -22,15 +22,36 @@ static stub_gpio_pin_t gpio_pins[MAX_GPIO_PINS];
 void ensure_valid_input_pin(hal_gpio_pin_t gpio_pin);
 void ensure_valid_output_pin(hal_gpio_pin_t gpio_pin);
 
+/* STUB_GPIO_LOW: pins (e.g. "B4,C3") held low from the start, as a switch or a button closed
+ * through a power-up: their pull-up does not pull them high at the init (tests only). */
+static uint8_t held_low_at_start(hal_gpio_pin_t gpio_pin) {
+    const char *list = getenv("STUB_GPIO_LOW");
+
+    for (const char *p = list; p && *p;) {
+        char   name[4] = { 0 };
+        size_t n       = strcspn(p, ",");
+
+        if (n > 0 && n < sizeof(name)) {
+            memcpy(name, p, n);
+            if (hal_gpio_parse_pin(name) == gpio_pin)
+                return 1;
+        }
+        p += n + (p[n] == ',');
+    }
+    return 0;
+}
+
 void hal_gpio_init(hal_gpio_pin_t gpio_pin, uint8_t is_input,
                    hal_gpio_pull_t pull) {
     if (gpio_pin >= MAX_GPIO_PINS)
         return;
 
+    uint8_t high = pull == HAL_GPIO_PULL_UP && !held_low_at_start(gpio_pin);
+
     gpio_pins[gpio_pin].initialized  = 1;
     gpio_pins[gpio_pin].is_input     = is_input;
     gpio_pins[gpio_pin].pull         = pull;
-    gpio_pins[gpio_pin].value        = (pull == HAL_GPIO_PULL_UP) ? 1 : 0;
+    gpio_pins[gpio_pin].value        = high ? 1 : 0;
     gpio_pins[gpio_pin].callback     = NULL;
     gpio_pins[gpio_pin].callback_arg = NULL;
 

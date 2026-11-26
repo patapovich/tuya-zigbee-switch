@@ -8,6 +8,7 @@
 #include "zigbee/cover_cluster.h"
 #include "zigbee/cover_switch_cluster.h"
 #include "zigbee/group_cluster.h"
+#include "zigbee/hk_dimmer.h"
 #include "zigbee/relay_cluster.h"
 #include "zigbee/poll_control_cluster.h"
 #include "zigbee/switch_cluster.h"
@@ -387,6 +388,12 @@ void parse_config() {
             // SW<clk><dio> - SWD pins towards the secondary MCU (mcu_flasher.c),
             // e.g. SWD3D7. Without it the feature stays dormant.
             mcu_flasher_parse_token(entry);
+#endif
+#ifdef HK_DIMMER
+        } else if (entry[0] == 'H' && entry[1] == 'K') {
+            // HK<s1><s2><button><led> - the ZH-Z06 dimmers' virtual MCU (hk_dimmer.c), e.g.
+            // HKB4C0C3C2: wall switches, module button, LED on the module.
+            hk_dimmer_parse_token(entry);
 #endif
         } else if (entry[0] == 'W') {
             // W<tx><rx> - UART pins towards the secondary MCU.

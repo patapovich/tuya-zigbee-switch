@@ -32,3 +32,16 @@ Bind endpoint 2 of your device to endpoint 1 of the bulb, and bind the `OnOff` c
 If you have two 2-gang devices and want to group the first relay of both devices, you should add endpoint 3 of both devices to the same group, as shown in the screenshot:
 
 ![add to group](/docs/.images/add_to_group.png)
+
+## Dimmers
+
+A dimmer board (`DM<n>` in the config, e.g. the AVATTO ZDMS16-2 and the Tuya TS110E) has its lights first,
+then, on the `dimmer_only` builds, one endpoint per wall switch:
+
+| Endpoint | Clusters | Description |
+|----------|----------|-------------|
+| 1 .. n | On/Off, Level Control, Ballast Configuration, On/Off Switch Configuration, Scenes, Groups (servers) | The lights: bind a remote or another switch to them, or add them to a group. Endpoint 1 also has the Basic cluster with the module's settings |
+| n+1 .. 2n | On/Off, Level Control, Scenes (clients) | The wall switch of light 1 .. n: the Bind source for the lights and groups that follow it (`bind_mode`) |
+
+For example, to have a 2-gang dimmer's first wall switch also switch a group of bulbs, bind endpoint 3
+(On/Off, Level Control) to that group.

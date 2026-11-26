@@ -157,7 +157,13 @@ for (const fn of ["numeric", "enumLookup", "deviceEndpoints", "onOff", "light", 
         fake: fn,
         args,
         fromZigbee: [{cluster: args?.cluster, type: ["attributeReport", "readResponse"], convert: fakeConvert(fn, args)}],
-        toZigbee: fn === "light" ? lightToZigbee(args) : [{key: [args?.name]}],
+        toZigbee: fn === "light" ? lightToZigbee(args)
+            // numeric(): its write of the value as given (the real one scales; these do not)
+            : fn === "numeric" ? [{key: [args?.name], convertSet: async (entity, key, value) => {
+                await entity.write(args.cluster, {[args.attribute?.ID ?? args.attribute]: value});
+                return {state: {[key]: value}};
+            }}]
+            : [{key: [args?.name]}],
         exposes: [],
     });
 }
@@ -197,6 +203,13 @@ const fakes = {
                        {modelID: "TS0601", manufacturerName: "_TZE284_jtbgusdc"},
                        {modelID: "TS0601", manufacturerName: "_TZE204_xxxxxxxx"}],
          model: "ZDMS16-2", vendor: "AVATTO", description: "Zigbee Module 2 channels Dimmer",
+         exposes: ["stock exposes"], fromZigbee: ["stock fz"], toZigbee: ["stock tz"]},
+    ]},
+    // the stock TS110E's own definition (zigbee-herdsman-converters devices/tuya.js)
+    "zigbee-herdsman-converters/devices/tuya": {definitions: [
+        {fingerprint: [{modelID: "TS110E", manufacturerName: "_TZ3210_pagajpog"},
+                       {modelID: "TS110E", manufacturerName: "_TZ3210_3mpwqzuu"}],
+         model: "TS110E_2gang_2", vendor: "Tuya", description: "2 channel dimmer",
          exposes: ["stock exposes"], fromZigbee: ["stock fz"], toZigbee: ["stock tz"]},
     ]},
     "zigbee-herdsman": {Zcl: {DataType: {BOOLEAN: 0x10, BITMAP8: 0x18, UINT8: 0x20, UINT16: 0x21, UINT32: 0x23, ENUM8: 0x30}}},

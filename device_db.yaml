@@ -653,6 +653,55 @@ MODULE_AVATTO_ZDMS16_2_O9GYSZW2:
   info: Dimming by the secondary MCU. Reconfigure the device in Z2M after the update from stock
   threads: https://github.com/romasku/tuya-zigbee-switch/issues/387
   store: https://www.aliexpress.com/item/1005006832261783.html
+MODULE_TUYA_TS110E_3MPWQZUU:
+  human_name: Tuya TS110E 2-gang dimmer (ZH-Z06)
+  category: module
+  power: mains
+  neutral: required
+  output: triac
+  device_type: router
+  stock_model_name: TS110E
+  stock_manufacturer_name: _TZ3210_3mpwqzuu
+  stock_converter_manufacturer: Tuya
+  stock_converter_model: TS110E_2gang_2
+  override_z2m_device: null
+  tuya_module: ZT3L
+  mcu_family: Telink
+  mcu: TLSR8258
+  # ZT3L on the ZH-Z06-B board: the dimming MCU (HK32F030M, factory firmware, never touched)
+  # only listens on UART B1 (9600 8N1, nothing comes back) for level frames; the wall switches
+  # S1 B4 and S2 C0, the button C3 and the LED C2 (active high) are on the module. The virtual MCU
+  # (src/zigbee/hk_dimmer.c, docs/ts110e_hk_protocol.md) stands in for a ZDMS16-2 style MCU
+  # between the dimmer endpoints and that link, and does the switches, the button and the LED.
+  config_str: 3mpwqzuu;TS110E-ZH-Z06;DM2;WB1B7;Y9600;HKB4C0C3C2;
+  dimmer_only: true
+  hk_dimmer: true
+  # Per channel (virtual MCU DPs): the dimming MCU's own ramp (0x70/0x71), this module's fades
+  # (on 0x72/0x73, off 0x74/0x75), the wall switch hold's pace (0x76/0x77) and the dimming
+  # curve (0x78/0x79, Open Dimmer's); the custom curve tables are Basic 0xff3a / 0xff3b, the slow
+  # zones Basic 0xff3c..0xff3f (the module's own attributes, the converter's hk_dimmer branch).
+  dp_attributes:
+    - {dp: "70", type: V, attr: "30", name: mcu_ramp, dimmer: 1, min: 0, max: 65535, label: "The factory dimming MCU's own ramp (bytes 7-8 of its frame; factory 1500), for the changes made at once (a fade time of 0) and any change while that ramp still runs (only the MCU knows where the lamp is on it; a hold waits for its end); this module's fades send their steps with none. 0: none; 1500 takes about 1.5 s from bright to dark (seen by eye; on, the lamp's first part stays dark); 15000 looked the same, so the MCU may cap it or take any value above 0 as one ramp"}
+    - {dp: "71", type: V, attr: "31", name: mcu_ramp, dimmer: 2, min: 0, max: 65535, label: "The factory dimming MCU's own ramp (bytes 7-8 of its frame; factory 1500), for the changes made at once (a fade time of 0) and any change while that ramp still runs (only the MCU knows where the lamp is on it; a hold waits for its end); this module's fades send their steps with none. 0: none; 1500 takes about 1.5 s from bright to dark (seen by eye; on, the lamp's first part stays dark); 15000 looked the same, so the MCU may cap it or take any value above 0 as one ramp"}
+    - {dp: "72", type: V, attr: "32", name: fade_on_time, dimmer: 1, min: 0, max: 60000, unit: "s", divisor: 1000, step: 0.05, label: "Fade from dark to full when switched on (this module's own, as Open Dimmer's fade on; from dark it starts at the minimum). 0: at once, with the dimming MCU's own ramp (mcu_ramp)"}
+    - {dp: "73", type: V, attr: "33", name: fade_on_time, dimmer: 2, min: 0, max: 60000, unit: "s", divisor: 1000, step: 0.05, label: "Fade from dark to full when switched on (this module's own, as Open Dimmer's fade on; from dark it starts at the minimum). 0: at once, with the dimming MCU's own ramp (mcu_ramp)"}
+    - {dp: "74", type: V, attr: "34", name: fade_off_time, dimmer: 1, min: 0, max: 60000, unit: "s", divisor: 1000, step: 0.05, label: "Fade from full to dark when switched off (this module's own, as Open Dimmer's fade off: slower in fade_off_slow_zone, then 80 ms at the minimum, dark below it). 0: at once, with the dimming MCU's own ramp (mcu_ramp)"}
+    - {dp: "75", type: V, attr: "35", name: fade_off_time, dimmer: 2, min: 0, max: 60000, unit: "s", divisor: 1000, step: 0.05, label: "Fade from full to dark when switched off (this module's own, as Open Dimmer's fade off: slower in fade_off_slow_zone, then 80 ms at the minimum, dark below it). 0: at once, with the dimming MCU's own ramp (mcu_ramp)"}
+    - {dp: "76", type: V, attr: "36", name: hold_time, dimmer: 1, min: 100, max: 60000, unit: "s", divisor: 1000, step: 0.05, label: "Wall switch hold over the whole range from the minimum to the maximum (slower in hold_slow_zone; from off after 0.7 s at the minimum)"}
+    - {dp: "77", type: V, attr: "37", name: hold_time, dimmer: 2, min: 100, max: 60000, unit: "s", divisor: 1000, step: 0.05, label: "Wall switch hold over the whole range from the minimum to the maximum (slower in hold_slow_zone; from off after 0.7 s at the minimum)"}
+    - {dp: "78", type: E, attr: "38", name: dimming_curve, dimmer: 1, label: "Dimming curve (as Open Dimmer's; the dimming MCU is taken as linear in the conduction time). led_soft (default): gentle, suits most LED lamps. led: even perceived steps (CIE lightness). led_deep / led_deeper: more room at the dim end, for LED lamps that get bright soon above their minimum. incandescent: filament and halogen lamps. linear: as the stock firmware, conduction time follows the level. custom: the table custom_curve (led_soft until it is set).", values: {incandescent: 3, led: 1, led_deep: 4, led_deeper: 5, led_soft: 2, linear: 0, custom: 6}}
+    - {dp: "79", type: E, attr: "39", name: dimming_curve, dimmer: 2, label: "Dimming curve (as Open Dimmer's; the dimming MCU is taken as linear in the conduction time). led_soft (default): gentle, suits most LED lamps. led: even perceived steps (CIE lightness). led_deep / led_deeper: more room at the dim end, for LED lamps that get bright soon above their minimum. incandescent: filament and halogen lamps. linear: as the stock firmware, conduction time follows the level. custom: the table custom_curve (led_soft until it is set).", values: {incandescent: 3, led: 1, led_deep: 4, led_deeper: 5, led_soft: 2, linear: 0, custom: 6}}
+  alt_config_str: null
+  old_manufacturer_names: null
+  old_zb_models: null
+  stock_manufacturer_id: 4417
+  stock_image_type: 54179
+  firmware_image_type: 47122
+  build: yes
+  status: in_progress
+  info: Dimming by the factory MCU, fades, wall switches and button by the module (docs/ts110e.md). After the update from stock, Interview and then Reconfigure the device in Z2M
+  threads: https://github.com/romasku/tuya-zigbee-switch/issues/313
+  store: null
 MODULE_AVATTO_A_TS0004:
   human_name: AVATTO ZWSM16-4 🅰
   category: module

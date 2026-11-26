@@ -132,6 +132,7 @@ Datapoint ids are hex (`RT18` = DP 24).
 | **`U<dp>`**                         | • Power-on behaviour datapoint of the dimmers <br> • Default `0E`                                           |
 | **`DR`**                            | • Zigbee level written to the MCU as is <br> • Default: levels are scaled to the MCU's min/max brightness   |
 | **`IT<dp><t><v>`**                  | • Datapoint written once at boot <br> • `t`: `1` bool, `4` enum (1 byte `v`), `2` value (4 bytes `v`) <br> • Example: `IT0F101` |
+| **`HK<s1><s2><btn><led>`**          | • ZH-Z06 dimmers (TS110E): the factory dimming MCU only takes level frames over a one-way UART, so a virtual MCU in the module stands in for an Open Dimmer MCU (DPs as `DM`, Open Dimmer's own ones too) and does the fades and holds, reads the wall switches and the button (active low, pull-up) and drives the LED (active high) <br> • Builds with `hk_dimmer: true` only (with `DM2`, `WB1B7`, `Y9600`); a config without it sends Tuya frames the dimming MCU does not take (the converter refuses it) <br> • Example: `HKB4C0C3C2`; users: [ts110e.md](../ts110e.md), protocol and the hardware checks: [ts110e_hk_protocol.md](../ts110e_hk_protocol.md) |
 
 Settings datapoints without a ZCL equivalent (backlight, indicator, ...) are listed under
 `dp_attributes` in `device_db.yaml`; they become manufacturer specific attributes of the

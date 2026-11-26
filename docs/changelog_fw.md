@@ -41,6 +41,183 @@ Please describe what you are working on, under ## Upcoming
     the Open Dimmer settings (dimming curve, fade and hold, per-channel power-on behaviour, wall
     switch gestures) follow the device option `open_dimmer_settings` (auto / show / hide; the
     old name `own_mcu_settings` still works)
+- **Tuya TS110E 2-gang dimmer module** (`_TZ3210_3mpwqzuu`, ZT3L + ZH-Z06): converted by OTA
+  from stock, the factory dimming MCU (HK32F030M) is kept. It only takes level frames on a
+  one-way UART, so the module runs a virtual Tuya dimmer MCU (`HK` token, `hk_dimmer.c`): the
+  dimmer endpoints work as on the ZDMS16-2 (levels scaled to min/max, switch type, power-on
+  behaviour kept in NV), the wall switches S1/S2 (toggle, state, momentary with hold dimming),
+  the module button and the network LED are read and driven by the module. Protocol:
+  [ts110e_hk_protocol.md](ts110e_hk_protocol.md)
+  - Z2M brightness changes without a transition fade by the module's fade settings (the
+    converter sends "no time", 0xFFFF, as for Open Dimmer); the `transition` option up to 600 s
+  - The fades, holds and boosts are Open Dimmer's own (its fader, `dim_core.c`, ported as
+    `hk_fader.c`, ticked every 10 ms and sampled at each 20 ms frame; Open Dimmer's host tests
+    of it ported too). What changes for a unit that runs an earlier build of this support:
+    - an off slows down in its lowest part (`fade_off_slow_zone`, default 15 % of min..max) and
+      stays 80 ms at the minimum before dark: from full about 1.72 s at the default 1.5 s (was
+      1.5 s); a network time keeps its length (the 80 ms taken out of it, linear, no slow end);
+      an off at once from the network goes to the minimum, then dark 80 ms later
+    - a level change while lit takes Open Dimmer's own rate, 2 s for the whole range
+      (brightness_fade_time unset; was fade_on_time's / fade_off_time's share); fade_on_time is
+      the fade from dark, fade_off_time the off's; a fade time of 0 (an on from dark, an off, an
+      on after a tap from dark) still goes at once with the dimming MCU's own ramp
+    - a momentary switch from dark turns on at once at the minimum at the press (reported then;
+      was at the release); a tap goes on from there to the level (or the OnLevel the module
+      writes after the on); held, the light waits 0.7 s at the minimum, then rises, slowly at
+      first (`hold_slow_zone`, default 25 % of min..max; also going down, not for a lit hold up
+      nor a lit hold with the custom curve); a full rise from dark at the default 4 s takes
+      about 5.3 s (was 4.4 s). `hold_time` is still the pace over min..max (Open Dimmer's:
+      over 0..100 %), so a narrowed range holds as long as before outside the slow zone. A
+      press from off while the light still fades out holds from where it is (Open Dimmer's)
+    - a double tap of a momentary switch (the second within 0.4 s of the first's release) takes
+      the light to max_level, from off and from on (`double_tap_full`, on by default; a tap and
+      a hold still dim, a third tap is a plain one)
+    - `long_press_from_off` (on by default): off, a long press from off comes on at the level
+      and the hold dims from there
+    - a lit hold's way: within 2 s of the last hold's end the other way, else the way learnt for
+      the quarter of min..max it starts in (at first the far end; a hold let go within 1.2 s and
+      turned round at once teaches its quarter the other way, a confirmed one needs two such
+      misses); kept in NV (was: strict alternation since the light came on)
+    - a start boost ends after 190 ms of a 200 ms setting (Open Dimmer's: 19 ticks at full); an
+      off during a boost goes out the usual way from the minimum (80 ms there; was: dark at once)
+  - A switch closed at the start is no press (Open Dimmer's): a momentary switch or the module
+    button held through a power-up does nothing at its release (was: a toggle); a state switch
+    says what the light is at a power-up, over the power-on setting (not after a restart of the
+    module alone: the light stays as it was), and when its type is set to state (with an active
+    report); a toggle switch closed at the start toggles at its first change as before
+  - `lamp_compensation` (Open Dimmer 2.2.8's, its DP 172 / 173 and the module's
+    lightingBallastCfg 0xff11): after the light came down, up to that many levels less at the
+    minimum (the HK32's output taken as linear, which has not been measured; never below its
+    range's minimum, 3 of 255); 0 (the default) changes nothing
+  - Z2M: `lamp_compensation`, `long_press_from_off`, `double_tap_full`, `fade_off_slow_zone` and
+    `hold_slow_zone` per channel with any MCU version (the slow zones are Basic 0xff3c..0xff3f of
+    the module itself, the others the dimmer endpoints' as on the ZDMS16-2); configure reads them
+  - A momentary wall switch dims after 400 ms held (Open Dimmer's; was 600 ms), its way picked
+    by where the light is, also during a fade (not by the fade's end). The hold's level is
+    reported every 0.5 s (Home Assistant, Adaptive Lighting and bound lights follow it; a hold
+    from dark from its hold time on); a hold from dark never goes to OnLevel and is shown at
+    once (no 3 s holdoff); an off, the module button or a switch type change ends a hold (its
+    release changes nothing), and so does a switch stuck closed, after 2 x hold_time + 2 s
+  - The wall switch and the module button never take a transition time the network sent
+  - Module button: a press switches both channels (any on: all off, else all on); held 3 s and
+    let go: reset (was: L1 only, reset at 5 s while held); the LED lights up at 3 s
+  - A restart of the module alone (update, config write, watchdog) leaves the light as it was
+    instead of applying the power-on behaviour; the state is saved before a planned restart,
+    a hold or a fade on its way stopping where it is (no jump back to the level from before
+    the hold, nor on to the fade's end). After a watchdog reset the level is the one saved
+    last (see NV), and with power-on `previous` the on/off kept through the reset is saved, so
+    a later power cut brings that back
+  - Every level is sent again to the dimming MCU after a minute without a frame (it forgets
+    them at a power loss of its own); a frame the UART refuses is sent again, the UART set up
+    again after 3 failures. These repeats and the second sending after a power-up wait for the
+    end of the MCU's own ramp of the last frame (they go at ramp 0 and would cut it short)
+  - NV: the on/off state is saved only with power-on `previous`; a level written while lit is
+    saved at the off or a minute after the first such change, whichever comes first (at most
+    one flash write a minute for an automation's steps; a watchdog reset can take a lit light
+    back to a level of up to a minute before, at once). No save while a fade runs (a change
+    from dark waiting for a UART that refuses frames does not count), a failed save is tried
+    again
+  - The dimmer endpoints take the virtual MCU as an Open Dimmer of build 500 (2.2.0) without it
+    being one (no identity, still "1.0.0", no update, health or SWD logic):
+    a Stop, Step or Move during a fade acts from where the light is (the module asks the virtual
+    MCU: a transition, a scene's time, brightness_fade_time up to 600 s, the fade settings' own
+    fades, a fade from dark, the same level sent again during one); a level set while off
+    (ExecuteIfOff) is written to the virtual MCU, which keeps it in its NV (a power cut does not
+    lose it)
+  - Z2M: `execute_if_off`, `on_level_local` (the wall switch's and the module button's OnLevel),
+    `brightness_fade_time` (unset: the module's own rate; no 2 s fold), `bind_mode`,
+    `double_press_action` and `triple_press_action` per channel, with any MCU version; configure
+    reads them; a min_level / max_level write reads both limits back
+  - The wall switches' bindings: a momentary switch's gestures (single, double, triple, hold,
+    release, as Open Dimmer's gesture_core) drive the bound lights in bind_mode remote (the
+    channel acts as before); in mirror (auto) a hold's release ends their follow at once instead
+    of 0.8 s later; a hold stops a network Move that runs
+  - min / max as Open Dimmer takes them: one past the other pushes it along (equal: a fixed
+    level), the answer has both limits and the level (the level shown no longer goes stale)
+  - Open Dimmer 2.2.0's settings, with its DPs and meaning, per channel and with any version:
+    - `countdown` (auto-off, ZCL OnWithTimedOff too: the longer time wins), RAM only; any off
+      ends it; its end is an off of the channel's own (a follower goes along, no mirror)
+    - `power_on_behavior_l1` / `_l2`: one per channel; the device's `power_on_behavior` stays
+      (written to both channels, it shows L1's), so the converted units lose no entity. An
+      older converter writes it to endpoint 1 only, which now sets L1 alone (see the update
+      order below)
+    - the wall switch gestures as Z2M `action` (single, double, triple, hold, release, press;
+      genMultistateInput, configure binds it, maximum interval 0)
+    - `switch_mode`: normal, detached (the light is the network's; a momentary switch reports
+      its gestures, a toggle or state switch each change as a single; bind_mode auto acts as
+      remote) or off (ignored). A hold under way ends where the light is, a momentary press
+      begun in the other mode is not acted on at its release, back in normal a state switch
+      says what the light is; the module button works in every mode
+    - `fast_press`: detached momentary, the press at once as `press` (no multi-taps)
+    - `current_level_startup`: the level after a power cut (steps of 4 of 1000; minimum,
+      previous), not after a restart of the module alone
+    - `identify` (and ZCL Identify): the channel blinks dark / max_level every 0.5 s, then goes
+      to its state by its fade
+    - `start_boost` (0..0.75 s, steps of 0.05): from dark at max_level first, then straight at
+      the level, or where a transition is by then (its end stays); before a hold from dark too
+      (let go in the boost: the minimum); an off in it goes out from the minimum; none after a
+      restart of the module alone, nor for a hold from off while the light still fades out
+      (Open Dimmer boosts from a dark output only)
+  - Network reset by wall switch presses: `multi_press_reset_count` closures of one wall switch
+    (any type, not one whose switch_mode is off; a toggle or state switch's closures, not its
+    changes), each within 10 s of the first (0: never; 1..7 act as 8): its channel blinks 3 s,
+    then the module leaves its network and pairs again. A behaviour change for the units that
+    run an earlier build of this support: they held the setting (default 10) without counting,
+    and count from the update on, with no action of the user
+  - Updating a unit that runs an earlier build of this support: the regenerated converter into
+    Zigbee2MQTT first (or together with the OTA) and Zigbee2MQTT restarted, then the OTA, then
+    Reconfigure; do not change `power_on_behavior` while the old converter is in. Before the
+    OTA set `multi_press_reset_count` to the count wanted (0 if the wall switches must never
+    reset the network) and read it back
+  - NV layout 5 (54 bytes in the stub, 56 on the TS110E's build: the per-channel power-on, the
+    settings above, the slow zones, the lamp compensation, the switch options and the learnt
+    hold ways); a layout 1..4 item is taken over (both channels get its power-on, the new ones
+    Open Dimmer's defaults; the layout 4 item is 40 bytes on the TS110E, the padding after its
+    curve bytes is not taken)
+  - Z2M: `mcu_version` says it is the virtual MCU's (the HK32 tells no version); no text calls
+    it Open Dimmer
+  - A change made at once (a network time of 0) goes out whole: a Move to Level at once from
+    off showed the channel's earlier level (full on a new unit) for one frame (20 ms) before the
+    new one. No frame goes to the dimming MCU while the module's writes of a change (the time,
+    the on, the level) still wait for the virtual MCU (40 ms at most), and the fader is at a
+    level at once without waiting for its next tick
+  - A change while the dimming MCU still runs its own ramp of a change made at once (the
+    `mcu_ramp`, 1.5 s by default, from that change's frame; or before that frame has gone) goes
+    at once too, in one frame with that ramp: only the MCU knows where the lamp is on it, and
+    the module's fade frames (ramp 0) jumped the lamp from there (an off 40 ms after an on with
+    `fade_on_time` 0 went near full first, then faded down; an on 300 ms after an off with
+    `fade_off_time` 0 dropped to the minimum first). Its fade settings or network time do not
+    apply then (a network time of 0 still goes at once, ramp 0); no minimum first then (the
+    lamp is lit on its way); a momentary press from dark sends its minimum with that ramp, and
+    a hold waits for that ramp's end before it moves (a hold from dark at least its 0.7 s).
+    With no fade time of 0 (or `mcu_ramp` 0) nothing changes (no frame then has the MCU's ramp)
+  - `factory_identity` (Basic 0xff59): the manufacturer name the stock firmware kept in its NV
+    (its item id differs from the TS0601's: the first 33-byte item of module 10 that holds a
+    Tuya name, `_T` + 4..5 of A-Z0-9 + `_` + 8 of a-z0-9), kept in this firmware's NV; never an
+    MCU version (the virtual MCU's 1.0.0 is not kept as one). The ZDMS16-2 reads its item 3
+    as before
+  - Z2M: configure interviews the device first when Zigbee2MQTT does not know its endpoint 4
+    (the stock firmware's endpoints were still in its database after the conversion: no wall
+    switch endpoints, no new clusters); a `device_config` without the HK token is refused (the
+    light would stop); the definition reads "Custom dimmer"; the `mcu_ramp` text says what is
+    known of the value (0 none, 1500 about 1.5 s, 15000 the same by eye). User docs:
+    [ts110e.md](ts110e.md); what is still to be checked on hardware:
+    [ts110e_hk_protocol.md](ts110e_hk_protocol.md#to-check-on-hardware)
+  - Releases (home-dimmer_build): `ota_release_assets.py --bin-dir` publishes one board's
+    images (every board's files have the same names; the index entries are matched by name and
+    sha512), and build.yml runs it for the ZDMS16-2 (`zdms16-2-<build>`) and the TS110E
+    (`ts110e-3mpwqzuu-<build>`, no carried MCU image); a board the build left out publishes
+    nothing
+  - Tests: the HK tests (all of `test_hk_dimmer.py` but its two debug-counter tests) and the
+    factory identity's TS110E cases also run on a stub built with the TS110E's flags
+    (DIMMER_ONLY + HK_DIMMER, no SECONDARY_MCU_IMAGE); everything the TS110E's converter reads,
+    writes, binds and reports is checked against that build's ZCL tables, and the reverse
+- **Channel follow** (dimmer boards with two channels, DIMMER_BINDINGS: the ZDMS16-2 and the
+  TS110E): a channel follows the other one's wall switch (`follow`, `follow_on_level`,
+  `follow_off_level`, genOnOffSwitchCfg 0xff17..0xff19 of the follower, NV): at the leader's
+  wall switch on the follower goes to its follow on level (default 254), at its off or its
+  countdown's end to its follow off level (0, the default: off), inside the module. Not on the
+  network's commands; the follower's change never goes on to its own bindings or followers
 - **NovaDigital 6 gang** (`_TZE204_tdhnhhiy`) and **TPZ-2 / Moes SFL02-Z-2** (`_TZE200_hktk6hze`)
   touch switches with a secondary MCU
 - Telink: an attribute write the stack refused (read-only, unknown attribute, wrong type) is no
@@ -49,6 +226,60 @@ Please describe what you are working on, under ## Upcoming
   36.4 h on Silabs): long and multi presses, cover travel times, the end of fast polling
 - Telink: the build refuses an OTA file over the SDK's OTA size limit (0x34000 bytes), and
   release builds leave out printf (no console there), 3.7 KB less flash
+- Telink: the module's own NWK commands (link status, route discovery, leave) are secured
+  again when its saved security record had lost the stack's "secure all" flag. The stack sets
+  the flag only at a factory-new start-up and otherwise restores the record as it is, so a
+  record saved once without it (e.g. taken over from a factory NV without normalising it) kept
+  those commands unsecured through every restart, leave and join, while data stayed secured;
+  routers that drop unsecured NWK commands (this firmware's, Z-Stack) then lost their routes to
+  the module. The flag is checked after every start-up and every join or rejoin, put back and
+  saved, with what else of the same byte such a record left wrong: an active key slot past the
+  two key slots (a factory byte taken raw: the stack read the key from past the record) becomes
+  slot 1, the factory one, and a global link key flag of 0 becomes this firmware's default
+  (without it the start-up never points the trust centre link key at this build's). Basic
+  0xff5d (enum8, read only) tells what was found: 0 unsecured (a network without NWK security),
+  1 secured, 2 repaired at this start-up, 3 repaired at a join (until the next restart); Z2M
+  shows it as the diagnostic `nwk_command_security` on the ZDMS16-2 and the TS110E, read at
+  configure (a unit paired before: no value until a Reconfigure). Debug builds (MCU_DUMP=1)
+  have a test hook, Basic 0xff5e: 0xA1 clears the flag in RAM, 0xA2 in RAM and NV, 0xA3 in RAM
+  and then resets the network
+- Telink, ZDMS16-2 and TS110E builds: the module restarts 1 s after its own leave (a network
+  reset, the coordinator's remove) and steers no network until then, as the SDK's own router
+  app does, so the next join starts from a factory-new start-up. The stack's leave sets it up
+  again in place, without the start-up's set-up of the security record, and a join straight
+  after it saved whatever RAM held. A reset of a module on no network does not restart it.
+  Other boards keep the leave in place (a relay would drop for the restart and take its
+  power-on setting)
+- Telink routers (not the ZDMS16-2: no room in its image): joins through a router that the trust
+  centre no longer reads are told. With a unique trust centre link key (after a key exchange)
+  the stack sends a joining child's Update Device only APS-encrypted, and a trust centre that
+  holds another key for the router drops it: no device joins through the router, and nothing
+  else shows it. Nothing is sent to find out: after such an Update Device the router waits 2 s
+  for the trust centre's tunnel; 3 in a row without one make Basic 0xff5d say 4
+  (`tc_link_key_stale` in Z2M), reported to the Basic cluster's bindings; a tunnel or a join of
+  its own ends it (RAM only). Only while joining is open to the whole network (the last
+  Mgmt_Permit_Joining was the coordinator's broadcast and the router's permit of it runs): a
+  coordinator that does not allow joins itself drops the Update Devices whatever the key
+  (joining allowed via one router only, a removed device's trust centre rejoins). On the
+  TS110E the converter binds the Basic cluster at configure for the report: a unit paired
+  before needs a Reconfigure. `UPDDEV_PLAIN_COPY=1` builds (bench only: make stops without
+  `MCU_DUMP=1`; not tried on hardware) also send the Update Device with the network key alone,
+  as the stack does with a global key
+- ZDMS16-2 (Open Dimmer): the MCU's build is Basic 0xff5f (uint16, read only), what Open Dimmer
+  said in its identity answer, reported to the Basic cluster's bindings after the version; Z2M
+  shows it as the diagnostic `mcu_build` (a unit paired before: after a Reconfigure or the next
+  identity answer). Two builds of one version show the same `mcu_version`, and the module
+  updates the MCU by the build (a newer carried build also with the same version, never an
+  older one)
+- Telink, debug builds (MCU_DUMP=1) of a module converted with W4c: a leave of its own (a reset,
+  the coordinator's remove) makes the factory copy stale, as a join of its own does. The
+  restart after the leave took the copy again and came up on the network that had just removed
+  the module, which then never steered
+- Telink end devices build again: the W4c take (and its checks of the record sizes, which are
+  the router library's) is in router builds only
+- Builds of a tree that differs from its commit in what goes into the image (files under
+  `src/`, the board database, `board.mk`, `VERSION`, `NVM_MIGRATIONS_VERSION`) get a `+` after
+  the hash in the build id (`swBuildId`) and the file names
 
 ## 1.1.3
 

@@ -270,13 +270,16 @@ const romasku = {
             access: "ALL",
             entityCategory: "config",
         }),
-    multiPressResetCount: (name, endpointName) =>
+    // hk: the ZH-Z06 dimmers, whose virtual MCU counts the wall switch presses as Open Dimmer does.
+    multiPressResetCount: (name, endpointName, hk = false) =>
         numeric({
             name,
             endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "genBasic",
             attribute: { ID: 0xff02, type: 0x20 }, // uint8
-            description: "Number of consecutive presses to trigger factory reset (0 = disabled)",
+            description: hk
+                ? "Presses (closures) of one wall switch, each within 10 s of the first, that make the module leave its network and pair again; its channel blinks 3 s first (0 = never; 1..7 act as 8; not a wall switch whose switch_mode is off)"
+                : "Number of consecutive presses to trigger factory reset (0 = disabled)",
             valueMin: 0,
             valueMax: 255,
             entityCategory: "config",
@@ -301,14 +304,18 @@ const romasku = {
                 }
             },
         }),
-    mcuVersion: (name, endpointName) => {
+    // hk: the ZH-Z06 dimmers, whose module is a virtual MCU in front of the factory dimming MCU:
+    // the version is the virtual MCU's (its fixed 1.0.0), not of the chip that drives the outputs.
+    mcuVersion: (name, endpointName, hk = false) => {
         const result = text({
             name,
             endpointName,
             access: "STATE_GET",
             cluster: "genBasic",
             attribute:  { ID: 0xff12, type: 0x42 }, // char str
-            description: "Firmware version of the secondary MCU (the chip that drives the outputs)",
+            description: hk
+                ? "Version of the module's virtual MCU, the interface between the dimmer endpoints and the dimming MCU (always 1.0.0). The dimming MCU (HK32F030M) runs its factory firmware, which tells no version"
+                : "Firmware version of the secondary MCU (the chip that drives the outputs)",
             entityCategory: "diagnostic",
         });
         result.exposes = result.exposes.map((expose) => expose.withLabel("MCU version"));
@@ -377,14 +384,17 @@ const romasku = {
     // The module's factory identity (Basic 0xff59 on endpoint 1, device level): the
     // manufacturer name of the factory Zigbee firmware and the factory MCU's version, which
     // the module keeps over the conversion (src/zigbee/factory_identity.h). Empty while not
-    // known; an older build has no such attribute.
-    factoryIdentity: () => {
+    // known; an older build has no such attribute. hk: the TS110E's (its factory dimming MCU
+    // never tells a version: the name alone).
+    factoryIdentity: (hk = false) => {
         const result = text({
             name: "factory_identity",
             access: "STATE_GET",
             cluster: "genBasic",
             attribute: { ID: 0xff59, type: 0x42 }, // char str
-            description: "What the module was from the factory: the manufacturer name of its factory Zigbee firmware and the factory MCU's version, kept by the module over the conversion (empty while not known)",
+            description: hk
+                ? "What the module was from the factory: the manufacturer name of its factory Zigbee firmware, kept by the module over the conversion (empty while not known, e.g. on a build before it; the factory dimming MCU tells no version)"
+                : "What the module was from the factory: the manufacturer name of its factory Zigbee firmware and the factory MCU's version, kept by the module over the conversion (empty while not known)",
             entityCategory: "diagnostic",
         });
         result.exposes = result.exposes.map((expose) => expose.withLabel("Factory identity"));
@@ -396,6 +406,46 @@ const romasku = {
             },
         }));
         return result;
+    },
+    // Whether the module sends its own network commands NWK-secured (Basic 0xff5d on endpoint 1,
+    // device level; src/zigbee/nwk_sec.h). The Telink stack secures them only while a flag of
+    // its security record is set; a record that lost it kept them unsecured through every
+    // restart and join, and routers of this firmware drop such frames, so the coordinator lost
+    // its routes to the module. The module checks the flag at every start-up and join and puts
+    // it back: repaired_at_start / repaired_at_join say it had to (until its next restart).
+    // tc_link_key_stale (src/zigbee/tclk_check.h): while joining was open network-wide, the
+    // coordinator answered none of the last 3 devices that tried to join through the module,
+    // which it does when it cannot decrypt the module's Update Device (a trust centre link key
+    // it no longer holds); the module reports it, and the next answer or a join of its own ends
+    // it. Joining allowed via one device only is not judged (the coordinator itself may refuse
+    // the joins then). tclkCheck: the module's build has that check (the TS110E; the ZDMS16-2
+    // build has no room for it, and its description leaves it out; the value stays in the list,
+    // as the entity's options were). An older build has no such attribute: no value.
+    nwkCommandSecurity: (tclkCheck = false) => {
+        const values = ["unsecured", "secured", "repaired_at_start", "repaired_at_join", "tc_link_key_stale"];
+        const expose = e.enum("nwk_command_security", ea.STATE_GET, values)
+            .withLabel("Network command security")
+            .withDescription("Whether the network commands the module sends (link status, route discovery) are secured. repaired_at_start / repaired_at_join: they were unsecured, which other routers drop, and the module repaired it at its start-up or at a join (shown until its next restart); unsecured: a network without network security" + (tclkCheck ? "; tc_link_key_stale: while joining was open to the whole network (not via one device), the coordinator answered none of the last 3 devices that tried to join through the module, most likely because it no longer has the module's trust centre link key; it ends at the next answer. If devices still cannot join through the module, re-pair the module" : ""))
+            .withCategory("diagnostic");
+        return {
+            isModernExtend: true,
+            exposes: [expose],
+            fromZigbee: [{
+                cluster: "genBasic",
+                type: ["attributeReport", "readResponse"],
+                convert: (model, msg) => {
+                    const raw = msg.data?.[0xff5d];
+                    if (msg.endpoint?.ID !== 1 || values[raw] === undefined) return;
+                    return {nwk_command_security: values[raw]};
+                },
+            }],
+            toZigbee: [{
+                key: ["nwk_command_security"],
+                convertGet: async (entity, key, meta) => {
+                    await meta.device.getEndpoint(1).read("genBasic", [0xff5d]);
+                },
+            }],
+        };
     },
     mcuVersionMeta: () => ({
         isModernExtend: true,
@@ -529,17 +579,25 @@ const romasku = {
             },
             entityCategory: "config",
         }),
-    deviceConfig: (name, endpointName) =>
+    // hk: a ZH-Z06 dimmer (TS110E), whose config must keep its HK token: without it the module
+    // sends Tuya frames to the factory dimming MCU, which takes level frames only (the light
+    // stops working, with no error), and its wall switches, button and LED are not read.
+    deviceConfig: (name, endpointName, hk = false) =>
         text({
             name,
             endpointName,
             access: "ALL",
             cluster: "genBasic",
             attribute:  { ID: 0xff00, type: 0x44 }, // long str
-            description: "Current configuration of the device",
+            description: hk
+                ? "Current configuration of the device. Keep its HK token (the dimming MCU's link, the wall switches, the button and the LED): a config without it is refused"
+                : "Current configuration of the device",
             zigbeeCommandOptions: {timeout: 30_000},
             validate: (value) => {
                 assertString(value);
+                if (hk && !value.split(";").slice(2).some((part) => part.startsWith("HK"))) {
+                    throw new Error("Keep the HK token (e.g. HKB4C0C3C2): without it the dimming MCU gets frames it does not take and the light stops working. A config split with device_config_ext: the HK token in this part");
+                }
                 
                 const validatePin = (pin) => {
                     const validPins = [
@@ -601,6 +659,16 @@ const romasku = {
                         if (!/^PT[0-9A-Fa-f]{2}$/.test(part)) {
                             throw new Error(`Power-on datapoint ${part} is invalid. Use PT<hh>, e.g. PT26`);
                         }
+                    } else if (part.startsWith('HK')) {
+                        // ZH-Z06 dimmers (TS110E): wall switches, button and LED of the
+                        // virtual MCU, HK<s1><s2><button><led>, e.g. HKB4C0C3C2
+                        if (part.length != 10) {
+                            throw new Error(`Dimmer pins ${part} are invalid. Use HK<s1><s2><button><led>, e.g. HKB4C0C3C2`);
+                        }
+                        validatePin(part.slice(2,4));
+                        validatePin(part.slice(4,6));
+                        validatePin(part.slice(6,8));
+                        validatePin(part.slice(8,10));
                     } else if (part[0] == 'W') {
                         // UART pins towards the secondary MCU: W<tx><rx>
                         validatePin(part.slice(1,3));
@@ -641,7 +709,7 @@ const romasku = {
                             throw new Error(`Dimmer DPID map ${part} is invalid. Use P<idx>O<oo>L<ll>S<ss>M<mm>X<xx> (hex), e.g. P08O01L08`);
                         }
                     } else {
-                        throw new Error(`Invalid entry ${part}. Should start with one of B, BT, C, D, DM, I, IT, L, M, P, PT, R, RT, S, SLP, ST, SW, W, X, Y, Z, i`);
+                        throw new Error(`Invalid entry ${part}. Should start with one of B, BT, C, D, DM, HK, I, IT, L, M, P, PT, R, RT, S, SLP, ST, SW, W, X, Y, Z, i`);
                     }
                 }
             },
@@ -819,28 +887,50 @@ const romasku = {
             unit: "%",
             entityCategory: "config",
         }),
-    dimmerMinLevel: (name, endpointName) =>
+    // hk: the ZH-Z06's virtual MCU, which takes them as Open Dimmer does: one past the other
+    // pushes the other along (equal: a fixed level), so both are read back after a write.
+    dimmerMinLevel: (name, endpointName, hk = false) => romasku.dimmerLimit(
         numeric({
             name,
             endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "lightingBallastCfg",
             attribute: "minLevel",
-            description: "Minimum brightness of the dimmer (MCU setting). With level scaling (default) brightness 1 is this level.",
+            description: hk
+                ? "Minimum brightness of the dimmer (kept by the module). With level scaling (default) brightness 1 is this level. Set above max_level it takes max_level along (equal: one fixed level)."
+                : "Minimum brightness of the dimmer (MCU setting). With level scaling (default) brightness 1 is this level.",
             valueMin: 1,
             valueMax: 254,
             entityCategory: "config",
-        }),
-    dimmerMaxLevel: (name, endpointName) =>
+        }), hk),
+    dimmerMaxLevel: (name, endpointName, hk = false) => romasku.dimmerLimit(
         numeric({
             name,
             endpointNames: endpointName ? [endpointName] : undefined,
             cluster: "lightingBallastCfg",
             attribute: "maxLevel",
-            description: "Maximum brightness of the dimmer (MCU setting). With level scaling (default) brightness 254 is this level.",
+            description: hk
+                ? "Maximum brightness of the dimmer (kept by the module). With level scaling (default) brightness 254 is this level. Set below min_level it takes min_level along (equal: one fixed level)."
+                : "Maximum brightness of the dimmer (MCU setting). With level scaling (default) brightness 254 is this level.",
             valueMin: 1,
             valueMax: 254,
             entityCategory: "config",
-        }),
+        }), hk),
+    // A min / max level extend as it is, or (hk) with both limits read back after its write.
+    dimmerLimit: (extend, hk) => (!hk ? extend : {
+        ...extend,
+        toZigbee: extend.toZigbee.map((c) => ({
+            ...c,
+            convertSet: async (entity, key, value, meta) => {
+                const result = await c.convertSet(entity, key, value, meta);
+                try {
+                    await entity.read("lightingBallastCfg", ["minLevel", "maxLevel"]);
+                } catch (error) {
+                    // not answered now; the next read shows it
+                }
+                return result;
+            },
+        })),
+    }),
     dimmerOnLevel: (name, endpointName) => {
         const extend = numeric({
             name,
@@ -887,16 +977,21 @@ const romasku = {
     // Power-on behaviour of an MCU dimmer that may run Open Dimmer: per
     // channel with it (DPs 103/104), else one setting for all channels (the
     // shared DP 14: a write on any endpoint sets every channel).
-    dimmerPowerOnPerChannel: (dimmerNames) => {
+    // always: the ZH-Z06's virtual MCU, which has one per channel with any version; the shared
+    // one is kept beside them there (the entity the converted units had): written to every
+    // channel, it shows the first channel's.
+    dimmerPowerOnPerChannel: (dimmerNames, always = false) => {
         const lookup = {off: 0, on: 1, previous: 255};
         const names = Object.keys(lookup);
         const shared = e.enum("power_on_behavior", ea.ALL, names)
-            .withDescription("Behavior when power is restored (previous = memory), all channels")
+            .withDescription(always
+                ? "Behavior of every channel when power is restored (previous = memory): written to all channels, shows the first one's (each channel also has its own power_on_behavior)"
+                : "Behavior when power is restored (previous = memory), all channels")
             .withCategory("config");
         return {
             isModernExtend: true,
             // Per channel with Open Dimmer: in each channel's group (dimmerPowerOnChannel).
-            exposes: [(device, options) => (ownMcuShown(device, options, 2) ? [] : [shared])],
+            exposes: [(device, options) => (always || !ownMcuShown(device, options, 2) ? [shared] : [])],
             fromZigbee: [{
                 cluster: "genOnOff",
                 type: ["attributeReport", "readResponse"],
@@ -940,14 +1035,16 @@ const romasku = {
     },
     // The per-channel power-on expose of one channel (Open Dimmer); its converters
     // are in dimmerPowerOnPerChannel.
-    dimmerPowerOnChannel: (endpointName) => {
+    // always: the ZH-Z06's virtual MCU (any version).
+    dimmerPowerOnChannel: (endpointName, always = false) => {
         const expose = e.enum("power_on_behavior", ea.ALL, ["off", "on", "previous"])
             .withEndpoint(endpointName)
-            .withDescription("Behavior of this channel when power is restored (previous = memory; Open Dimmer firmware)")
+            .withDescription(always ? "Behavior of this channel when power is restored (previous = memory)"
+                                    : "Behavior of this channel when power is restored (previous = memory; Open Dimmer firmware)")
             .withCategory("config");
         return {
             isModernExtend: true,
-            exposes: [(device, options) => (ownMcuShown(device, options, 2) ? [expose] : [])],
+            exposes: [(device, options) => (always || ownMcuShown(device, options, 2) ? [expose] : [])],
         };
     },
     // Wall switch gestures of the Open Dimmer firmware (momentary switch type):
@@ -955,26 +1052,44 @@ const romasku = {
     // gesture. The light itself acts on every press regardless.
     // Open Dimmer 2.2 adds gesture 6, press (fast_press): only its action list has it, so the
     // list of every other device stays as it was.
-    dimmerGestures: (dimmerNames) => {
+    // always: the ZH-Z06's virtual MCU (any version; the gestures of Open Dimmer 2.2, press too).
+    dimmerGestures: (dimmerNames, always = false) => {
         const kinds = ["single", "double", "triple", "hold", "release"];
         const kinds22 = [...kinds, "press"];
-        const description = "Wall switch gesture (Open Dimmer firmware, momentary switch type, or any type in the detached switch_mode); in the normal switch_mode the light acts on every press too";
+        const description = always
+            ? "Wall switch gesture (momentary switch type, or any type in the detached switch_mode; press: fast_press); in the normal switch_mode the light acts on every press too"
+            : "Wall switch gesture (Open Dimmer firmware, momentary switch type, or any type in the detached switch_mode); in the normal switch_mode the light acts on every press too";
         const expose = e.action(dimmerNames.flatMap((n) => kinds.map((k) => `${k}_${n}`)))
             .withDescription(description);
         const expose22 = e.action(dimmerNames.flatMap((n) => kinds22.map((k) => `${k}_${n}`)))
             .withDescription(description);
+        const has22 = (device, options) => always || ownMcuShown(device, options, OPEN_DIMMER_2_2);
         return {
             isModernExtend: true,
-            exposes: [(device, options) => (ownMcuShown(device, options, OPEN_DIMMER_2_2) ? [expose22]
+            exposes: [(device, options) => (has22(device, options) ? [expose22]
                                             : ownMcuShown(device, options, 2) ? [expose] : [])],
             fromZigbee: [{
                 cluster: "genMultistateInput",
                 type: ["attributeReport"],
                 convert: (model, msg, publish, options) => {
                     const name = endpointNameOf(model, msg);
-                    const g = (msg.data?.presentValue ?? 0) & 0x0f;
-                    const list = ownMcuShown(msg.device, options, OPEN_DIMMER_2_2) ? kinds22 : kinds;
+                    const value = msg.data?.presentValue ?? 0;
+                    const g = value & 0x0f;
+                    const list = has22(msg.device, options) ? kinds22 : kinds;
                     if (!dimmerNames.includes(name) || g < 1 || g > list.length) return;
+                    // The module sends each gesture report with an APS ACK and sends it again
+                    // when none comes (up to ~7 s later): a copy (the hub's ACK was lost) or a
+                    // late one (an older gesture after a newer one) is no new gesture. Within
+                    // 10 s of the last one taken: the same value again, or a sequence 1..7
+                    // behind it. After that any value counts (the sequence starts over at a
+                    // module restart).
+                    const now = Date.now();
+                    const last = globalStore.getValue(msg.endpoint, "dimmerGestureLast");
+                    if (last && now - last.at < 10000) {
+                        const behind = ((last.value >> 4) - (value >> 4)) & 0x0f;
+                        if ((value & 0xff) === last.value || (behind >= 1 && behind <= 7)) return;
+                    }
+                    globalStore.putValue(msg.endpoint, "dimmerGestureLast", {value: value & 0xff, at: now});
                     return {action: `${list[g - 1]}_${name}`};
                 },
             }],
@@ -1003,9 +1118,10 @@ const romasku = {
     // and written like the other Open Dimmer settings (ownMcuShown). attr: its id (or name, for
     // one zigbee-herdsman knows), type, and what a report means: fromValue(raw) -> published.
     dimmerOwnAttr: ({expose, endpointName, cluster, attr, type, fromValue, toValue, extraFz,
-                     minMcu = OPEN_DIMMER_2_2}) => {
+                     minMcu = OPEN_DIMMER_2_2, always = false}) => {
         const property = `${expose.name}_${endpointName}`;
-        const shown = (device, options) => ownMcuShown(device, options, minMcu);
+        // always: a setting of the module itself, with any MCU (not an Open Dimmer one).
+        const shown = (device, options) => always || ownMcuShown(device, options, minMcu);
         return {
             isModernExtend: true,
             exposes: [(device, options) => (shown(device, options) ? [expose] : [])],
@@ -1040,12 +1156,15 @@ const romasku = {
     },
     // Auto-off (Open Dimmer 2.2.0, DP 6 / 12 by genOnOff 0xff10): the channel goes off that
     // many seconds after it was set; any off ends it (so an off report publishes 0).
-    dimmerCountdown: (endpointName) => {
+    // always (the settings below too): the ZH-Z06's virtual MCU, which has them with any version.
+    dimmerCountdown: (endpointName, always = false) => {
         const expose = e.numeric("countdown", ea.ALL).withEndpoint(endpointName)
             .withValueMin(0).withValueMax(86400).withUnit("s")
-            .withDescription("Auto-off: the channel turns off this many seconds after it was set, while on (0 = none; any off ends it; Open Dimmer firmware)");
+            .withDescription(always
+                ? "Auto-off: the channel turns off this many seconds after it was set, while on (0 = none; any off ends it; kept until the module restarts)"
+                : "Auto-off: the channel turns off this many seconds after it was set, while on (0 = none; any off ends it; Open Dimmer firmware)");
         return romasku.dimmerOwnAttr({
-            expose, endpointName, cluster: "genOnOff", attr: {ID: 0xff10}, type: Zcl.DataType.UINT32,
+            expose, endpointName, cluster: "genOnOff", attr: {ID: 0xff10}, type: Zcl.DataType.UINT32, always,
             fromValue: (v) => v,
             toValue: (value) => {
                 const v = Number(value);
@@ -1057,14 +1176,16 @@ const romasku = {
     },
     // Wall switch mode (Open Dimmer 2.2.0, DP 162 / 163): normal, detached (the switch only
     // reports its gestures), off (ignored).
-    dimmerSwitchMode: (endpointName) => {
+    dimmerSwitchMode: (endpointName, always = false) => {
         const lookup = {normal: 0, detached: 1, off: 2};
         const names = Object.keys(lookup);
         const expose = e.enum("switch_mode", ea.ALL, names).withEndpoint(endpointName).withLabel("Wall switch mode")
-            .withDescription("Wall switch: normal (it switches and dims the light), detached (the light only follows the network; the switch's gestures are still reported as action, a toggle or state switch's change as a single) or off (ignored). Open Dimmer firmware")
+            .withDescription(always
+                ? "Wall switch: normal (it switches and dims the light), detached (the light only follows the network; the switch's gestures are still reported as action, a toggle or state switch's change as a single; bind_mode auto lets them drive the bound lights) or off (ignored, no network reset by its presses either). The module button works in every mode"
+                : "Wall switch: normal (it switches and dims the light), detached (the light only follows the network; the switch's gestures are still reported as action, a toggle or state switch's change as a single) or off (ignored). Open Dimmer firmware")
             .withCategory("config");
         return romasku.dimmerOwnAttr({
-            expose, endpointName, cluster: "genOnOffSwitchCfg", attr: {ID: 0xff10}, type: Zcl.DataType.ENUM8,
+            expose, endpointName, cluster: "genOnOffSwitchCfg", attr: {ID: 0xff10}, type: Zcl.DataType.ENUM8, always,
             fromValue: (v) => names.find((k) => lookup[k] === v) ?? v,
             toValue: (value) => {
                 if (!Object.prototype.hasOwnProperty.call(lookup, value)) throw new Error(`switch_mode: one of ${names.join(", ")}`);
@@ -1075,17 +1196,19 @@ const romasku = {
     // Level after a power cut (Open Dimmer 2.2.0, DP 164 / 165): ZCL StartUpCurrentLevel,
     // 1..254, 0 the minimum, 255 the previous one. A number throughout (a Home Assistant
     // number entity), the presets name the two ends; their names are taken when written.
-    dimmerStartupLevel: (endpointName) => {
+    dimmerStartupLevel: (endpointName, always = false) => {
         const presets = {minimum: 0, previous: 255};
         const expose = e.numeric("current_level_startup", ea.ALL).withEndpoint(endpointName).withLabel("Power-on level")
             .withValueMin(0).withValueMax(255)
             .withPreset("minimum", 0, "The channel's minimum brightness")
             .withPreset("previous", 255, "The brightness it had before")
-            .withDescription("Brightness after a power cut, 1..254; 0 = the minimum, 255 = the one it had before (whether it comes on is power_on_behavior; Open Dimmer firmware)")
+            .withDescription(always
+                ? "Brightness after a power cut, 1..254; 0 = the minimum, 255 = the one it had before (whether it comes on is power_on_behavior; a restart of the module alone, e.g. an update, leaves the light as it was)"
+                : "Brightness after a power cut, 1..254; 0 = the minimum, 255 = the one it had before (whether it comes on is power_on_behavior; Open Dimmer firmware)")
             .withCategory("config");
         return romasku.dimmerOwnAttr({
             expose, endpointName, cluster: "genLevelCtrl", attr: {ID: 0x4000, name: "startUpCurrentLevel"},
-            type: Zcl.DataType.UINT8,
+            type: Zcl.DataType.UINT8, always,
             fromValue: (v) => v,
             toValue: (value) => {
                 if (Object.prototype.hasOwnProperty.call(presets, value)) return presets[value];
@@ -1103,7 +1226,27 @@ const romasku = {
     // whole range in 2 s at the MCU's own rate, a 2.0 s of its own differs only by the ~6 % the
     // module computes from the channel's min..max instead of 0..1000. Unset also: the preset
     // default, an empty value or a negative one.
-    dimmerBrightnessFadeTime: (endpointName) => {
+    // hk: the ZH-Z06's virtual MCU (any version; unset is its own value there, null, and 2 s is
+    // 2 s: its default is Open Dimmer's own rate, from 0..1000, not min_level..max_level).
+    dimmerBrightnessFadeTime: (endpointName, hk = false) => {
+        if (hk) {
+            const expose = e.numeric("brightness_fade_time", ea.ALL).withEndpoint(endpointName)
+                .withValueMin(0).withValueMax(60).withValueStep(0.1).withUnit("s")
+                .withPreset("default", -1, "Unset: the module's own rate, the whole range in 2 s")
+                .withDescription("Fade time of brightness changes from Zigbee2MQTT / Home Assistant while the light is on, as the time for the whole range from min_level to max_level (a smaller change is quicker), from where the light is. Unset (default; the preset default, an empty or a negative value): the module's own rate, as Open Dimmer's, 2 s for the whole range. 0: at once. A transition (in the message or the device option transition) wins; the wall switch and the module button take the fade settings")
+                .withCategory("config");
+            return romasku.dimmerOwnAttr({
+                expose, endpointName, cluster: "genLevelCtrl", attr: {ID: 0xff12}, type: Zcl.DataType.UINT16,
+                always: true,
+                fromValue: (v) => (v === 0xffff ? null : v / 10),
+                toValue: (value) => {
+                    if (value === "default" || value === "" || value === null || value === undefined) return 0xffff;
+                    const v = Number(value);
+                    if (Number.isNaN(v) || v > 60) throw new Error("brightness_fade_time: 0..60 s, or default (unset)");
+                    return v < 0 ? 0xffff : Math.round(v * 10);
+                },
+            });
+        }
         const expose = e.numeric("brightness_fade_time", ea.ALL).withEndpoint(endpointName)
             .withValueMin(0).withValueMax(60).withValueStep(0.1).withUnit("s")
             .withPreset("default", 2, "The module's default: the whole range in 2 s")
@@ -1123,12 +1266,14 @@ const romasku = {
     },
     // Fast press (Open Dimmer 2.2.0, DP 170 / 171 by genOnOffSwitchCfg 0xff11): in the
     // detached switch_mode a momentary switch's press is reported at once (action press_*).
-    dimmerFastPress: (endpointName) => {
+    dimmerFastPress: (endpointName, always = false) => {
         const expose = e.binary("fast_press", ea.ALL, true, false).withEndpoint(endpointName).withLabel("Wall switch fast press")
-            .withDescription("In the detached switch_mode a momentary switch's press is reported at once as action press (no single / double / triple then; hold and release as before; Open Dimmer firmware)")
+            .withDescription(always
+                ? "In the detached switch_mode a momentary switch's press is reported at once as action press (no single / double / triple then; hold and release as before)"
+                : "In the detached switch_mode a momentary switch's press is reported at once as action press (no single / double / triple then; hold and release as before; Open Dimmer firmware)")
             .withCategory("config");
         return romasku.dimmerOwnAttr({
-            expose, endpointName, cluster: "genOnOffSwitchCfg", attr: {ID: 0xff11}, type: Zcl.DataType.BOOLEAN,
+            expose, endpointName, cluster: "genOnOffSwitchCfg", attr: {ID: 0xff11}, type: Zcl.DataType.BOOLEAN, always,
             fromValue: (v) => v === 1 || v === true,
             toValue: (value) => {
                 if (value === true || value === "ON" || value === "true") return 1;
@@ -1139,14 +1284,17 @@ const romasku = {
     },
     // A double tap (Open Dimmer 2.2.8, DP 180 bit 2 / 3 by genOnOffSwitchCfg 0xff16): the light to
     // its maximum (true, the default), or the plain toggles (false).
-    dimmerDoubleTapFull: (endpointName) => {
+    // always: the ZH-Z06's virtual MCU (any version).
+    dimmerDoubleTapFull: (endpointName, always = false) => {
         const expose = e.binary("double_tap_full", ea.ALL, true, false).withEndpoint(endpointName)
             .withLabel("Double tap: full brightness")
-            .withDescription("Two short taps of a momentary wall switch (normal switch_mode) take the light to its max_level, from off and from on; a tap and a hold still dim, a third tap is a plain one. Off: each tap toggles as usual (Open Dimmer firmware)")
+            .withDescription(always
+                ? "Two short taps of a momentary wall switch (normal switch_mode) take the light to its max_level, from off and from on; a tap and a hold still dim, a third tap is a plain one. Off: each tap toggles as usual"
+                : "Two short taps of a momentary wall switch (normal switch_mode) take the light to its max_level, from off and from on; a tap and a hold still dim, a third tap is a plain one. Off: each tap toggles as usual (Open Dimmer firmware)")
             .withCategory("config");
         return romasku.dimmerOwnAttr({
             expose, endpointName, cluster: "genOnOffSwitchCfg", attr: {ID: 0xff16}, type: Zcl.DataType.BOOLEAN,
-            minMcu: "2.2.8",
+            minMcu: "2.2.8", always,
             fromValue: (v) => (v === 0xFF ? null : v === 1 || v === true),
             toValue: (value) => {
                 if (value === true || value === "ON" || value === "true") return 1;
@@ -1157,14 +1305,17 @@ const romasku = {
     },
     // A long press from off (Open Dimmer 2.2.8, DP 180 bit 0 / 1 by genOnOffSwitchCfg 0xff15): it
     // rises from the minimum (true, the default), or the light comes on at its level (false).
-    dimmerLongPressFromOff: (endpointName) => {
+    // always: the ZH-Z06's virtual MCU (any version).
+    dimmerLongPressFromOff: (endpointName, always = false) => {
         const expose = e.binary("long_press_from_off", ea.ALL, true, false).withEndpoint(endpointName)
             .withLabel("Long press from off: rise from the minimum")
-            .withDescription("A long press of the wall switch while the light is off: on (the default), the light comes on at its minimum, waits there 0.7 s and rises while the switch is held, so it can be let go at any level from the lowest; off, it comes on at its level as for a short press and the hold dims from there (Open Dimmer firmware)")
+            .withDescription(always
+                ? "A long press of a momentary wall switch while the light is off: on (the default), the light comes on at its minimum at the press, waits there 0.7 s and rises while the switch is held, so it can be let go at any level from the lowest; off, it comes on at its level as for a short press and the hold dims from there"
+                : "A long press of the wall switch while the light is off: on (the default), the light comes on at its minimum, waits there 0.7 s and rises while the switch is held, so it can be let go at any level from the lowest; off, it comes on at its level as for a short press and the hold dims from there (Open Dimmer firmware)")
             .withCategory("config");
         return romasku.dimmerOwnAttr({
             expose, endpointName, cluster: "genOnOffSwitchCfg", attr: {ID: 0xff15}, type: Zcl.DataType.BOOLEAN,
-            minMcu: "2.2.8",
+            minMcu: "2.2.8", always,
             fromValue: (v) => (v === 0xFF ? null : v === 1 || v === true),
             toValue: (value) => {
                 if (value === true || value === "ON" || value === "true") return 1;
@@ -1176,11 +1327,12 @@ const romasku = {
     // The wall switch's bindings (dimmer-only builds: genOnOffSwitchCfg 0xff12..0xff14, kept
     // by the module): what goes to the lights and groups bound to the channel's wall switch
     // endpoint (3 / 4 on the ZDMS16-2). An enum each, its values by their index.
-    dimmerBindSetting: (name, endpointName, attrId, values, label, description) => {
+    // always: shown with any MCU (the ZH-Z06's virtual MCU); else as the Open Dimmer settings.
+    dimmerBindSetting: (name, endpointName, attrId, values, label, description, always = false) => {
         const expose = e.enum(name, ea.ALL, values).withEndpoint(endpointName).withLabel(label)
             .withDescription(description).withCategory("config");
         return romasku.dimmerOwnAttr({
-            expose, endpointName, cluster: "genOnOffSwitchCfg", attr: {ID: attrId}, type: Zcl.DataType.ENUM8,
+            expose, endpointName, cluster: "genOnOffSwitchCfg", attr: {ID: attrId}, type: Zcl.DataType.ENUM8, always,
             fromValue: (v) => values[v] ?? v,
             toValue: (value) => {
                 const v = values.indexOf(value);
@@ -1189,15 +1341,58 @@ const romasku = {
             },
         });
     },
+    // Following another channel's wall switch (dimmer-only builds, any MCU: the module does it;
+    // genOnOffSwitchCfg 0xff17..0xff19, kept by the module): which channel (0 none, its index
+    // + 1, as dimmerNames), the level at its on and at its off (0: off).
+    // always: shown with any MCU (the ZH-Z06's virtual MCU); else as the Open Dimmer settings
+    // (a ZDMS16-2 with its factory MCU keeps the entities it had; the module still follows).
+    dimmerFollow: (endpointName, dimmerNames, always = false) => {
+        // The other channels by name; the module keeps the leader's index + 1 (dimmerNames).
+        const others = dimmerNames.filter((n) => n !== endpointName);
+        const values = ["none", ...others];
+        const level = (name, min, value) => {
+            const v = Number(value);
+            if (!Number.isInteger(v) || v < min || v > 254) throw new Error(`${name}: an integer ${min}..254`);
+            return v;
+        };
+        // (always, the ZH-Z06: its module button switches the leader too)
+        const follow = e.enum("follow", ea.ALL, values).withEndpoint(endpointName).withLabel("Follows wall switch of")
+            .withDescription(always
+                ? "This channel goes along with another channel inside the module, at once (no round trip through the network): when that channel is switched on at its wall switch or the module button, to follow_on_level; when it goes off there or its countdown ends, to follow_off_level. Not its holds, not commands to it; none = off (default)"
+                : "This channel goes along with another channel inside the module, at once (no round trip through the network): when that channel is switched on at its wall switch, to follow_on_level; when it goes off at its wall switch or its countdown ends, to follow_off_level. Not its holds, not commands to it; none = off (default)")
+            .withCategory("config");
+        const on = e.numeric("follow_on_level", ea.ALL).withEndpoint(endpointName).withLabel("Follow on level")
+            .withValueMin(1).withValueMax(254)
+            .withDescription("Brightness (1..254) this channel goes to when the channel it follows is switched on at its wall switch (default 254; a hold from dark there also starts with this)")
+            .withCategory("config");
+        const off = e.numeric("follow_off_level", ea.ALL).withEndpoint(endpointName).withLabel("Follow off level")
+            .withValueMin(0).withValueMax(254)
+            .withDescription(always
+                ? "Brightness this channel goes to when the channel it follows goes off at its wall switch or the module button (or its countdown ends): 0 = off (default); above 0 it also comes on if it was off (a night light, e.g. set by an automation while another light is on)"
+                : "Brightness this channel goes to when the channel it follows goes off at its wall switch (or its countdown ends): 0 = off (default); above 0 it also comes on if it was off (a night light, e.g. set by an automation while another light is on)")
+            .withCategory("config");
+        const attr = (expose, id, type, fromValue, toValue) => romasku.dimmerOwnAttr({
+            expose, endpointName, cluster: "genOnOffSwitchCfg", attr: {ID: id}, type, fromValue, toValue, always});
+        return [
+            attr(follow, 0xff17, Zcl.DataType.ENUM8, (v) => (v === 0 ? "none" : dimmerNames[v - 1] ?? v), (value) => {
+                if (value === "none") return 0;
+                if (!others.includes(value)) throw new Error(`follow: one of ${values.join(", ")}`);
+                return dimmerNames.indexOf(value) + 1;
+            }),
+            attr(on, 0xff18, Zcl.DataType.UINT8, (v) => v, (value) => level("follow_on_level", 1, value)),
+            attr(off, 0xff19, Zcl.DataType.UINT8, (v) => v, (value) => level("follow_off_level", 0, value)),
+        ];
+    },
     // ZCL ExecuteIfOff (Level Control Options bit 0, kept by the module): a brightness change
     // without on/off while off sets the brightness the light comes on at, the light stays off.
-    dimmerExecuteIfOff: (endpointName) => {
+    // always: shown with any MCU (the ZH-Z06's virtual MCU); else as the Open Dimmer settings.
+    dimmerExecuteIfOff: (endpointName, always = false) => {
         const expose = e.binary("execute_if_off", ea.ALL, true, false).withEndpoint(endpointName)
             .withDescription("A brightness change without on/off while the light is off sets the brightness it comes on at (it stays off); off: such a change is ignored while off")
             .withCategory("config");
         return romasku.dimmerOwnAttr({
             expose, endpointName, cluster: "genLevelCtrl", attr: {ID: 0x000f, name: "options"},
-            type: Zcl.DataType.BITMAP8,
+            type: Zcl.DataType.BITMAP8, always,
             fromValue: (v) => (v & 1) === 1,
             toValue: (value) => {
                 if (value === true || value === "ON" || value === "true") return 1;
@@ -1208,13 +1403,17 @@ const romasku = {
     },
     // OnLevel of the wall switch (Level Control 0xff11, kept by the module): a wall switch on
     // goes there, a network On to on_level. 255: as on_level.
-    dimmerOnLevelLocal: (endpointName) => {
+    // always: shown with any MCU (the ZH-Z06's virtual MCU; there the module button too); else as
+    // the Open Dimmer settings.
+    dimmerOnLevelLocal: (endpointName, always = false) => {
         const expose = e.numeric("on_level_local", ea.ALL).withEndpoint(endpointName).withLabel("On level (wall switch)")
             .withValueMin(1).withValueMax(255)
-            .withDescription("Brightness the light comes on at from the wall switch, set without a round trip through the network. 255 (default) = as on_level")
+            .withDescription(always
+                ? "Brightness the light comes on at from the wall switch or the module button, set without a round trip through the network (not a hold from dark: it rises from the minimum). 255 (default) = as on_level"
+                : "Brightness the light comes on at from the wall switch, set without a round trip through the network. 255 (default) = as on_level")
             .withCategory("config");
         return romasku.dimmerOwnAttr({
-            expose, endpointName, cluster: "genLevelCtrl", attr: {ID: 0xff11}, type: Zcl.DataType.UINT8,
+            expose, endpointName, cluster: "genLevelCtrl", attr: {ID: 0xff11}, type: Zcl.DataType.UINT8, always,
             fromValue: (v) => v,
             toValue: (value) => {
                 const v = Number(value);
@@ -1225,13 +1424,15 @@ const romasku = {
     },
     // Start boost (Open Dimmer 2.2.0, DP 168 / 169): coming on from dark at full that long.
     // Shown in seconds like the other times; the attribute is in ms (the MCU keeps steps of 50).
-    dimmerStartBoost: (endpointName) => {
+    dimmerStartBoost: (endpointName, always = false) => {
         const expose = e.numeric("start_boost", ea.ALL).withEndpoint(endpointName)
             .withValueMin(0).withValueMax(0.75).withValueStep(0.05).withUnit("s")
-            .withDescription("Coming on from dark the output is at full this long, then goes to the brightness: for LED drivers that need a kick to start (0 = none; Open Dimmer firmware)")
+            .withDescription(always
+                ? "Coming on from dark the output is at max_level this long, then goes to the brightness: for LED drivers that need a kick to start (0 = none; in steps of 0.05 s; also before a hold from dark; a transition keeps its end)"
+                : "Coming on from dark the output is at full this long, then goes to the brightness: for LED drivers that need a kick to start (0 = none; Open Dimmer firmware)")
             .withCategory("config");
         return romasku.dimmerOwnAttr({
-            expose, endpointName, cluster: "lightingBallastCfg", attr: {ID: 0xff10}, type: Zcl.DataType.UINT16,
+            expose, endpointName, cluster: "lightingBallastCfg", attr: {ID: 0xff10}, type: Zcl.DataType.UINT16, always,
             fromValue: (v) => v / 1000,
             toValue: (value) => {
                 const v = Number(value);
@@ -1243,14 +1444,18 @@ const romasku = {
     // Lamp compensation (Open Dimmer 2.2.8, DP 172 / 173, lightingBallastCfg 0xff11): levels
     // of output taken off after the light came down, for lamps that are brighter then; 255 from
     // the module: the MCU does not have it.
-    dimmerLampCompensation: (endpointName) => {
+    // always: the ZH-Z06's virtual MCU (any version; its dimming MCU is taken as linear, which has
+    // not been measured, and its output is never below the factory range's minimum).
+    dimmerLampCompensation: (endpointName, always = false) => {
         const expose = e.numeric("lamp_compensation", ea.ALL).withEndpoint(endpointName)
             .withValueMin(0).withValueMax(63).withValueStep(1)
-            .withDescription("For LED lamps that are brighter dimmed down than switched on at the same level: this many levels less at the minimum after the light came down (less higher up, none once the conduction is a tenth of the half cycle above the minimum's). Set it so a dim-down to the minimum looks like the minimum switched on from dark (0 = off; Open Dimmer 2.2.8)")
+            .withDescription(always
+                ? "For LED lamps that are brighter dimmed down than switched on at the same level: this many levels less at the minimum after the light came down (less higher up, none from a tenth of the conduction above the minimum's; the dimming MCU's output is taken as linear and never goes below its own range's 1 %). Set it so a dim-down to the minimum looks like the minimum switched on from dark (0 = off)"
+                : "For LED lamps that are brighter dimmed down than switched on at the same level: this many levels less at the minimum after the light came down (less higher up, none once the conduction is a tenth of the half cycle above the minimum's). Set it so a dim-down to the minimum looks like the minimum switched on from dark (0 = off; Open Dimmer 2.2.8)")
             .withCategory("config");
         return romasku.dimmerOwnAttr({
             expose, endpointName, cluster: "lightingBallastCfg", attr: {ID: 0xff11}, type: Zcl.DataType.UINT8,
-            minMcu: "2.2.8",
+            minMcu: "2.2.8", always,
             fromValue: (v) => (v === 255 ? null : v),
             toValue: (value) => {
                 const v = Number(value);
@@ -1288,19 +1493,71 @@ const romasku = {
             },
         });
     },
-    // Identify (Open Dimmer 2.2.0, DP 166 / 167): every channel blinks for a few seconds (the
-    // one with a lamp shows which module this is).
-    dimmerIdentify: (dimmerNames) => {
-        const expose = e.enum("identify", ea.SET, ["identify"])
-            .withDescription("Blink the lamps of this module for 3 seconds (Open Dimmer firmware)")
+    // Custom curve of the ZH-Z06 dimmers (TS110E, the virtual MCU of the module): the same table
+    // as Open Dimmer's custom_curve, in Basic attribute attrId (0xff3a L1, 0xff3b L2) on
+    // endpoint 1; shown per channel.
+    hkCustomCurve: (endpointName, attrId) => {
+        const property = `custom_curve_${endpointName}`;
+        const expose = e.text("custom_curve", ea.ALL).withEndpoint(endpointName)
+            .withDescription("The table of dimming curve 'custom': 17 outputs 0..10000 (0 first, 10000 last, never falling) at 0, 1/16 .. 1 of the min..max range, comma-separated; empty: none (led_soft). As Open Dimmer's (its tools/custom_curve.py makes one for a lamp)")
             .withCategory("config");
+        const fromValue = (raw) => {
+            const b = Buffer.from(raw ?? []);
+            if (b.length !== 34) return "";
+            return Array.from({length: 17}, (_, i) => b.readUInt16LE(2 * i)).join(",");
+        };
         return {
             isModernExtend: true,
-            exposes: [(device, options) => (ownMcuShown(device, options, OPEN_DIMMER_2_2) ? [expose] : [])],
+            exposes: [expose],
+            fromZigbee: [{
+                cluster: "genBasic",
+                type: ["attributeReport", "readResponse"],
+                convert: (model, msg) => {
+                    if (msg.endpoint?.ID !== 1) return;
+                    const raw = msg.data?.[attrId];
+                    return raw === undefined ? undefined : {[property]: fromValue(raw)};
+                },
+            }],
+            toZigbee: [{
+                key: ["custom_curve"],
+                endpoints: [endpointName],
+                convertSet: async (entity, key, value, meta) => {
+                    const text = String(value ?? "").trim();
+                    let raw = Buffer.alloc(0);
+                    if (text !== "") {
+                        const p = text.split(/[\s,;]+/).filter((x) => x !== "").map(Number);
+                        if (p.length !== 17 || p.some((x) => !Number.isInteger(x) || x < 0 || x > 10000) ||
+                            p[0] !== 0 || p[16] !== 10000 || p.some((x, i) => i && x < p[i - 1])) {
+                            throw new Error("custom_curve: 17 whole numbers 0..10000, 0 first, 10000 last, never falling (or empty)");
+                        }
+                        raw = Buffer.alloc(34);
+                        p.forEach((x, i) => raw.writeUInt16LE(x, 2 * i));
+                    }
+                    await meta.device.getEndpoint(1).write("genBasic", {[attrId]: {value: raw, type: Zcl.DataType.OCTET_STR}});
+                    return {state: {[key]: fromValue(raw)}};
+                },
+                convertGet: async (entity, key, meta) => {
+                    await meta.device.getEndpoint(1).read("genBasic", [attrId]);
+                },
+            }],
+        };
+    },
+    // Identify (Open Dimmer 2.2.0, DP 166 / 167): every channel blinks for a few seconds (the
+    // one with a lamp shows which module this is).
+    // always: the ZH-Z06's virtual MCU (any version).
+    dimmerIdentify: (dimmerNames, always = false) => {
+        const expose = e.enum("identify", ea.SET, ["identify"])
+            .withDescription(always ? "Blink the lamps of this module for 3 seconds"
+                                    : "Blink the lamps of this module for 3 seconds (Open Dimmer firmware)")
+            .withCategory("config");
+        const shown = (device, options) => always || ownMcuShown(device, options, OPEN_DIMMER_2_2);
+        return {
+            isModernExtend: true,
+            exposes: [(device, options) => (shown(device, options) ? [expose] : [])],
             toZigbee: [{
                 key: ["identify"],
                 convertSet: async (entity, key, value, meta) => {
-                    if (!ownMcuShown(meta.device, meta.options, OPEN_DIMMER_2_2)) throw new Error("identify: an Open Dimmer 2.2 setting (see open_dimmer_settings)");
+                    if (!shown(meta.device, meta.options)) throw new Error("identify: an Open Dimmer 2.2 setting (see open_dimmer_settings)");
                     const map = typeof meta.mapped?.endpoint === "function" ? meta.mapped.endpoint(meta.device) : {};
                     const ids = dimmerNames.map((name) => map[name]).filter((id) => id !== undefined);
                     for (const id of ids.length ? ids : [entity.ID]) {
@@ -1358,6 +1615,37 @@ const romasku = {
                 key: exposes.map((x) => x.name),
                 convertGet: async (entity, key, meta) => {
                     await meta.device.getEndpoint(1).read("genBasic", [0xff48]);
+                },
+            }],
+        };
+    },
+    // Build of Open Dimmer (Basic 0xff5f on endpoint 1, uint16, device level): what its identity
+    // answer told the module, reported after the version at every such answer. One version has
+    // several builds (a test build and the release of 2.2.8 both say 2.2.8), and the module
+    // updates the MCU by the build. Shown as the health report is, for any Open Dimmer; a value
+    // is published whenever the module says one (0: none, a 2.1.x app or not known yet; an
+    // older module build has no such attribute), whatever order the two reports arrive in.
+    mcuBuild: () => {
+        const expose = e.numeric("mcu_build", ea.STATE_GET)
+            .withLabel("MCU build")
+            .withDescription("Build number of the Open Dimmer firmware on the dimming MCU. One version can have several builds (a test build and the release both say 2.2.8); the module updates the MCU when the firmware it carries is a newer build")
+            .withCategory("diagnostic");
+        return {
+            isModernExtend: true,
+            exposes: [(device, options) => (ownMcuShown(device, options, 2) ? [expose] : [])],
+            fromZigbee: [{
+                cluster: "genBasic",
+                type: ["attributeReport", "readResponse"],
+                convert: (model, msg) => {
+                    const raw = msg.data?.[0xff5f];
+                    if (msg.endpoint?.ID !== 1 || typeof raw !== "number" || raw <= 0) return;
+                    return {mcu_build: raw};
+                },
+            }],
+            toZigbee: [{
+                key: ["mcu_build"],
+                convertGet: async (entity, key, meta) => {
+                    await meta.device.getEndpoint(1).read("genBasic", [0xff5f]);
                 },
             }],
         };
@@ -1470,7 +1758,9 @@ const romasku = {
     // the ones taken (Zigbee2MQTT takes the first that matches); Move: unchanged (a rate).
     // The definition's transition option says what it means here (the converters' own one
     // is left out: the first option of a name is kept).
-    dimmerTransition: (dimmerNames) => {
+    // always: the module itself fades (the ZH-Z06's virtual MCU, "1.0.0"): 0xFFFF goes out
+    // whatever the version, up to its 600 s.
+    dimmerTransition: (dimmerNames, always = false) => {
         const inner = light({endpointNames: dimmerNames, effect: false, powerOnBehavior: false});
         const keys = ["state", "brightness", "brightness_percent", "brightness_step", "brightness_step_onoff"];
         const levelCommands = ["moveToLevel", "moveToLevelWithOnOff", "step", "stepWithOnOff"];
@@ -1494,11 +1784,14 @@ const romasku = {
                 return typeof v === "function" && prop !== "constructor" ? v.bind(target) : v;
             },
         });
+        const option = e.numeric("transition", ea.SET).withValueMin(0).withValueStep(0.1);
+        if (always) option.withValueMax(600);
         return {
             isModernExtend: true,
             options: [
-                e.numeric("transition", ea.SET).withValueMin(0).withValueStep(0.1)
-                    .withDescription("Transition time in seconds (e.g. 1.2) of brightness changes and off from Zigbee2MQTT / Home Assistant; a transition in the message wins. A plain on (no brightness) uses the module's fade_on_time. Empty: the module's fade settings (fade_on_time from dark, fade_off_time to off, brightness_fade_time while lit; unset, the module's default: the whole range in 2 s). 0: at once. The wall switch always takes the module's fade. Open Dimmer 2.1.14 and later; with the factory MCU the time is not used (the MCU fades by itself)."),
+                option.withDescription(always
+                    ? "Transition time in seconds (e.g. 1.2, up to 600) of brightness changes and off from Zigbee2MQTT / Home Assistant; a transition in the message wins. A plain on (no brightness) uses the module's fade_on_time. Empty: the module's fade settings (fade_on_time from dark, fade_off_time to off, brightness_fade_time while lit; unset, the module's own rate, 2 s for the whole range). 0: at once. The wall switch and the module button always take the module's fade. A Zigbee2MQTT group sends 0 when no transition is given: at once."
+                    : "Transition time in seconds (e.g. 1.2) of brightness changes and off from Zigbee2MQTT / Home Assistant; a transition in the message wins. A plain on (no brightness) uses the module's fade_on_time. Empty: the module's fade settings (fade_on_time from dark, fade_off_time to off, brightness_fade_time while lit; unset, the module's default: the whole range in 2 s). 0: at once. The wall switch always takes the module's fade. Open Dimmer 2.1.14 and later; with the factory MCU the time is not used (the MCU fades by itself)."),
             ],
             toZigbee: inner.toZigbee.filter((c) => c.key?.some((k) => keys.includes(k))).map((c) => ({
                 ...c,
@@ -1507,7 +1800,7 @@ const romasku = {
                         globalStore.clearValue(entity, "turnedOffWithTransition");
                         meta = {...meta, options: {...meta.options, transition: undefined}};
                     }
-                    return !knownNotOwnMcu(meta.device) && unset(meta)
+                    return (always || !knownNotOwnMcu(meta.device)) && unset(meta)
                         ? c.convertSet(noTime(entity), key, value, meta) : c.convertSet(entity, key, value, meta);
                 },
             })),
@@ -1594,7 +1887,7 @@ const definitions = [
         ],
         model: "{{device.model}}",
         vendor: "Tuya-custom",
-        description: "Custom switch (https://github.com/romasku/tuya-zigbee-switch)",
+        description: "{% if device.hk_dimmer %}Custom dimmer{% else %}Custom switch{% endif %} (https://github.com/romasku/tuya-zigbee-switch)",
         {% set first_endpoint = device.switchNames[0] if device.switchNames else (device.relayNames[0] if device.relayNames else (device.coverNames[0] if device.coverNames else device.dimmerNames[0])) %}
         extend: [
             {% if device.has_battery_cluster %}
@@ -1683,21 +1976,24 @@ const definitions = [
             romasku.coverSwitchLongPressDuration("{{coverSwitch}}_long_press_duration", "{{coverSwitch}}"),
             {% endfor %}
             {# Dimmers, per channel: the light, its range, curve, power-on, switch, fade and hold. #}
-            {% if device.dimmerNames and device.secondary_mcu_image %}
-            romasku.dimmerTransition({{device.dimmerNames | tojson}}),
+            {% if device.dimmerNames and (device.secondary_mcu_image or device.hk_dimmer) %}
+            romasku.dimmerTransition({{device.dimmerNames | tojson}}{% if device.hk_dimmer %}, true{% endif %}),
             {% endif %}
             {% for dimmerName in device.dimmerNames %}
             {% set dimmer_index = loop.index %}
             light({ endpointNames: ["{{dimmerName}}"], effect: false, powerOnBehavior: false }),
-            romasku.dimmerMinLevel("min_level", "{{dimmerName}}"),
-            romasku.dimmerMaxLevel("max_level", "{{dimmerName}}"),
+            romasku.dimmerMinLevel("min_level", "{{dimmerName}}"{% if device.hk_dimmer %}, true{% endif %}),
+            romasku.dimmerMaxLevel("max_level", "{{dimmerName}}"{% if device.hk_dimmer %}, true{% endif %}),
             romasku.dimmerOnLevel("on_level", "{{dimmerName}}"),
 {% for dp in device.dp_attributes if dp.dimmer == dimmer_index and dp.type == "E" %}
 {{ dp_extend(dp, device, first_endpoint) }}{% endfor %}
-            {% if device.secondary_mcu_image %}
-            romasku.dimmerPowerOnChannel("{{dimmerName}}"),
+            {% if device.secondary_mcu_image or device.hk_dimmer %}
+            romasku.dimmerPowerOnChannel("{{dimmerName}}"{% if device.hk_dimmer %}, true{% endif %}),
             {% endif %}
             romasku.dimmerSwitchType("switch_type", "{{dimmerName}}"),
+            {% if device.hk_dimmer %}
+            romasku.hkCustomCurve("{{dimmerName}}", {{ 65338 + dimmer_index - 1 }}),
+            {% endif %}
 {% for dp in device.dp_attributes if dp.dimmer == dimmer_index and dp.type != "E" %}
 {{ dp_extend(dp, device, first_endpoint) }}{% endfor %}
             {% if device.secondary_mcu_image %}
@@ -1722,11 +2018,59 @@ const definitions = [
                 "What a triple press sends to the bound lights when the gestures drive them (as double_press_action; default none). Open Dimmer firmware"),
             {% endif %}
             {% endif %}
+            {% if device.hk_dimmer %}
+            {# The module's own settings on the virtual MCU's Open Dimmer paths, and the virtual
+               MCU's Open Dimmer 2.2.0 ones: with any version. #}
+            romasku.dimmerCountdown("{{dimmerName}}", true),
+            romasku.dimmerSwitchMode("{{dimmerName}}", true),
+            romasku.dimmerFastPress("{{dimmerName}}", true),
+            romasku.dimmerStartupLevel("{{dimmerName}}", true),
+            romasku.dimmerStartBoost("{{dimmerName}}", true),
+            romasku.dimmerLongPressFromOff("{{dimmerName}}", true),
+            romasku.dimmerDoubleTapFull("{{dimmerName}}", true),
+            romasku.dimmerLampCompensation("{{dimmerName}}", true),
+            {# The slow zones: Basic attributes of the module itself (0xff3c / 0xff3d off, 0xff3e /
+               0xff3f hold), Open Dimmer's DPs 152 / 157 and 154 / 159 there. #}
+            romasku.ownMcuNumeric({
+                name: "fade_off_slow_zone",
+                endpointName: "{{dimmerName}}",
+                attrId: {{ "0x%x"|format(65340 + dimmer_index - 1) }},
+                description: "Switching off: the fade slows down to an even end (1 step in 10 ms at the minimum) in this lowest part of the range from min_level to max_level, then stays 80 ms at the minimum before dark (default 15; 0: linear down to the minimum)",
+                valueMin: 0,
+                valueMax: 100,
+                unit: "%",
+                minMcu: 0,
+            }),
+            romasku.ownMcuNumeric({
+                name: "hold_slow_zone",
+                endpointName: "{{dimmerName}}",
+                attrId: {{ "0x%x"|format(65342 + dimmer_index - 1) }},
+                description: "Wall switch hold: dimming slows down in this lowest part of the range from min_level to max_level (to half a step in 10 ms at the minimum), to pick a very dim level; going down, and rising from off (default 25; 0: the hold's rate all the way)",
+                valueMin: 0,
+                valueMax: 100,
+                unit: "%",
+                minMcu: 0,
+            }),
+            romasku.dimmerExecuteIfOff("{{dimmerName}}", true),
+            romasku.dimmerOnLevelLocal("{{dimmerName}}", true),
+            romasku.dimmerBrightnessFadeTime("{{dimmerName}}", true),
+            {% if device.dimmer_only %}
+            romasku.dimmerBindSetting("bind_mode", "{{dimmerName}}", 0xff12, ["auto", "off", "mirror", "remote"], "Bound lights",
+                "What goes to the lights and groups bound to this channel's wall switch (in Bind: source endpoint {{ loop.index + device.dimmerNames|length }}): auto (default) = mirror in the normal switch_mode, remote in detached; off = nothing; mirror = they follow the wall switch (on, off, a momentary switch's hold) and the module button; remote = only the wall switch's gestures drive them (single and press: toggle, hold: move, its release: stop, double / triple: their actions), in the normal switch_mode while the channel acts as before", true),
+            romasku.dimmerBindSetting("double_press_action", "{{dimmerName}}", 0xff13, ["none", "full", "off", "scene_1", "scene_2"], "Double press (bound lights)",
+                "What two short presses of a momentary wall switch send to the bound lights when its gestures drive them (bind_mode remote, or auto in the detached switch_mode): full brightness (default), off, or Recall Scene 1 / 2 of the group the Scenes binding goes to (scene ids of scene_store). In the normal switch_mode the channel itself acts on the presses too (two quick taps: max_level, or a toggle each with double_tap_full off)", true),
+            romasku.dimmerBindSetting("triple_press_action", "{{dimmerName}}", 0xff14, ["none", "full", "off", "scene_1", "scene_2"], "Triple press (bound lights)",
+                "What three short presses of a momentary wall switch send to the bound lights when its gestures drive them (as double_press_action; default none)", true),
+            {% endif %}
+            {% endif %}
+            {% if device.dimmer_only and device.dimmerNames|length > 1 %}
+            ...romasku.dimmerFollow("{{dimmerName}}", {{device.dimmerNames | tojson}}{% if device.hk_dimmer %}, true{% endif %}),
+            {% endif %}
             {% endfor %}
-            {% if device.dimmerNames and device.secondary_mcu_image %}
-            romasku.dimmerGestures({{device.dimmerNames | tojson}}),
-            romasku.dimmerPowerOnPerChannel({{device.dimmerNames | tojson}}),
-            romasku.dimmerIdentify({{device.dimmerNames | tojson}}),
+            {% if device.dimmerNames and (device.secondary_mcu_image or device.hk_dimmer) %}
+            romasku.dimmerGestures({{device.dimmerNames | tojson}}{% if device.hk_dimmer %}, true{% endif %}),
+            romasku.dimmerPowerOnPerChannel({{device.dimmerNames | tojson}}{% if device.hk_dimmer %}, true{% endif %}),
+            romasku.dimmerIdentify({{device.dimmerNames | tojson}}{% if device.hk_dimmer %}, true{% endif %}),
             {% elif device.dimmerNames %}
             // Universal power-on behavior (shared DP, e.g. U0E) - one expose only.
             romasku.dimmerPowerOnBehavior("power_on_behavior"),
@@ -1735,19 +2079,24 @@ const definitions = [
             // Device: technical settings last, on the device itself (no endpoint: they are the
             // module's, not a channel's; the attributes are endpoint 1's Basic cluster).
             {% if device.has_secondary_mcu %}
-            romasku.mcuVersion("mcu_version"),
+            romasku.mcuVersion("mcu_version"{% if device.hk_dimmer %}, undefined, true{% endif %}),
             {% if device.secondary_mcu_image %}
             romasku.mcuFirmware(),
+            romasku.mcuBuild(),
             romasku.mcuHealth(),
             romasku.mcuFlasher(),
             romasku.factoryIdentity(),
+            romasku.nwkCommandSecurity(),
+            {% elif device.hk_dimmer %}
+            romasku.factoryIdentity(true),
+            romasku.nwkCommandSecurity(true),
             {% endif %}
             {% endif %}
-            romasku.multiPressResetCount("multi_press_reset_count"),
+            romasku.multiPressResetCount("multi_press_reset_count"{% if device.hk_dimmer %}, undefined, true{% endif %}),
             {% if device.has_dedicated_net_led %}
             romasku.networkIndicator("network_led"),
             {% endif%}
-            romasku.deviceConfig("device_config"),
+            romasku.deviceConfig("device_config"{% if device.hk_dimmer %}, undefined, true{% endif %}),
             romasku.deviceConfigExt("device_config_ext"),
             {% if device.dp_relay_cnt > 0 %}romasku.dpConfig("dp_config"),
             {% endif %}
@@ -1767,6 +2116,21 @@ const definitions = [
             // would then fail on the missing endpoint {{ last_endpoint }}: interview it again first.
             if (!device.getEndpoint({{ last_endpoint }})) {
                 await device.interview(true);
+            }
+            {% elif device.hk_dimmer and device.dimmer_only and device.dimmerNames %}
+            {% set bind_endpoint = 2 * (device.dimmerNames | length) %}
+            // Right after the conversion from the stock firmware Zigbee2MQTT may still hold the
+            // stock firmware's endpoints (1, 2 and 242, the same clusters on 1 and 2 but no wall
+            // switch endpoints): its interview after the OTA can run before the converted module
+            // is back, and answers from its database. The wall switches' Bind source endpoints
+            // (up to {{ bind_endpoint }}) and the new clusters would then stay unknown: interview it
+            // again first. Not answered now: configure goes on (endpoints 1 and 2 are there).
+            if (!device.getEndpoint({{ bind_endpoint }})) {
+                try {
+                    await device.interview(true);
+                } catch (error) {
+                    // not answered now: the next configure tries again
+                }
             }
             {% endif %}
             {% if device.dimmerNames or (device.dp_attributes | selectattr("min_mcu") | list) %}
@@ -1793,6 +2157,38 @@ const definitions = [
                 }
                 await new Promise((resolve) => setTimeout(resolve, 2000));
             }
+            {% if device.hk_dimmer %}
+            // The virtual MCU's settings (its dp attributes, per channel), the custom curves (one
+            // each: 34-byte octet strings) and the slow zones, read once so none stays unknown
+            // (nothing reports them); not from a module that did not answer (offline).
+            if (realMcuVersion(mcuVersion)) {
+                for (const attrs of [{% for dimmerName in device.dimmerNames %}{% set idx = loop.index %}[{% for dp in device.dp_attributes if dp.dimmer == idx %}0x{{("ff" ~ dp.attr)|lower}}{{ ", " if not loop.last }}{% endfor %}], {% endfor %}{% for dimmerName in device.dimmerNames %}[{{ "0x%x"|format(65338 + loop.index - 1) }}], {% endfor %}[{% for i in range(2 * device.dimmerNames|length) %}{{ "0x%x"|format(65340 + i) }}{{ ", " if not loop.last }}{% endfor %}]]) {
+                    try {
+                        await mcuEndpoint.read("genBasic", attrs);
+                    } catch (error) {
+                        // not answered now; read on the next configure or with a refresh
+                    }
+                }
+                try {
+                    await mcuEndpoint.read("genBasic", [0xff59]); // factory_identity
+                } catch (error) {
+                    // an older build without it, or not answered now
+                }
+                try {
+                    await mcuEndpoint.read("genBasic", [0xff5d]); // nwk_command_security
+                } catch (error) {
+                    // an older build without it, or not answered now
+                }
+                // The module reports nwk_command_security to the Basic cluster's bindings when
+                // the coordinator stops answering joins through it (tc_link_key_stale) and when
+                // it answers again: bound to the coordinator (otherwise only a refresh shows it).
+                try {
+                    await reporting.bind(mcuEndpoint, coordinatorEndpoint, ["genBasic"]);
+                } catch (error) {
+                    // not answered now; bound at the next configure
+                }
+            }
+            {% endif %}
             {% if device.dp_attributes | selectattr("min_mcu") | list %}
             // Settings only Open Dimmer has ("x.y.z own"): a stock MCU's module answers 0 for them.
             if (typeof mcuVersion === "string" && mcuVersion.endsWith(" own")) {
@@ -1820,6 +2216,11 @@ const definitions = [
                 } catch (error) {
                     // not answered now; bound at the next configure, the report comes within 10 min
                 }
+                try {
+                    await mcuEndpoint.read("genBasic", [0xff5f]); // mcu_build
+                } catch (error) {
+                    // an older build without it, or not answered now; reported at the MCU's next start
+                }
             } else if (mcuVersion !== undefined) {
                 // A module with the SWD master (the SW token, mcu_flasher.c) reports its status
                 // to the Basic cluster's bindings too: bound with the stock MCU as well, so that
@@ -1839,6 +2240,11 @@ const definitions = [
             if (mcuVersion !== undefined) {
                 try {
                     await mcuEndpoint.read("genBasic", [0xff59]); // factory_identity
+                } catch (error) {
+                    // an older build without it, or not answered now
+                }
+                try {
+                    await mcuEndpoint.read("genBasic", [0xff5d]); // nwk_command_security
                 } catch (error) {
                     // an older build without it, or not answered now
                 }
@@ -1937,14 +2343,20 @@ const definitions = [
             // The settings shown on the page, read once so none stays unknown.
             for (const [cluster, attrs] of [["genOnOff", ["startUpOnOff"]], ["genLevelCtrl", ["onLevel"]],
                                             ["lightingBallastCfg", ["minLevel", "maxLevel"]],
-                                            ["genOnOffSwitchCfg", ["switchType"]]]) {
+                                            ["genOnOffSwitchCfg", ["switchType"]]{% if device.hk_dimmer %},
+                                            ["genLevelCtrl", ["options", 0xff11, 0xff12]],
+                                            ["genOnOff", [0xff10]], ["genOnOffSwitchCfg", [0xff10, 0xff11]],
+                                            ["genLevelCtrl", ["startUpCurrentLevel"]], ["lightingBallastCfg", [0xff10, 0xff11]],
+                                            ["genOnOffSwitchCfg", [0xff15, 0xff16]]{% if device.dimmer_only %},
+                                            ["genOnOffSwitchCfg", [0xff12, 0xff13, 0xff14]]{% if device.dimmerNames|length > 1 %},
+                                            ["genOnOffSwitchCfg", [0xff17, 0xff18, 0xff19]]{% endif %}{% endif %}{% endif %}]) {
                 try {
                     await dimmer{{loop.index}}.read(cluster, attrs);
                 } catch (error) {
                     // not answered now; read on the next configure or with a refresh
                 }
             }
-            {% if device.secondary_mcu_image %}
+            {% if device.secondary_mcu_image or device.hk_dimmer %}
             try {
                 // Wall switch gestures (Open Dimmer firmware); older module builds lack the cluster.
                 // Each gesture is an event: report changes only (maximum interval 0), else
@@ -1961,6 +2373,8 @@ const definitions = [
             } catch (error) {
                 // not there: no gestures
             }
+            {% endif %}
+            {% if device.secondary_mcu_image %}
             if (openDimmer2114) {
                 try {
                     await dimmer{{loop.index}}.read("genLevelCtrl", [0xff12]); // brightness_fade_time
@@ -1972,7 +2386,8 @@ const definitions = [
                 for (const [cluster, attrs] of [["genOnOff", [0xff10]], ["genOnOffSwitchCfg", [0xff10, 0xff11, 0xff15, 0xff16]],
                                                 ["genLevelCtrl", ["startUpCurrentLevel", "options", 0xff11]],
                                                 ["lightingBallastCfg", [0xff10, 0xff11, 0xff12]]{% if device.dimmer_only %},
-                                                ["genOnOffSwitchCfg", [0xff12, 0xff13, 0xff14]]{% endif %}]) {
+                                                ["genOnOffSwitchCfg", [0xff12, 0xff13, 0xff14]]{% if device.dimmerNames|length > 1 %},
+                                                ["genOnOffSwitchCfg", [0xff17, 0xff18, 0xff19]]{% endif %}{% endif %}]) {
                     try {
                         await dimmer{{loop.index}}.read(cluster, attrs);
                     } catch (error) {
@@ -1993,7 +2408,7 @@ const definitions = [
 ];
 
 {% if stock_ota %}
-// The stock modules of the boards that carry the Open Dimmer image ({% for stock in stock_ota %}{{ stock.vendor }} {{ stock.model }}{{ ", " if not loop.last }}{% endfor %}):
+// The stock modules of the dimmer boards converted from stock ({% for stock in stock_ota %}{{ stock.vendor }} {{ stock.model }}{{ ", " if not loop.last }}{% endfor %}):
 // zigbee-herdsman-converters' own definition, with OTA, for those boards' stock manufacturer
 // names only. Zigbee2MQTT then offers the conversion (the -from_tuya image of the OTA index)
 // with this file alone; tuya_with_ota.js gives OTA to some 60 stock models at once.

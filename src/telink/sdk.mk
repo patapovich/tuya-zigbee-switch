@@ -173,6 +173,28 @@ sdk-clean:
 # Include SDK dependency files (if they exist)
 -include $(SDK_DEPS)
 
+# SDK files taken with fixes backported from later SDK releases, or with fixes of our own: the
+# SDK's file (its CRs dropped) with patch_sdk/<its path>.patch applied, written to
+# $(BUILD_DIR)/sdk_patched/ and compiled to the object the SDK's file would give, so every flag
+# above (and the Makefile's) stays as for the SDK's file. The SDK file's own directory comes first
+# on the include path, for its relative includes. Each patch says what it changes and from which
+# release (zcl_reporting.c: reports with an APS ACK, ours).
+SDK_PATCHED := zigbee/mac/mac_phy.c proj/drivers/drv_nv.c zigbee/bdb/bdb.c zigbee/zdo/zdp.c \
+               zigbee/zcl/zcl_reporting.c
+SDK_PATCHED_OBJS := $(SDK_PATCHED:%.c=$(BUILD_DIR)/sdk/%.o)
+.SECONDARY: $(SDK_PATCHED:%.c=$(BUILD_DIR)/sdk_patched/%.c)
+
+$(BUILD_DIR)/sdk_patched/%.c: $(SDK_PATH)/%.c patch_sdk/%.c.patch
+	@mkdir -p $(dir $@)
+	@tr -d '\r' < $< > $@.orig
+	@patch -s -o - $@.orig < patch_sdk/$*.c.patch > $@.tmp && mv $@.tmp $@
+	@rm -f $@.orig
+
+$(SDK_PATCHED_OBJS): $(BUILD_DIR)/sdk/%.o: $(BUILD_DIR)/sdk_patched/%.c
+	@echo "Compiling SDK $(SDK_PATH)/$*.c + patch_sdk/$*.c.patch"
+	@mkdir -p $(dir $@)
+	@$(CC) $(GCC_FLAGS) $(DEVICE_DEFS) -I$(dir $(SDK_PATH)/$*.c) $(INCLUDE_PATHS) -c -o $@ $<
+
 # Special compiler flags for specific SDK files
 $(BUILD_DIR)/sdk/proj/drivers/drv_nv.o: GCC_FLAGS += -Dnv_resetToFactoryNew=nv_resetToFactoryNew__sdk
 # The SDK's xcrc32 and its 1 KB table renamed away (unreferenced: dropped by --gc-sections): its
@@ -183,10 +205,12 @@ $(SDK_OBJS): GCC_FLAGS += -fpack-struct
 # Dimmer-only boards (near the OTA limit): the SDK's logic for size, as the project's own objects
 # (src/telink/Makefile: -Os with -fno-jump-tables, which tc32-gcc's -Os needs; check-jump-tables
 # checks the ELF). The radio, flash, clock and timer drivers (zigbee/mac, platform/, proj/drivers)
-# keep -O2 for their timing, and the NV driver its tested code. ~2 KB.
+# keep -O2 for their timing; the NV driver (proj/drivers/drv_nv.c, no timing of its own: the flash
+# driver below it keeps -O2) is -Os too, about 730 bytes less (ZDMS16-2). ~2.8 KB.
 ifneq ($(DIMMER_ONLY),)
 SDK_OS_OBJS := $(filter $(addprefix $(BUILD_DIR)/sdk/,zigbee/zcl/% zigbee/aps/% zigbee/af/% \
-                 zigbee/bdb/% zigbee/zdo/% zigbee/common/% proj/os/% proj/common/%),$(SDK_OBJS))
+                 zigbee/bdb/% zigbee/zdo/% zigbee/common/% proj/os/% proj/common/% \
+                 proj/drivers/drv_nv.o),$(SDK_OBJS))
 $(SDK_OS_OBJS): GCC_FLAGS += -Os -fno-jump-tables
 endif
 

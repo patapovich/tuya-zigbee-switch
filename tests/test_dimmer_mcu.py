@@ -613,6 +613,8 @@ int main(void) {
     for (int i = 0; i < NV_LAYOUT_DIMMERS; i++) printf("dimmer_options %d\n", NV_ITEM_DIMMER_LEVEL_OPTIONS(i));
     for (int i = 0; i < NV_LAYOUT_DIMMERS; i++) printf("dimmer_local %d\n", NV_ITEM_DIMMER_ON_LEVEL_LOCAL(i));
     for (int i = 0; i < NV_LAYOUT_DIMMERS; i++) printf("dimmer_fade %d\n", NV_ITEM_DIMMER_BRIGHTNESS_FADE_TIME(i));
+    for (int i = 0; i < NV_LAYOUT_DIMMERS; i++) printf("dimmer_bind %d\n", NV_ITEM_DIMMER_BIND(i));
+    for (int i = 0; i < NV_LAYOUT_DIMMERS; i++) printf("dimmer_follow %d\n", NV_ITEM_DIMMER_FOLLOW(i));
     printf("fixed %d\nfixed %d\nfixed %d\nfixed %d\nfixed %d\nfixed %d\nfixed %d\nfixed %d\n",
            NV_ITEM_CURRENT_VERSION_IN_NV, NV_ITEM_DEVICE_CONFIG, NV_ITEM_BASIC_CLUSTER_DATA,
            NV_ITEM_DEVICE_TYPE, NV_ITEM_MULTI_PRESS_RESET_COUNT, NV_ITEM_POLL_CONTROL_CONFIG,
@@ -652,6 +654,8 @@ def test_nv_item_ids_of_the_fork_are_frozen():
     assert ids["dimmer_options"] == [46, 47, 48, 49]
     assert ids["dimmer_local"] == [50, 51, 52, 53]
     assert ids["dimmer_fade"] == [54, 55, 56, 57]
+    assert ids["dimmer_bind"] == [61, 62, 63, 64]
+    assert ids["dimmer_follow"] == [69, 70, 71, 72]
 
 
 def test_nv_item_ids_are_unique():

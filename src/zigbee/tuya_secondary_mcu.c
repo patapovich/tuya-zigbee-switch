@@ -1,3 +1,4 @@
+#include "hk_dimmer.h"
 #include "zigbee/tuya_secondary_mcu.h"
 #include "zigbee/tuya_mcu_diag.h"
 #include "zigbee/tuya_mcu_ota.h"
@@ -45,6 +46,13 @@ static uint8_t checksum(const uint8_t *buf, uint16_t len) {
 static uint8_t g_write_failures = 0;
 
 static int uart_send(const uint8_t *buf, uint16_t len) {
+#ifdef HK_DIMMER
+    if (hk_dimmer_active()) {
+        /* The virtual MCU of the ZH-Z06 dimmers takes the frame; nothing goes on the wire. */
+        hk_dimmer_from_module(buf, len);
+        return 0;
+    }
+#endif
     if (hal_uart_write(buf, len, NULL) == HAL_UART_OK) {
         g_write_failures = 0;
         return 0;
@@ -424,6 +432,13 @@ static void tx_kick(void) {
         }
     }
 }
+
+#ifdef HK_DIMMER
+uint8_t tuya_secondary_mcu_tx_pending(void) {
+    return g_tx_busy || g_txq_count > 0;
+}
+
+#endif
 
 /* What the DP unit being dispatched is to us (see the getters in the header). */
 static uint8_t g_report_acks_write = 0;
@@ -814,6 +829,18 @@ void tuya_secondary_mcu_poll(void) {
     if (!g_enabled) {
         return;
     }
+#ifdef HK_DIMMER
+    if (hk_dimmer_active()) {
+        hk_dimmer_poll();
+        uint16_t n = hk_dimmer_to_module(g_rx + g_rx_len, (uint16_t)(RX_CAPACITY - g_rx_len));
+        if (n > 0) {
+            g_rx_len     = (uint16_t)(g_rx_len + n);
+            g_rx_last_ms = hal_millis();
+        }
+        rx_process();
+        return;
+    }
+#endif
     while (g_rx_len < RX_CAPACITY && hal_uart_rx_available() > 0) {
         uint16_t read_len = 0;
         if (hal_uart_read(g_rx + g_rx_len, (uint16_t)(RX_CAPACITY - g_rx_len),
@@ -827,6 +854,16 @@ void tuya_secondary_mcu_poll(void) {
     rx_process();
 }
 
+#ifdef HK_DIMMER
+void tuya_secondary_mcu_uart_reinit(void) {
+    printf("Dimming MCU link stuck, reinitialising UART\r\n");
+    tuya_mcu_diag.uart_reinit++;
+    hal_uart_deinit();
+    hal_uart_init(&g_uart_cfg);
+}
+
+#endif
+
 void tuya_secondary_mcu_init(const hal_uart_config_t *cfg) {
     if (cfg != NULL) {
         g_uart_cfg = *cfg;
@@ -839,4 +876,9 @@ void tuya_secondary_mcu_init(const hal_uart_config_t *cfg) {
     hal_tasks_init(&g_gate_timer);
     hal_uart_init(cfg);
     g_enabled = 1;
+#ifdef HK_DIMMER
+    if (hk_dimmer_active()) {
+        hk_dimmer_start();
+    }
+#endif
 }

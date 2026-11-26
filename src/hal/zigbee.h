@@ -250,6 +250,14 @@ uint16_t hal_zigbee_bound_group(uint8_t endpoint, uint16_t cluster_id);
 
 #endif
 
+#ifdef MCU_FLASHER_DUMP
+
+/** Debug builds (zigbee/nwk_sec.h NWK_SEC_TEST_*): the stack's "secure all" flag cleared, in
+ *  RAM and with in_nv also in NV, so the module's own NWK commands go out unsecured. */
+void hal_zigbee_nwk_sec_clear(uint8_t in_nv);
+
+#endif
+
 /** Find cluster definition by endpoint and cluster ID */
 static inline hal_zigbee_cluster *
 hal_zigbee_find_cluster(hal_zigbee_endpoint *endpoints, uint8_t endpoints_count,

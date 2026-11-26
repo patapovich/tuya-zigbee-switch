@@ -28,6 +28,13 @@ af_simple_descriptor_t *telink_zigbee_hal_zcl_get_descriptors(void);
 /* The stack's report_handler(), unless hal_zigbee_hold_reports holds the reporting. */
 void telink_zigbee_report_handler(void);
 
+// How many more reports may ask for an APS ACK now, if above 0: the SDK's zcl_reporting.c,
+// patched (patch_sdk/zigbee/zcl/zcl_reporting.c.patch, which says why there is a limit). Read
+// from the APS TX cache as it is: frames handed out earlier in the same main-loop pass reach it
+// only later, so reports sent back to back (mcu_version, then mcu_build) see the same room and
+// can go 1-2 past the limit.
+int zcl_reportAckRoom(void);
+
 void telink_gpio_hal_setup_wake_ups();
 
 void telink_gpio_reinit_after_deep_retention();

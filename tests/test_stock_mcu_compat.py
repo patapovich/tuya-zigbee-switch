@@ -16,6 +16,14 @@ not re-recorded. The one difference argued there is the dump retry (section
 10, change 6): when the run's first-contact dump got no DP report, it is
 asked once more, 1 s after the contact (scenario late_ready), once per run.
 
+Another one, a restart: the module now restarts 1 s after its own leave (src/device_config/
+reset.c restart_after_leave), so the module button's rejoin request (scenario module_button) is
+followed by a restart of the module alone, as after a ZTU OTA or a config write in phase 1. The
+scenario ends just before it (phase 1 sent nothing in its 10 s after the request either), and the
+start-up after it sends the MCU exactly phase 1's ztu_restart trace
+(test_the_module_buttons_leave_is_followed_by_a_phase_1_ztu_restart): no frame phase 1 does not
+send, in an order and at times phase 1 has.
+
 One more, when the carried image is over 12 KB (Open Dimmer 2.2.0 and later):
 the ring gate (tuya_mcu_ota.h) serves such an image only to an Open Dimmer that
 reported its settings ring moved, or to a bootloader without an app (mode 2).
@@ -115,11 +123,15 @@ def zigbee_commands(mcu: StockMcu, device: Device) -> None:
             mcu.run(2500)
 
 
+LEAVE_RESTART_MS = 1000    # device_config/reset.h LEAVE_RESTART_DELAY_MS
+
+
 def module_button(mcu: StockMcu, device: Device) -> None:
-    """The stock MCU asks for a rejoin after a 3 s hold of the module button."""
+    """The stock MCU asks for a rejoin after a 3 s hold of the module button: the module leaves
+    and restarts 1 s later (module docstring); until just before that."""
     mcu.run(5000)
     mcu.send(0x03, bytes([0x01]))
-    mcu.run(10_000)
+    mcu.run(LEAVE_RESTART_MS - mcu.step_ms)
 
 
 def spurious_frames(mcu: StockMcu, device: Device) -> None:
@@ -328,6 +340,39 @@ def test_block_requests_of_a_link_probe_are_answered_like_any_other(runs):
     assert answers[1] == answers[2] == answers[3]          # 0xC0 / 16: v1, mode 3, mode 6
     assert answers[1][13:] == IMAGE[0xC0:0xD0]
     assert answers[4][:4] == (64).to_bytes(4, "big") and len(answers[4]) == 13 + 64
+
+
+def test_the_module_buttons_leave_is_followed_by_a_phase_1_ztu_restart():
+    """The restart after the leave (module docstring): the module alone restarts, the MCU runs
+    on (its frame numbers too), and the factory-new start-up after it sends the MCU what phase 1
+    sends after a restart of the module alone, nothing more."""
+    proc = StubProc(device_config=ZDMS16_2, dp_config=ZDMS16_2_DP_CONFIG).start()
+    try:
+        device = Device(proc)
+        pump(proc)
+        mcu = StockMcu(proc, device)
+        mcu.poll()
+        module_button(mcu, device)
+        assert proc.is_running()
+        device.step_time(mcu.step_ms)
+        assert proc.wait_for_exit(2.0), "no restart after the leave"
+        assert mcu.faults == []
+    finally:
+        proc.stop()
+    proc = StubProc(device_config=ZDMS16_2, dp_config=ZDMS16_2_DP_CONFIG, joined=False).start()
+    try:
+        device = Device(proc)
+        pump(proc)
+        after = StockMcu(proc, device)
+        after.seq = mcu.seq
+        after.poll()
+        ztu_restart(after, device)
+        want = golden()["scenarios"]["ztu_restart"]
+        assert diff(encode(after), want["trace"]) is None, diff(encode(after), want["trace"])
+        assert state(device) == want["state"]
+        assert set(after.cmds()) <= STOCK_CMDS and after.faults == []
+    finally:
+        proc.stop()
 
 
 def stock_run(**kw) -> tuple[StubProc, Device, StockMcu]:

@@ -8,8 +8,15 @@
  * whatever version number it has, so it is never offered anything (1.x is not
  * even asked). Our firmware gets the carried image offered (0xA0) when it is
  * newer: by the build number when the answer has one, else by the version
- * byte. It restarts into its bootloader, which asks for the image block by
- * block (0xA1, answered from flash, stateless) and reports the result (0xA2).
+ * byte. So a carried build newer than the running one is offered with the
+ * same version (a test build of 2.2.8 under a module that carries the 2.2.8
+ * release), and a running build newer than the carried one is never offered
+ * it, whatever the version bytes say; the app and its bootloader's power-on
+ * probe compare the same way (open-dimmer src/tuya.c, boot/boot.c pick()).
+ * An app that takes the offer restarts into its bootloader, which asks for
+ * the image block by block (0xA1, answered from flash, stateless) and reports
+ * the result (0xA2). The build the app said is Basic 0xff5f
+ * (tuya_mcu_ota_register_attrs), as the version is 0xff12.
  * A bootloader without a valid app (e.g. after a power cut during an update)
  * asks by itself, and the v2 bootloader also asks for the image header at
  * power-on, in its rescue windows and when the app's link watchdog restarts
@@ -198,9 +205,10 @@ uint16_t tuya_mcu_ota_own_build(void);
  * in Basic 0xff48 (octet string,
  * tuya_mcu_health_t without its length byte, little endian; empty until the first report)
  * and, at the first report after the module's or the MCU's start (the MCU's own restart: an
- * update, a watchdog reset; the report tells the reset cause) and every HEALTH_REPORT_EVERY-th
- * after it, sent as an attribute report to the Basic cluster's bindings (the converter binds it
- * to the coordinator). Rounds while the module is not on a network are not counted. Open
+ * update, a watchdog reset; the report tells the reset cause), the second (~2 min later: the
+ * first can come while the hub still interviews or configures the module after a restart, and
+ * be dropped) and every HEALTH_REPORT_EVERY-th after the first, sent as an attribute report to
+ * the Basic cluster's bindings (the converter binds it to the coordinator). Rounds while the module is not on a network are not counted. Open
  * Dimmer 2.2.7 sends a round 3 s after every identity question (before: a minute after its
  * start, then every 2 min), so that first report follows a restart of either side at once. */
 #define HEALTH_REPORT_EVERY             5 /* health reports per one sent: ~10 min */
@@ -220,8 +228,10 @@ typedef struct __attribute__((packed)) {
 /** Start listening to the health report (DPs 130..138). */
 void tuya_mcu_ota_init(void);
 
-/** Append the health report attribute (Basic 0xff48) to a Basic cluster table; returns how
- *  many (0 on boards without an image). */
+/** Append the health report attribute (Basic 0xff48) and the Open Dimmer build (0xff5f, uint16,
+ *  as tuya_mcu_ota_own_build(); reported to the Basic cluster's bindings after every identity
+ *  answer, right after the version) to a Basic cluster table; returns how many (0 on boards
+ *  without an image). */
 uint8_t tuya_mcu_ota_register_attrs(hal_zigbee_attribute *table, uint8_t start_index);
 
 /** The MCU's network query that is no first contact, with no version

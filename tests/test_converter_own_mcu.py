@@ -84,11 +84,13 @@ for (const v of ["2.1.10 own", "2.1.10", "", "2.1.10 own", "1.0.7"]) {
 }
 console.log(JSON.stringify(steps));
 """))
-    own = ["2.1.10 own", 16, True]                  # 15 Open Dimmer exposes and mcu_firmware
+    own = ["2.1.10 own", 18, True]                  # 15 Open Dimmer exposes, mcu_firmware,
+                                                    # nwk_command_security and mcu_build
     assert out["2.1.10 own"] == own
     assert out["2.1.10"] == own
     assert out["empty"] == own
-    assert out["1.0.7"] == ["1.0.7", 2, False]      # the shared power_on_behavior and mcu_firmware
+    assert out["1.0.7"] == ["1.0.7", 3, False]      # the shared power_on_behavior, mcu_firmware
+                                                    # and nwk_command_security
 
 
 def test_power_on_per_channel_and_gestures_follow_the_own_mcu():
@@ -176,11 +178,13 @@ console.log(JSON.stringify({
     options: def.extend.flatMap((x) => x.options ?? []).map((o) => [o.name, o.values, o.label]),
 }));
 """))
-    assert out["oldHide"] == 2                  # as a stock MCU: shared power_on_behavior, mcu_firmware
-    assert out["oldShow"] == 16 + 23 + 6 + 8    # "show": every Open Dimmer setting, those of 2.2.0,
+    assert out["oldHide"] == 3                  # as a stock MCU: shared power_on_behavior, mcu_firmware,
+                                                # nwk_command_security
+    assert out["oldShow"] == 18 + 23 + 6 + 8 + 6  # "show": every Open Dimmer setting, those of 2.2.0,
                                                 # the 6 binding settings and 2.2.8's lamp_compensation,
-                                                # custom_curve, long_press_from_off and double_tap_full
-    assert out["newWins"] == [16, 2]
+                                                # custom_curve, long_press_from_off and double_tap_full,
+                                                # the 6 follow settings
+    assert out["newWins"] == [18, 3]
     assert out["oldShowStored"] == [{"dimming_curve_l1": "linear"}]
     assert out["options"] == [["open_dimmer_settings", ["auto", "show", "hide"], "Open Dimmer settings"],
                               ["transition", None, None],    # its own description (dimmerTransition)
@@ -294,9 +298,12 @@ const configure = async (versions) => {
     return {
         versionReads: reads.filter((l) => l[2] === "genBasic" && l[3][0] === 0xff12).length,
         // Open Dimmer's settings (not the SWD master's status 0xff50: test_converter_mcu_flasher;
-        // not the factory identity 0xff59: factoryReads)
-        ownReads: reads.filter((l) => l[2] === "genBasic" && ![0xff12, 0xff50, 0xff59].includes(l[3][0])).map((l) => l[3][0].toString(16)),
+        // not the factory identity 0xff59: factoryReads; not the NWK command security 0xff5d:
+        // nwkSecReads; not the MCU build 0xff5f: buildReads)
+        ownReads: reads.filter((l) => l[2] === "genBasic" && ![0xff12, 0xff50, 0xff59, 0xff5d, 0xff5f].includes(l[3][0])).map((l) => l[3][0].toString(16)),
         factoryReads: reads.filter((l) => l[2] === "genBasic" && l[3][0] === 0xff59).length,
+        nwkSecReads: reads.filter((l) => l[2] === "genBasic" && l[3][0] === 0xff5d).length,
+        buildReads: reads.filter((l) => l[2] === "genBasic" && l[3][0] === 0xff5f).length,
         dimmerReads: reads.filter((l) => l[2] !== "genBasic").map((l) => `${l[1]}:${l[2]}:${l[3].join("+")}`),
         reporting: h.log.filter((l) => l[0] === "report").map((l) => [l[1], l[2], ...(l[3].map ? l[3].map((r) => [r.attribute.ID ?? r.attribute, r.minimumReportInterval, r.maximumReportInterval]) : [l[3]])]),
         delays: [...h.delays],
@@ -352,6 +359,100 @@ def test_configure_reads_the_factory_identity_once_from_a_module_that_answered()
                                          await configure([new Error("timeout")])])))();
 """))
     assert [run["factoryReads"] for run in out] == [1, 1, 0]
+
+
+def test_configure_reads_the_nwk_command_security_once_from_a_module_that_answered():
+    """Basic 0xff5d (whether the module's own NWK commands are secured, src/zigbee/nwk_sec.h):
+    read once, whatever the MCU runs; not from a module that did not answer (offline); a read
+    that fails (a build before it) does not stop configure."""
+    out = json.loads(run_node(CONFIGURE + """
+(async () => {
+    const runs = [await configure(["1.0.7"]), await configure(["2.2.8 own"]),
+                  await configure([new Error("timeout")])];
+    // a build without the attribute: its read fails, configure goes on to the dimmers
+    const dev = h.device({versions: ["1.0.7"]});
+    const read = dev.getEndpoint(1).read;
+    dev.getEndpoint(1).read = async (cluster, attrs, ...rest) => {
+        if (cluster === "genBasic" && attrs.includes(0xff5d)) throw new Error("UNSUPPORTED_ATTRIBUTE");
+        return read(cluster, attrs, ...rest);
+    };
+    h.log.length = 0;
+    await def.configure(dev, {ID: 1}, def);
+    runs.push(h.log.filter((l) => l[0] === "read" && l[2] !== "genBasic").length);
+    console.log(JSON.stringify(runs));
+})();
+"""))
+    assert [run["nwkSecReads"] for run in out[:3]] == [1, 1, 0]
+    assert out[3] == 8                               # the dimmers' reads all done
+
+
+def test_mcu_build_is_a_diagnostic_of_open_dimmer_published_from_endpoint_1():
+    """Basic 0xff5f, the build Open Dimmer told the module in its identity answer
+    (src/zigbee/tuya_mcu_ota.h): two builds of one version (a test build and the release of
+    2.2.8) differ only in it. A device-level diagnostic, shown for any Open Dimmer as the health
+    report is (a stock MCU's unit gets no entity); published from a report or a read of
+    endpoint 1 whenever it is a build (0: none, a 2.1.x app), also when it comes before the
+    version report that makes the MCU Open Dimmer. Its get reads 0xff5f."""
+    out = json.loads(run_node(ZDMS + """
+const ver = (v) => { const d = h.device(); d.getEndpoint(1).clusters.genBasic.attributes[0xff12] = v; return d; };
+const ex = (dev, options = {}) => def.extend.filter((x) => !x.fake).flatMap((x) => x.exposes ?? [])
+    .flatMap((x) => (typeof x === "function" ? x(dev, options) : [x])).filter((x) => x.name === "mcu_build")
+    .map(({type, name, label, access, endpoint, category, unit}) => ({type, name, label, access,
+        endpoint: endpoint ?? null, category, unit: unit ?? null}));
+const tz = def.extend.filter((x) => !x.fake).flatMap((x) => x.toZigbee ?? []).find((t) => t.key.includes("mcu_build"));
+const builds = (rs) => rs.filter((r) => "mcu_build" in r);
+(async () => {
+    const dev = ver("2.2.8 own");
+    h.log.length = 0;
+    await tz.convertGet(dev.getEndpoint(1), "mcu_build", {device: dev});
+    console.log(JSON.stringify({
+        own: ex(ver("2.2.8 own")), own21: ex(ver("2.1.10 own")).length, stock: ex(ver("1.0.7")).length,
+        unknown: ex(ver("")).length, bare: ex(ver("2.2.8")).length,
+        hide: ex(ver("2.2.8 own"), {open_dimmer_settings: "hide"}).length,
+        report: builds(fz(ver("2.2.8 own"), 1, {[0xff5f]: 1213})),
+        first: builds(fz(ver(""), 1, {[0xff5f]: 1300})),
+        none: builds(fz(ver("2.1.10 own"), 1, {[0xff5f]: 0})),
+        other: builds(fz(ver("2.2.8 own"), 2, {[0xff5f]: 1213})),
+        get: h.log.filter((l) => l[0] === "read"),
+    }));
+})();
+"""))
+    assert out["own"] == [{"type": "numeric", "name": "mcu_build", "label": "MCU build", "access": 5,
+                           "endpoint": None, "category": "diagnostic", "unit": None}]
+    assert (out["own21"], out["stock"], out["unknown"], out["bare"], out["hide"]) == (1, 0, 0, 0, 0)
+    assert out["report"] == [{"mcu_build": 1213}]
+    assert out["first"] == [{"mcu_build": 1300}]
+    assert out["none"] == [] and out["other"] == []
+    assert out["get"] == [["read", 1, "genBasic", [0xFF5F]]]
+
+
+def test_configure_reads_the_mcu_build_once_from_an_open_dimmer():
+    """Read once from a module that has identified Open Dimmer (any version); not for a stock
+    MCU, a bare version (not identified) or a module that did not answer; a read that fails (a
+    module build before it) does not stop configure."""
+    out = json.loads(run_node(CONFIGURE + """
+(async () => {
+    const runs = [];
+    for (const v of ["2.2.8 own", "2.1.10 own", "1.0.7", "2.2.8", new Error("timeout")]) {
+        runs.push((await configure([v])).buildReads);
+    }
+    const normal = (await configure(["2.2.8 own"])).dimmerReads.length;
+    const dev = h.device({versions: ["2.2.8 own"]});
+    const read = dev.getEndpoint(1).read;
+    dev.getEndpoint(1).read = async (cluster, attrs, ...rest) => {
+        if (cluster === "genBasic" && attrs.includes(0xff5f)) throw new Error("UNSUPPORTED_ATTRIBUTE");
+        return read(cluster, attrs, ...rest);
+    };
+    h.log.length = 0;
+    await def.configure(dev, {ID: 1}, def);
+    const after = h.log.filter((l) => l[0] === "read");
+    console.log(JSON.stringify({runs, normal, dimmerReads: after.filter((l) => l[2] !== "genBasic").length,
+                                factoryReads: after.filter((l) => l[2] === "genBasic" && l[3][0] === 0xff59).length}));
+})();
+"""))
+    assert out["runs"] == [1, 1, 0, 0, 0]
+    assert out["dimmerReads"] == out["normal"] > 8     # the dimmers' reads all done
+    assert out["factoryReads"] == 1
 
 
 def test_configure_keeps_waiting_after_single_failed_reads():

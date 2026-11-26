@@ -97,9 +97,21 @@ void stub_app_shutdown() {
     puts("[STUB] Shutdown complete");
 }
 
-void stub_app_poll() {
+static int s_polls_held = 0;
+
+void stub_app_hold_polls(int hold) {
+    s_polls_held = hold;
+}
+
+void stub_app_pass(void) {
     app_task();
     stub_tasks_poll();
+}
+
+void stub_app_poll() {
+    if (!s_polls_held) {
+        stub_app_pass();
+    }
 }
 
 void stub_app_print_help(void) {
@@ -120,10 +132,17 @@ void stub_app_print_help(void) {
          "bytes)");
     puts("  freeze_time <0|1>                     - Freeze/unfreeze time");
     puts("  step_time <ms>                        - Advance time by ms");
+    puts("  millis_skew <reads>                   - Frozen time: next reads +1 ms "
+         "each");
+    puts("  hold_polls <0|1>                      - Hold/resume the main loop "
+         "passes");
+    puts("  poll <n>                              - Run n main loop passes now");
     puts("  swd_target <sub> ...                  - Dimmer MCU SWD model (see "
          "src/stub/hal/swd_target.h)");
     puts("  swd_pin <sub> ...                     - Drive the SWD pin layer by "
          "hand");
+    puts("  ssib [ram|nv|both <hex>]              - The stack's security record, byte 62");
+    puts("  tclk upddev <status> <type> | tunnel  - An Update Device / the trust centre's tunnel");
     puts("  q, quit                               - Exit");
 }
 

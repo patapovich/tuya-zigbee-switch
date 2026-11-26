@@ -64,6 +64,15 @@ int tuya_secondary_mcu_write_dp(uint8_t dpid, uint8_t dp_type,
 /** Queue a command we start (e.g. TUYA_MCU_CMD_QUERY_ALL_DP). */
 int tuya_secondary_mcu_queue_cmd(uint8_t cmd, const uint8_t *payload, uint16_t len);
 
+#ifdef HK_DIMMER
+
+/* 1 while writes to the MCU wait in the queue or for their answer (HK builds: the virtual MCU
+ * holds its frames to the dimming MCU meanwhile, so a change the module writes in parts goes
+ * out whole). */
+uint8_t tuya_secondary_mcu_tx_pending(void);
+
+#endif
+
 /** Send an answer to something the MCU asked, at once, echoing its seq. */
 int tuya_secondary_mcu_send_reply(uint8_t cmd, uint16_t seq,
                                   const uint8_t *payload, uint16_t len);
@@ -123,5 +132,13 @@ void tuya_secondary_mcu_set_command_callback(tuya_secondary_mcu_command_callback
 /** Called when a DP write actually goes out on the UART (not when queued). */
 typedef void (*tuya_secondary_mcu_tx_callback_t)(uint8_t dpid);
 void tuya_secondary_mcu_set_tx_callback(tuya_secondary_mcu_tx_callback_t callback);
+
+#ifdef HK_DIMMER
+
+/** The UART set up again as at the start (its pins and rate): the ZH-Z06 dimmers' virtual MCU
+ *  (hk_dimmer.c) writes the dimming MCU's frames itself and calls it when they keep failing. */
+void tuya_secondary_mcu_uart_reinit(void);
+
+#endif
 
 #endif

@@ -2,6 +2,7 @@
 #include "machine_io.h"
 
 #include "hal/swd_io.h"
+#include "hal/system.h"
 #include "hal/timer.h"
 #include "hal/uart.h"
 #include "hal/zigbee.h"
@@ -11,7 +12,9 @@
 
 #include "stub/stub_app.h"
 #include "zigbee/consts.h"
+#include "zigbee/nwk_sec.h"
 #include "zigbee/stock_nv.h"
+#include "zigbee/tclk_check.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -82,9 +85,20 @@ static int cmd_quit(int argc, char **argv) {
     (void)argc;
     (void)argv;
     (void)swd_target_save(); /* before the answer: a test may restart at once */
+    stub_system_power_cut(); /* the process ends as a power cut does */
     g_should_exit = 1;
     io_res_ok(NULL);
     return 0;
+}
+
+/* reboot: the chip resets alone (as its watchdog does: nothing saved first), the process ends;
+ * what a power cut clears (the kept byte) stays for the next start. */
+static int cmd_reboot(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    io_res_ok(NULL);
+    fflush(stdout);
+    hal_system_reset();
 }
 
 static int cmd_net(int argc, char **argv) {
@@ -492,6 +506,50 @@ static int cmd_step_time(int argc, char **argv) {
     return 0;
 }
 
+/* millis_skew <reads>: the frozen clock moves on 1 ms at each of its next reads (stub_millis_skew). */
+static int cmd_millis_skew(int argc, char **argv) {
+    char *e = NULL;
+    long  n = argc == 2 ? strtol(argv[1], &e, 10) : -1;
+
+    if (argc != 2 || *argv[1] == '\0' || *e || n < 0) {
+        fprintf(stderr, "Usage: millis_skew <reads>\n");
+        io_res_err("usage");
+        return -1;
+    }
+    stub_millis_skew((uint32_t)n);
+    io_res_ok("millis_skew=%ld", n);
+    return 0;
+}
+
+/* hold_polls <0|1>: no main loop pass between the commands while 1 (stub_app_hold_polls). */
+static int cmd_hold_polls(int argc, char **argv) {
+    if (argc != 2 || (strcmp(argv[1], "0") != 0 && strcmp(argv[1], "1") != 0)) {
+        fprintf(stderr, "Usage: hold_polls <0|1>\n");
+        io_res_err("usage");
+        return -1;
+    }
+    stub_app_hold_polls(argv[1][0] == '1');
+    io_res_ok("hold_polls=%c", argv[1][0]);
+    return 0;
+}
+
+/* poll <n>: n main loop passes now, also while they are held (stub_app_pass). */
+static int cmd_poll(int argc, char **argv) {
+    char *e = NULL;
+    long  n = argc == 2 ? strtol(argv[1], &e, 10) : -1;
+
+    if (argc != 2 || *argv[1] == '\0' || *e || n < 0 || n > 1000) {
+        fprintf(stderr, "Usage: poll <n>\n");
+        io_res_err("usage");
+        return -1;
+    }
+    for (long i = 0; i < n; i++) {
+        stub_app_pass();
+    }
+    io_res_ok("polled=%ld", n);
+    return 0;
+}
+
 /* stock_nv <file> <module> <item> <len>: the factory NV parser (zigbee/stock_nv.c) over a dump
  * of a module's flash. */
 static uint8_t  s_stock_flash[0x100000];
@@ -503,18 +561,26 @@ static void stock_flash_read(uint32_t addr, uint32_t len, uint8_t *buf) {
     }
 }
 
+static int stock_flash_load(const char *path) {
+    FILE *f = fopen(path, "rb");
+
+    if (!f) {
+        io_res_err("cannot_read=%s", path);
+        return -1;
+    }
+    s_stock_len = (uint32_t)fread(s_stock_flash, 1, sizeof(s_stock_flash), f);
+    fclose(f);
+    return 0;
+}
+
 static int cmd_stock_nv(int argc, char **argv) {
     if (argc != 5) {
         io_res_err("usage");
         return -1;
     }
-    FILE *f = fopen(argv[1], "rb");
-    if (!f) {
-        io_res_err("cannot_read=%s", argv[1]);
+    if (stock_flash_load(argv[1])) {
         return -1;
     }
-    s_stock_len = (uint32_t)fread(s_stock_flash, 1, sizeof(s_stock_flash), f);
-    fclose(f);
     uint16_t len = (uint16_t)strtoul(argv[4], NULL, 0);
     uint8_t  buf[256];
     char     hex[2 * sizeof(buf) + 1];
@@ -530,6 +596,142 @@ static int cmd_stock_nv(int argc, char **argv) {
         sprintf(hex + 2 * i, "%02x", buf[i]);
     }
     io_res_ok("found=%u data=%s", found, hex);
+    return 0;
+}
+
+/* stock_nv_take_ss <hex 81 bytes> [<hex 36 bytes>]: the take's check and mapping of a factory
+ * security record (zigbee/stock_nv.c), with the TC link key pair or without. */
+static int hex_bytes(const char *s, uint8_t *buf, size_t len) {
+    if (strlen(s) != 2 * len) {
+        return -1;
+    }
+    for (size_t i = 0; i < len; i++) {
+        char          two[3] = { s[2 * i], s[2 * i + 1], 0 };
+        char *        e      = NULL;
+        unsigned long v      = strtoul(two, &e, 16);
+
+        if (*e) {
+            return -1;
+        }
+        buf[i] = (uint8_t)v;
+    }
+    return 0;
+}
+
+static int cmd_stock_nv_take_ss(int argc, char **argv) {
+    uint8_t ss[STOCK_NV_SS_BYTES];
+    uint8_t pair[STOCK_NV_PAIR_BYTES];
+    char    hex[2 * sizeof(ss) + 1];
+
+    if ((argc != 2 && argc != 3) || hex_bytes(argv[1], ss, sizeof(ss)) ||
+        (argc == 3 && hex_bytes(argv[2], pair, sizeof(pair)))) {
+        io_res_err("usage");
+        return -1;
+    }
+    uint8_t r = stock_nv_take_ss(ss, argc == 3 ? pair : NULL);
+
+    for (size_t i = 0; i < sizeof(ss); i++) {
+        sprintf(hex + 2 * i, "%02x", ss[i]);
+    }
+    io_res_ok("r=%u ss=%s", r, hex);
+    return 0;
+}
+
+#ifdef MCU_FLASHER_DUMP
+
+/* stock_nv_log <file>: the debug builds' look at the W4c marker's log (zigbee/stock_nv.c
+ * stock_nv_log_scan) over a flash image. */
+static int cmd_stock_nv_log(int argc, char **argv) {
+    uint32_t at   = 0;
+    uint8_t  boot = 0;
+
+    if (argc != 2) {
+        io_res_err("usage");
+        return -1;
+    }
+    if (stock_flash_load(argv[1])) {
+        return -1;
+    }
+    uint8_t stale = stock_nv_log_scan(stock_flash_read, &at, &boot);
+
+    io_res_ok("stale=%u at=%lu boot=%u", stale, (unsigned long)at, boot);
+    return 0;
+}
+
+#endif
+
+/* ssib: the stack's security record, byte 62 (src/stub/hal/zigbee.c), and the HAL's state of the
+ * module's own NWK commands (zigbee/nwk_sec.h); ssib ram|nv|both <hex>: set it, as a record
+ * taken over as it was leaves it (NV: what the next start-up takes). */
+static int cmd_ssib(int argc, char **argv) {
+    if (argc == 3) {
+        char *        e   = NULL;
+        unsigned long v   = strtoul(argv[2], &e, 16);
+        bool          ram = strcmp(argv[1], "ram") == 0 || strcmp(argv[1], "both") == 0;
+        bool          nv  = strcmp(argv[1], "nv") == 0 || strcmp(argv[1], "both") == 0;
+
+        if (*argv[2] == '\0' || *e || v > 0xFF || !(ram || nv)) {
+            io_res_err("usage");
+            return -1;
+        }
+        stub_zigbee_ssib_set((uint8_t)v, ram, nv);
+    } else if (argc != 1) {
+        fprintf(stderr, "Usage: ssib [ram|nv|both <hex>]\n");
+        io_res_err("usage");
+        return -1;
+    }
+    int nv = stub_zigbee_ssib_nv();
+
+    if (nv < 0) {
+        io_res_ok("ram=0x%02X nv=none state=%u", stub_zigbee_ssib_ram(), g_nwk_sec_state);
+    } else {
+        io_res_ok("ram=0x%02X nv=0x%02X state=%u", stub_zigbee_ssib_ram(), nv, g_nwk_sec_state);
+    }
+    return 0;
+}
+
+/* tclk permit <network_wide> <s>: a Mgmt_Permit_Joining came, as the router's wrap tells the
+ * trust centre link key check (zigbee/tclk_check.h): network_wide 1 for the coordinator's
+ * broadcast, 0 for a request to this router alone; s the time, for which the router then allows
+ * joins (0: a close). tclk upddev <status> <type>: the stack sends an Update Device for a child
+ * (the request's status, ss_ib.tcLinkKeyType), with whether the router allows joins now; tclk
+ * tunnel: the trust centre's tunnel came. Prints the state of Basic 0xff5d (zigbee/nwk_sec.h). */
+static uint32_t tclk_permit_since, tclk_permit_ms;
+
+static int tclk_number(const char *arg, unsigned long max, unsigned long *out) {
+    char *end = NULL;
+
+    *out = strtoul(arg, &end, 0);
+    return *arg != '\0' && !*end && *out <= max;
+}
+
+static int cmd_tclk(int argc, char **argv) {
+    unsigned long a, b;
+
+    if (argc == 4 && strcmp(argv[1], "upddev") == 0) {
+        if (!tclk_number(argv[2], 0xFF, &a) || !tclk_number(argv[3], 0xFF, &b)) {
+            io_res_err("usage");
+            return -1;
+        }
+        tclk_check_update_device((unsigned)a, (unsigned)b,
+                                 hal_millis() - tclk_permit_since < tclk_permit_ms);
+    } else if (argc == 4 && strcmp(argv[1], "permit") == 0) {
+        if (!tclk_number(argv[2], 1, &a) || !tclk_number(argv[3], 0xFF, &b)) {
+            io_res_err("usage");
+            return -1;
+        }
+        tclk_permit_since = hal_millis();
+        tclk_permit_ms    = (uint32_t)b * 1000u;
+        tclk_check_permit_joining(a && b);
+    } else if (argc == 2 && strcmp(argv[1], "tunnel") == 0) {
+        tclk_check_ok();
+    } else {
+        fprintf(stderr, "Usage: tclk upddev <status> <type> | tclk permit <network_wide> <s> | "
+                "tclk tunnel\n");
+        io_res_err("usage");
+        return -1;
+    }
+    io_res_ok("state=%u", g_nwk_sec_state);
     return 0;
 }
 
@@ -884,10 +1086,20 @@ static const SimpleReplCommand kCmds[] = {
     { "zcl_leave",           cmd_zcl_leave           },
     { "freeze_time",         cmd_freeze_time         },
     { "step_time",           cmd_step_time           },
+    { "millis_skew",         cmd_millis_skew         },
+    { "hold_polls",          cmd_hold_polls          },
+    { "poll",                cmd_poll                },
     { "stock_nv",            cmd_stock_nv            },
+    { "stock_nv_take_ss",    cmd_stock_nv_take_ss    },
+#ifdef MCU_FLASHER_DUMP
+    { "stock_nv_log",        cmd_stock_nv_log        },
+#endif
+    { "ssib",                cmd_ssib                },
+    { "tclk",                cmd_tclk                },
     { "set_battery_voltage", cmd_set_battery_voltage },
     { "swd_target",          cmd_swd_target          },
     { "swd_pin",             cmd_swd_pin             },
+    { "reboot",              cmd_reboot              },
     { "q",                   cmd_quit                },
     { "quit",                cmd_quit                },
 };

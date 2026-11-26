@@ -34,9 +34,14 @@ VERSION_PATCH := $(word 3,$(VERSION_PARTS))
 
 # Get git info
 GIT_HASH   := $(shell git rev-parse --short HEAD 2>/dev/null || echo "")
+# "+" after the hash when what goes into the image differs from that commit (changed or new
+# files under src/, the board database, this file, VERSION, NVM_MIGRATIONS_VERSION): such a
+# build is not the commit's, and a unit that runs one must show it (Basic swBuildId, the file
+# names). Not the generated files a build or CI writes (bin/, zigbee2mqtt/, build/).
+GIT_DIRTY  := $(shell git status --porcelain --untracked-files=all -- src device_db.yaml board.mk VERSION NVM_MIGRATIONS_VERSION 2>/dev/null | grep -q . && echo 1)
 
 # Limites to 16 characters
-VERSION_STR := $(shell echo "$(VERSION_FILE_CONTENT)-$(GIT_HASH)" | cut -c1-16)
+VERSION_STR := $(shell echo "$(VERSION_FILE_CONTENT)-$(GIT_HASH)$(if $(GIT_DIRTY),+)" | cut -c1-16)
 
 # Zigbee file version 4 bytes are:
 # APP_RELEASE, APP_BUILD, STACK_RELEASE, STACK_BUILD
@@ -76,6 +81,8 @@ SECONDARY_MCU_IMAGE := $(shell yq -r '.$(BOARD).secondary_mcu_image // ""' $(DEV
 # firmware leaves out the GPIO buttons, LEDs, relays and battery and the
 # switch, relay and cover endpoints (src/device_config/config_parser.c).
 DIMMER_ONLY := $(shell yq -r '.$(BOARD).dimmer_only // ""' $(DEVICE_DB_FILE))
+# The ZH-Z06 dimmers (TS110E): the virtual MCU in front of the factory dimming MCU (hk_dimmer.c).
+HK_DIMMER := $(shell yq -r '.$(BOARD).hk_dimmer // ""' $(DEVICE_DB_FILE))
 FROM_STOCK_MANUFACTURER_ID := $(shell yq -r .$(BOARD).stock_manufacturer_id $(DEVICE_DB_FILE))
 FROM_STOCK_IMAGE_TYPE := $(shell yq -r .$(BOARD).stock_image_type $(DEVICE_DB_FILE))
 FIRMWARE_IMAGE_TYPE := $(shell yq -r .$(BOARD).firmware_image_type $(DEVICE_DB_FILE))
@@ -136,6 +143,7 @@ endif
 		DP_CONFIG_STR="$(DP_CONFIG_STR)" \
 		SECONDARY_MCU_IMAGE="$(SECONDARY_MCU_IMAGE)" \
 		DIMMER_ONLY="$(DIMMER_ONLY)" \
+		HK_DIMMER="$(HK_DIMMER)" \
 		IMAGE_TYPE=$(FIRMWARE_IMAGE_TYPE) \
 		BIN_FILE=../../$(BIN_FILE) \
 		 -j32
@@ -150,7 +158,7 @@ drop-old-files:
 # depends on these (a dimmer_only board leaves Green Power out, sdk.mk): the
 # same values as build-firmware, or the OTA files carry another link than the
 # checked one.
-OTA_LINK_VARS := SECONDARY_MCU_IMAGE="$(SECONDARY_MCU_IMAGE)" DIMMER_ONLY="$(DIMMER_ONLY)"
+OTA_LINK_VARS := SECONDARY_MCU_IMAGE="$(SECONDARY_MCU_IMAGE)" DIMMER_ONLY="$(DIMMER_ONLY)" HK_DIMMER="$(HK_DIMMER)"
 
 # Generate all three types of OTA files. On Telink each must fit the SDK's OTA
 # limit (FLASH_OTA_IMAGE_MAX_SIZE, 0x34000): the ota target of

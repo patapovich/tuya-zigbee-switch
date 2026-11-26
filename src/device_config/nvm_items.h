@@ -70,4 +70,12 @@
 /* Boards that carry an MCU image: the module's factory identity (zigbee/factory_identity.h). */
 #define NV_ITEM_FACTORY_IDENTITY      66
 
+/* Boards with the virtual MCU of the ZH-Z06 dimmers (hk_dimmer.c): its DPs and state. */
+#define NV_ITEM_HK_DIMMER             67
+#define NV_ITEM_HK_CUSTOM             68   /* its custom dimming curves */
+
+/* A dimmer following another channel's wall switch (DIMMER_BINDINGS: which channel, its on and
+ * off level, 3 bytes): 69..72. */
+#define NV_ITEM_DIMMER_FOLLOW(dimmer_idx)    (69 + (dimmer_idx))
+
 #endif /* DEVICE_CONFIG_NVM_ITEMS_H_ */

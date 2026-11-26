@@ -494,6 +494,11 @@ hal_zigbee_send_report_attr(uint8_t endpoint, uint16_t cluster_id,
         dstEpInfo.profileId   = HA_PROFILE_ID;
         dstEpInfo.dstAddrMode = APS_DSTADDR_EP_NOTPRESETNT;
 
+        /* With an APS ACK, as the stack's reports (unicast destinations only, up to the limit;
+         * no resend stop: its reports are of different Basic attributes) */
+        if (zcl_reportAckRoom() > 0)
+            dstEpInfo.txOptions = APS_TX_OPT_ACK_TX;
+
         zclAttrInfo_t *pAttrEntry;
         pAttrEntry = zcl_findAttribute(endpoint, cluster_id, attr_id);
         zcl_sendReportCmd(endpoint, &dstEpInfo, TRUE, ZCL_FRAME_SERVER_CLIENT_DIR,

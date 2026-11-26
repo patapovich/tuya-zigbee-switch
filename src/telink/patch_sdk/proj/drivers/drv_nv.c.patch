@@ -1,0 +1,62 @@
+--- a/proj/drivers/drv_nv.c
++++ b/proj/drivers/drv_nv.c
+@@ -394,7 +394,11 @@
+     }
+ 
+     u8 staOffset = OFFSETOF(nv_info_idx_t, usedState);
+-    flash_writeWithCheck(idxStartAddr + opItemIdx * sizeof(nv_info_idx_t) + staOffset, 1, (u8 *)&idxInfo.usedState);
++    /* SDK 4.0.x: checked. A state that did not program left the item unreadable while the
++     * caller went on to invalidate its previous copy, so the item was lost. */
++    if (flash_writeWithCheck(idxStartAddr + opItemIdx * sizeof(nv_info_idx_t) + staOffset, 1, (u8 *)&idxInfo.usedState) != TRUE) {
++        return NV_CHECK_SUM_ERROR;
++    }
+ 
+     return NV_SUCC;
+ }
+@@ -899,6 +903,14 @@
+     u8 id = NV_MODULE_NWK_FRAME_COUNT;
+     u32 moduleStartAddr = MODULES_START_ADDR(id);
+ 
++    /* SDK 4.0.x: the retry only with the sector the failed attempt wrote. The first attempt never
++     * told it, so the retry took sector 0xff: it erased sector 0 whether it was the live one or
++     * not, and marked "sector 0xff" invalid, an address past the module that the 512 KB flash
++     * wraps into another NV module's sector header. */
++    if (forceChgSec && *errSect > 1) {
++        return NV_CHECK_SUM_ERROR;
++    }
++
+     /* search valid operation sub-sector */
+     if (forceChgSec) {
+         opSect = (*errSect + 1) & (MODULE_SECTOR_NUM - 1);
+@@ -931,6 +943,7 @@
+             flash_erase(moduleStartAddr + opSect * FLASH_SECTOR_SIZE);
+ 
+             if (flash_writeWithCheck(FRAMECOUNT_PAYLOAD_START(opSect), 4, (u8 *)&lastFrmCnt) != TRUE) {
++                *errSect = opSect;   /* SDK 4.0.x */
+                 return NV_CHECK_SUM_ERROR;
+             }
+ 
+@@ -940,6 +953,7 @@
+     }
+ 
+     if (flash_writeWithCheck(wAddr, 4, (u8 *)&frameCount) != TRUE) {
++        *errSect = opSect;   /* SDK 4.0.x */
+         return NV_CHECK_SUM_ERROR;
+     }
+ 
+@@ -952,6 +966,7 @@
+         sectCrc = sectCrc & 0x3f;
+         sectInfo.opSect = (sectCrc << NV_SECT_INFO_SECTNO_BITS) | sectInfo.opSect;
+         if (flash_writeWithCheck(MODULE_SECT_START(id, opSect), sizeof(nv_sect_info_t), (u8 *)&sectInfo) != TRUE) {
++            *errSect = opSect;   /* SDK 4.0.x */
+             return NV_CHECK_SUM_ERROR;
+         }
+ 
+@@ -961,6 +976,7 @@
+             }
+             sectInfo.usedFlag = NV_SECTOR_INVALID;
+             if (flash_writeWithCheck((u32)MODULE_SECT_START(id, oldSect), sizeof(sectInfo.usedFlag), (u8 *)&sectInfo.usedFlag) != TRUE) {
++                *errSect = opSect;   /* SDK 4.0.x */
+                 return NV_CHECK_SUM_ERROR;
+             }
+ 

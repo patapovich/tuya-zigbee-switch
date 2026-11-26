@@ -14,6 +14,205 @@ changelog is [changelog_fw.md](changelog_fw.md); Open Dimmer's own changes are i
 
 ## Next
 
+- The NWK frame counter's floor (0x10000000, since 1.1.3-ab06b9a0) comes after the counter is
+  loaded from flash (in `bdb_init()`). Before it ran on a counter not loaded yet and wrote
+  0x10000000 at every start-up: two start-ups in a row off the network (a reset, then a power
+  cut before the join) put the counter back to 0x10000000, below frames already sent, so the
+  routers around dropped the module's frames as replays until it caught up; and a module still
+  below the floor was not raised. Now a counter below it is raised once (written twice: the
+  SDK's load takes a lone jump for a bad write and goes back), and above it nothing is written
+  at a start-up, as in the SDK (no more sector change at each start-up).
+- The module's own NWK commands (link status, route requests / replies / records, network
+  status, leave) are secured again when its saved security record lost the stack's "secure
+  all" flag: the stack sets it only at a factory-new start-up and otherwise restores the record
+  as it is, so a record saved once without it (an early W4c test build took the factory record
+  over unchanged; the release take sets the flag) kept those commands unsecured through every
+  restart, leave and join while data stayed secured, and routers of this firmware drop them:
+  the coordinator lost its routes to the module and its downlink became intermittent. The flag
+  is checked after every start-up and every join or rejoin, put back and saved (once). Such a
+  record also kept two more fields of the same byte wrong, and they are put right with the flag:
+  an active key slot past the two key slots (a factory byte still as it was taken: the stack
+  then read the network key from past the record) becomes slot 1, the factory one; and the
+  global link key flag 0 becomes this firmware's default (without it the start-up never pointed
+  the trust centre link key at this build's). So the record found on a unit (0x15) and a factory
+  byte still in NV (0x35) both become 0x5D, as a join of this firmware leaves it.
+  `nwk_command_security` (Basic 0xff5d, diagnostic, read at configure): unsecured, secured,
+  repaired_at_start, repaired_at_join (the last two until the next restart). A unit paired
+  before needs a Reconfigure once: it shows no value until then (the module reports the
+  attribute only for `tc_link_key_stale`, which this build does not have). Debug builds
+  (MCU_DUMP=1): Basic 0xff5e makes the fault on purpose for the bench (0xA1 RAM, 0xA2 RAM and
+  NV, 0xA3 RAM then a network reset).
+- A network reset or the coordinator's remove restarts the module 1 s after its leave (the
+  lamp stays as it is: the MCU drives it), and it steers no network until then, so the next
+  join starts from a factory-new start-up, as the SDK's own router app does after a leave.
+  Before, the stack's leave emptied the NV and set the stack up again in place, but the
+  security record is set up only at a start-up, so a join straight after the leave saved
+  whatever RAM held (how the record without the "secure all" flag above stayed after resets).
+  Every reset source ends there: the module button and the wall switch presses (the MCU's reset
+  request), the coordinator's remove, a failed trust centre link key exchange after a join. A
+  reset of a module that is on no network does not restart it; a restart comes up factory new,
+  so repeated resets restart once. Debug builds: the 0xA3 test reset stays a leave in place
+  (its join shows the repair). Only the ZDMS16-2 and TS110E builds (their lamps stay through a
+  restart of the module); other boards keep the leave in place.
+- W4c: a module converted before the marker came (an intact factory NV, no marker) and on a
+  network of its own since gets the marker at a start-up. Without it a reset, then any start-up
+  before the join (now the restart after the leave), took the old factory network back instead
+  of coming up factory new.
+- W4c: the take checks the factory security record before it writes anything, and maps it.
+  - The factory firmware keeps the security level in bits 0-3 of byte 0x3E, "secure all" in
+    bit 4 and the active key slot in bits 5-6; this SDK in bits 0-2, 3 and 4-5. The take read
+    the slot from this SDK's bits and so always took slot 1 (the factory "secure all" bit): a
+    module whose network key sat in slot 0 came up with no usable key. Now the slot is the
+    factory one, "secure all" is set, and the record is refused (the module joins again) when
+    that slot does not hold the active network key, the level is not 5 or the record names no
+    trust centre (zero or all FF).
+  - The trust centre link key type is checked against the key pair. A unique key (after the
+    factory firmware's key exchange) needs this trust centre's pair, unverified or verified;
+    without one the stack sent a joining child's Update Device only encrypted with a key the
+    trust centre does not have, and joins through the module failed without a word. Then the
+    global type is taken (Update Device also with the network key alone) and the pair is not;
+    an unknown type, which sent none, too. Basic 0xff55's `found` bit 4 says so.
+  - The factory NV's key pairs are read in the SDK's 1 MB layout: two 16 KB sectors (0xE6000,
+    0xEA000) and a 3 KB index. The parser read 4 KB sectors and a 1 KB index there, so it saw
+    only the first copies of the pair (up to 0xE6FFF) and never the second sector: it could
+    take an older pair or none.
+  - Debug builds (MCU_DUMP=1), which take the factory copy again after a wipe, do not take it
+    once the module has been on a network of its own since (a join by steering, or a start-up
+    on another address or PAN than the copy, also after a release build's join): the join
+    exchanged a new link key with the trust centre, which may no longer accept the copy's (a
+    module so re-taken relayed no joins; whether that key is why is not settled). Nor after a
+    leave of its own (a reset, the coordinator's remove, which may drop the module and its key):
+    the restart after the leave took the network that had just removed it, came up joined on it
+    and never steered, so only a programmer got the module out. Result 8 (stale) in 0xff55. The
+    bench's wipe 0xA7 (0xA8 with the factory-reset flag) forces the next take.
+  - Debug builds of the ZDMS16-2 do not fit the OTA limit (MCU_DUMP=1: 215874 bytes, 2882
+    over): the bench checks of 0xff5e, the wipes 0xA7 / 0xA8 and the stale result on a ZDMS16-2
+    need a flash over SWD or a programmer, or are done on the TS110E, whose debug build fits
+    (13374 bytes left).
+- TS110E builds from this branch (not the ZDMS16-2: its image has no room left for it): joins
+  through a module that the trust centre no longer reads are told. After its own key exchange
+  the module's trust centre link key is unique, and the stack sends a joining child's Update
+  Device only encrypted with it; a trust centre that holds another key for the module (it gave
+  it a new one at a later join, a debug W4c take brought an older one back) drops it, never
+  sends the network key back, and no device joins through the module, without a word. Nothing
+  is sent to find out: after such an Update Device the module waits 2 s for the trust centre's
+  tunnel, and 3 in a row without one make `nwk_command_security` say `tc_link_key_stale`
+  (Basic 0xff5d value 4), reported to the Basic cluster's bindings. Only while joining is open
+  to the whole network (the coordinator's broadcast, Zigbee2MQTT's "permit join" for all, and
+  the module's permit of it still runs): a coordinator that does not allow joins itself drops
+  the Update Devices whatever the key, as with "permit join" via one device, and a removed
+  device's trust centre rejoins go on whether anything permits or not. A tunnel or a join of
+  its own ends it, a restart starts over (RAM only). If devices still cannot join through the
+  module, re-pair it. A TS110E paired before needs a Reconfigure once: the converter binds its
+  Basic cluster at configure, and without that bind the report never reaches Zigbee2MQTT.
+  Bench builds (`UPDDEV_PLAIN_COPY=1`, only with `MCU_DUMP=1`: make stops otherwise; off by
+  default, not tried on hardware) also send the Update Device with the network key alone, as
+  with a global key.
+- W4c (a conversion keeps the network): the take clears the SDK's factory-reset flag
+  (`CFG_FACTORY_RST_CNT`, 0x79000 in the 512 KB map) when it is not blank. A factory firmware's
+  OTA client can download the conversion image over it (the TS110E's stores the image at
+  0x70000..0x9C000), and `zb_init()` takes any byte there for a factory reset cut short and
+  finishes it, emptying the network just taken: the module came up factory new and needed
+  Permit join (seen on a TS110E; a ZDMS16-2 only if its factory firmware stages the image there).
+- The same level again during a transition (a scene or an automation that fires twice) leaves
+  the module's idea of the transition as it runs, as Open Dimmer keeps the move: a Stop, Step
+  or Move after it acts from where the light is, no longer from a transition started again.
+- Channel follow: L2 can follow L1's wall switch, or L1 L2's (`follow`, `follow_on_level`,
+  `follow_off_level`; genOnOffSwitchCfg 0xff17..0xff19 of the follower, kept in NV). At the
+  leader's wall switch on the follower goes to its follow on level (default 254), at its off or
+  its countdown's end to its follow off level (0, the default: off). Not on the network's
+  commands. With Open Dimmer 2.2 configure reads the settings: a unit on an earlier build
+  needs a Reconfigure, else they show as unknown until read.
+- Release tooling only (no change in the image): the release step can publish one board's
+  images (`--bin-dir`), so a TS110E build next to the ZDMS16-2 one gets its own release instead
+  of stopping the step.
+- Build tooling: a build of a tree that differs from its commit in what goes into the image
+  (changed or new files under `src/`, the board database, `board.mk`, `VERSION`,
+  `NVM_MIGRATIONS_VERSION`) gets a `+` after the hash in its build id (`swBuildId`, e.g.
+  `1.1.3-8b465267+`) and its file names, so a unit running it does not show the commit's id.
+  CI builds a clean checkout: no `+`.
+- `mcu_build` (Basic 0xff5f, uint16, diagnostic): the build Open Dimmer said in its identity
+  answer, reported to the Basic cluster's bindings right after the version at every such answer
+  and read at configure; shown for any Open Dimmer, no value for a 2.1.x app (it says none) or
+  a stock MCU. A unit paired before shows it after a Reconfigure, or at the next identity
+  answer (a restart of the module or the MCU) through the Basic bindings it has. Two builds of one version (a test build of 2.2.8 and the 2.2.8 release both show
+  `mcu_version` 2.2.8) differ only there. `mcu_version` stays as it was. The update decision
+  already went by the build and is now pinned by tests with the carried image: a newer carried
+  build is offered with the same version, never the same or an older one, whatever the version
+  bytes.
+- Fixes of the Telink Zigbee SDK 4.0.x taken into this firmware, which stays on SDK 3.7.2.0
+  (4.0.x does not support the 512 KB flash map):
+  - the ACK of a received frame no earlier than 160 us after the frame's end (SDK 4.0.2.0,
+    "optimize ACK sending timing to improve compatibility"); the old wait after the switch to
+    TX stays too, so an ACK never goes earlier than before;
+  - the ACK to a sleepy child's Data Request has the pending bit while the child's frame is
+    already being sent (SDK 4.0.x's library): before, the child could go back to sleep with a
+    frame still queued for it;
+  - 5 s instead of 2 s for the network key after an association join or a secure rejoin
+    (SDK 4.0.1.0);
+  - NWK status indications handled as the SDK's sample apps do (3.7.2.0 and later; the module
+    left them unhandled): a neighbour whose frame counter started over (a factory reset, a
+    reflash) is heard again after 10 dropped frames instead of never until the network key
+    changes, and a frame under a network key the module lacks starts a trust-centre rejoin (at
+    most every 15 minutes).
+  - NV: a failed write of the outgoing frame counter is retried in the other sector; the retry
+    took "sector 0xff" before, so it erased sector 0 whether it was the live one or not and
+    marked an address in another NV module's sector header invalid. A setting whose last write
+    step failed is reported as failed instead of its previous copy being dropped (it was lost);
+  - a network join the stack cannot start (NWK busy, no buffer) ends the pairing attempt
+    instead of leaving it in progress, which refused every later pairing until a restart.
+  - the receiver settles 85 us before a clear channel assessment (SDK 4.0.2.0): the channel's
+    level was sampled at once, a stale reading right after a send;
+  - a Confirm Key from the trust centre counts only while pairing (SDK 4.0.x): one that came late
+    or twice cleared the joined module's "authenticated" and "on a network" flags;
+  - Mgmt_Rtg_req is answered from the routing table (SDK 4.0.x), so Zigbee2MQTT's network map
+    shows these routers' routes (it was "not supported"). Not in ZDMS16-2 builds: no room left
+    in its image (below the OTA limit), so the ZDMS16-2 still answers "not supported" and the
+    network map shows no routes from it; the TS110E and every other router answer it;
+  - stack exceptions: the SDK's sample apps restart on every one, the module went on after it.
+    It now restarts on those that leave the stack broken (a task the full task queue dropped
+    with its buffer freed, a buffer freed twice or outside its pool, a timer that could not be
+    added, a stack overflow, the MAC's own state checks). On the ZDMS16-2 the lights stay as they
+    are (Open Dimmer keeps the level; the module asks for it after the restart). The last such
+    exception since the power-up is Basic 0xff5c (its event code, 0: none), on the ZDMS16-2 and
+    the TS110E. The TS110E's virtual MCU keeps the lights' on/off state for a warm start in
+    another retained register, so that state survives an exception restart; a level changed in
+    the last minute, and a fade or hold that was running, come back as last saved (as after a
+    watchdog reset: the level is saved 60 s after a change while lit).
+  The SDK files are taken with small patches (src/telink/patch_sdk/<path>.patch, sdk.mk
+  SDK_PATCHED); everything else in them is compiled as before. SDK 4.0.2.0's key exchange
+  timeout fix mends a 4.0.1.0 regression that 3.7.2.0 does not have. The NV driver is built for
+  size (about 730 bytes less on the ZDMS16-2, with the NV fixes) to make room.
+- The dimmer chip's health report also goes out at the second round after a restart (~2 min
+  later), then every 10 min as before: the first one comes seconds after a restart, and after an
+  OTA update Zigbee2MQTT was still configuring the module then and dropped it (the module sent it
+  and the coordinator acknowledged it, seen with a sniffer), so the hub waited 10 min.
+- Attribute reports ask for an APS acknowledgement (every Telink build). The SDK sent them
+  without one, so a report lost on a hop past the first (seen: an on/off report after a wall
+  switch press, lost on the last of three hops) left the hub with the old state until the next
+  change. The coordinator acknowledges each one; when no acknowledgement comes, the module sends
+  the report again 1-2 s later, up to 3 times (a send the next hop did not take goes again at
+  once; a route the module could not find gets no second try). Only reports to the coordinator
+  or another single device ask; reports bound to a group do not (the stack clears it for
+  groups). A report asks only while fewer than 4 of the module's frames wait for an
+  acknowledgement, so a dimming move to a hub that does not answer cannot fill the stack's
+  16-frame send queue (when it is full, every new frame of the module is dropped); the reports
+  past them go out as before. "About 4": counted per report pass and per firmware report, and a
+  report takes one entry per device it is bound to (the converter binds the coordinator alone;
+  a device that answers frees its entry at once).
+  A resend is the report as it was, so it could reach the hub after a newer one and bring back
+  the older value (a level from the middle of a hold after the final one, "on" after a quick
+  "off"): a newer report of a channel's on/off or level stops the resends of the older ones of
+  that cluster. A newer report that lacks an attribute of the older one (a report carries up to
+  two) stops that one's resend too: it waits for its next change, as before this change. The
+  wall switch gestures keep their resends (each one is an event); the converter takes a copy or
+  a late one (within 10 s of the last gesture: the same value, or a sequence 1..7 behind) as no
+  new gesture. The firmware's own reports (MCU version and build, health record, flasher status,
+  nwk_command_security) are not stopped: they are of different attributes of one cluster (a late
+  flasher status during a job can still come after a newer one). On end-device builds each
+  acknowledgement waits at the parent until the module polls for it. The SDK's zcl_reporting.c
+  is taken with a patch for it (src/telink/patch_sdk/zigbee/zcl/zcl_reporting.c.patch).
+
 ## 1.1.3-d903f5ea (2026-11-24), carries Open Dimmer 2.2.8
 
 - Carries Open Dimmer 2.2.8.

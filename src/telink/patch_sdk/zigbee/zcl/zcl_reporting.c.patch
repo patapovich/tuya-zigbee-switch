@@ -1,0 +1,87 @@
+--- a/zigbee/zcl/zcl_reporting.c
++++ b/zigbee/zcl/zcl_reporting.c
+@@ -51,6 +51,61 @@
+ static zcl_reportTimerEvt_t reportTimer[ZCL_REPORTING_TABLE_NUM];
+ static ev_timer_event_t reportingTimer;
+ 
++/* Patched (patch_sdk/zigbee/zcl/zcl_reporting.c.patch, sdk.mk SDK_PATCHED): reports ask for an
++ * APS ACK. The SDK sent them without one (txOptions 0), so a report lost on a hop past the first
++ * left the hub's state wrong until the attribute's next change or maximum interval. With it the
++ * APS layer sends again when no ACK comes (APS_ACK_EXPIRY 2: 1-2 s later, up to
++ * APS_MAX_FRAME_RETRIES 3 times; a NWK failure is sent again at once, a failed route discovery
++ * not at all). The library clears the option for a group or broadcast destination of a binding
++ * (libzb 3.7.2.0 aps_data_request): only unicast destinations ack.
++ * A frame that waits for its ACK keeps one of the 16 entries of the APS TX cache, and its packet
++ * buffer, for up to ~8 s if no ACK comes; with all 16 taken the library drops every new data
++ * frame of the node. So a report asks only while fewer than REPORT_ACKS_MAX frames of the node
++ * wait for one: a burst of reports (a dimming move, a level report up to every 100 ms) to a hub
++ * that does not answer takes about 4 entries, and the reports past them go out without an ACK,
++ * as before. "About": the room is read from the cache once per report pass here (its frames
++ * reach the cache after it) and once per firmware report (hal_zigbee_send_report_attr), and a
++ * report to the bindings is one frame, one entry, per unicast binding (bindingTxBack), so a pass
++ * of 4 frames to N unicast bindings that all do not answer takes 4 x N (one binding, the hub's,
++ * is what the converter makes; a device that answers frees its entry at once).
++ * A resend is the frame as it was built, so it could reach the hub after a newer report of the
++ * same attribute, and the hub (it takes any frame whose APS counter it has not seen; Zigbee2MQTT
++ * keeps the last value it gets) would go back to the older value: a newer report of an
++ * endpoint's cluster stops the resends of that cluster's older reports (zcl_reportAckSupersede). */
++#define REPORT_ACKS_MAX    4
++
++/* How many more reports may ask for an APS ACK now, if above 0 (the reports here and
++ * hal_zigbee_send_report_attr's). */
++_CODE_ZCL_ int zcl_reportAckRoom(void)
++{
++    int room = REPORT_ACKS_MAX;
++    aps_tx_cache_list_t *p = aps_txCache_tbl;
++
++    do {
++        room -= p->used & p->ackNeed;
++    } while (++p < &aps_txCache_tbl[APS_TX_CACHE_TABLE_NUM]);
++
++    return room;
++}
++
++/* A newer report of (endpoint, cluster) goes out: the older ones still in the APS TX cache are
++ * not sent again (retries left 0: libzb apsTxEventPost counts them down and confirms the frame
++ * at 0), so no late copy of an older value reaches the hub after the newer one. Only the frames
++ * to a binding (IEEE address, mode 3: reports; a ZCL response goes to a NWK address) of that
++ * endpoint and cluster. A newer frame that lacks an attribute of the older one (a frame carries
++ * up to two) loses that one's resend: its value waits for its next report, as without the ACK. */
++_CODE_ZCL_ static void zcl_reportAckSupersede(u8 endpoint, u16 clusterId)
++{
++    aps_tx_cache_list_t *p = aps_txCache_tbl;
++
++    do {
++        if (p->ep == endpoint && p->clusterId == clusterId &&
++            p->dstAddrMode == APS_LONG_DSTADDR_WITHEP) {
++            p->retries = 0;
++        }
++    } while (++p < &aps_txCache_tbl[APS_TX_CACHE_TABLE_NUM]);
++}
++
+ /**********************************************************************
+  * FUNCTIONS
+  */
+@@ -423,6 +478,8 @@
+     u8 endpoint = 0;
+     reportCfgInfo_t *pEntry = NULL;
+     zclAttrInfo_t *pAttrEntry = NULL;
++    /* counted here: this pass's frames reach the APS TX cache only after it (tasks) */
++    int ackRoom = zcl_reportAckRoom();
+ 
+     do {
+         pEntry = NULL;
+@@ -491,6 +548,13 @@
+ 
+             dstEpInfo.dstAddrMode = APS_DSTADDR_EP_NOTPRESETNT;
+             dstEpInfo.profileId = profileID;
++            if (ackRoom-- > 0) {
++                dstEpInfo.txOptions = APS_TX_OPT_ACK_TX;
++            }
++            /* not the gestures (genMultistateInput): each report is an event of its own */
++            if (clusterID != ZCL_CLUSTER_GEN_MULTISTATE_INPUT_BASIC) {
++                zcl_reportAckSupersede(endpoint, clusterID);
++            }
+ 
+             zcl_sendReportAttrsCmd(endpoint, &dstEpInfo, TRUE, ZCL_FRAME_SERVER_CLIENT_DIR, clusterID, (zclReportCmd_t *)&report);
+         }

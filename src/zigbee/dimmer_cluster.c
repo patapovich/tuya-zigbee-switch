@@ -10,6 +10,7 @@
 #include "zigbee/tuya_mcu_app.h"
 #include "zigbee/tuya_mcu_ota.h"
 #include "zigbee/tuya_secondary_mcu.h"
+#include "zigbee/hk_dimmer.h"
 #ifdef DIMMER_SCENES
 #include "zigbee/scene_cluster.h"
 /* SceneValid goes 0 when the light changes other than by a recall. */
@@ -23,7 +24,15 @@
 #define DIMMER_GESTURE_MAX     6
 #define DIMMER_GESTURE_HOLD    4
 
-#ifdef SECONDARY_MCU_IMAGE
+/* The Open Dimmer paths: in the builds with its image, and in the HK builds, whose virtual MCU
+ * (hk_dimmer.c) takes them as an Open Dimmer of build HK_OD_BUILD (dimmer_od_from()) without
+ * being one (no identity answer, never tuya_mcu_app_mcu_is_own(): no update, health or flasher
+ * logic wakes up, and the converter does not call it Open Dimmer). */
+#if defined(SECONDARY_MCU_IMAGE) || defined(HK_DIMMER)
+#define DIMMER_OD_PATHS
+#endif
+
+#ifdef DIMMER_OD_PATHS
 static const uint16_t dimmer_gesture_states         = DIMMER_GESTURE_MAX + 1; /* and none */
 static const uint8_t  dimmer_gesture_out_of_service = 0;
 static const uint8_t  dimmer_gesture_flags          = 0;
@@ -201,7 +210,7 @@ static void dimmer_set_on(zigbee_dimmer_cluster *cluster, uint8_t on) {
  * taken as they come, none held back for a fade of ours. */
 #define DIMMER_HOLD_MS    1200
 
-#ifdef SECONDARY_MCU_IMAGE
+#ifdef DIMMER_OD_PATHS
 /* 1 while a hold is in progress; a level report (report) keeps it going. */
 static uint8_t dimmer_holding(zigbee_dimmer_cluster *cluster, uint8_t report) {
     uint32_t now = hal_millis();
@@ -224,8 +233,38 @@ static uint8_t dimmer_holding(zigbee_dimmer_cluster *cluster, uint8_t report) {
  * variants); a fade takes about 1 s, 3 s leaves margin. */
 #define DIMMER_FADE_HOLDOFF_MS    3000
 
+#ifdef HK_DIMMER
+
+/* A channel of the ZH-Z06 dimmers' virtual MCU (hk_dimmer.c): it answers a write with what it
+ * now holds and reports no fade on the way (its reports are the wall switch's, a hold's every
+ * 0.5 s among them), so no holdoff; an answer that is the value written leaves the level
+ * commanded as it is (a narrow min..max maps several levels to one value). */
+#define dimmer_hk(cluster) \
+        (hk_dimmer_active() && (cluster)->dimmer_idx < HK_DIMMER_CHANNELS)
+#define dimmer_hk_echo(cluster, number)                                     \
+        (dimmer_hk(cluster) && (number) == (cluster)->last_written_value && \
+         tuya_secondary_mcu_report_acks_write())
+
+/* The Open Dimmer build the virtual MCU stands for (dimmer_od_from()): its transition time (DP
+ * HK_DP_TIME, dimmer_send_time()), a Stop, Step or Move during its fades from where the light is
+ * (the module asks it, hk_dimmer_fading(), no estimate of its own: dimmer_fade_position()), a
+ * level written while off kept for the next on; its gestures (DP 105 / 106, the wall switch's
+ * bindings and the action, genMultistateInput), a hold's end among them; and the settings of
+ * OPEN_DIMMER_FEATURES_BUILD, with their DPs as Open Dimmer 2.2.0 has them: the countdown (DP 6 /
+ * 12), the per-channel power-on (103 / 104: dimmer_own_mcu()), the wall switch mode, the level
+ * after a power cut, identify, the start boost and the fast press (162..171). Of 2.2.8's, as its
+ * dump tells them (as Open Dimmer's): the lamp compensation (172 / 173) and the switch options
+ * (180: the long press from off, the double tap). Not the custom curve of lightingBallastCfg (its
+ * own are Basic attributes, hk_dimmer.c) nor the reset presses of DP 181 (it counts the presses
+ * itself). */
+#define HK_OD_BUILD    OPEN_DIMMER_FEATURES_BUILD
+#else
+#define dimmer_hk(cluster)                 0
+#define dimmer_hk_echo(cluster, number)    0
+#endif
+
 static void dimmer_start_holdoff(zigbee_dimmer_cluster *cluster) {
-    if (dimmer_holding(cluster, 0))
+    if (dimmer_holding(cluster, 0) || dimmer_hk(cluster))
         return; /* a wall switch hold: the MCU does not fade to what we wrote */
 
     cluster->level_holdoff   = 1;
@@ -285,6 +324,10 @@ static uint8_t dimmer_own_mcu(const zigbee_dimmer_cluster *cluster);
 #define OPEN_DIMMER_CHANNELS    2
 
 static uint8_t dimmer_od_from(const zigbee_dimmer_cluster *cluster, uint16_t build) {
+#ifdef HK_DIMMER
+    if (dimmer_hk(cluster))
+        return HK_OD_BUILD >= build;
+#endif
     return dimmer_own_mcu(cluster) && cluster->dimmer_idx < OPEN_DIMMER_CHANNELS &&
            tuya_mcu_ota_own_build() >= build;
 }
@@ -305,13 +348,24 @@ static uint8_t dimmer_od_from(const zigbee_dimmer_cluster *cluster, uint16_t bui
  *  - 1..0xFFFE: that many tenths (at most 65.535 s, the DP's range).
  * The write queue keeps one frame in flight and sends a lost one again before the next, so the
  * time always reaches the MCU before its change; a time lost for good leaves that change at the
- * fade settings. */
+ * fade settings.
+ * The virtual MCU of the ZH-Z06 dimmers (hk_dimmer.c, HK_DIMMER builds) takes the same, as its
+ * DP HK_DP_TIME (0x7A / 0x7B), up to HK_TIME_MAX_MS. */
 #define DIMMER_TRANSITION_VALID_MS    1500        /* the MCU's window is 1 s from its receipt */
 
 #define DIMMER_TIME_NONE              0xFFFFFFFFu /* no time given: the fade settings */
 
 /* The time of the change written next, in ms (at most the DP's 65535), or DIMMER_TIME_NONE. */
 static void dimmer_send_time(zigbee_dimmer_cluster *cluster, uint32_t ms) {
+    uint8_t  dpid = cluster->own_transition_dpid;
+    uint32_t max  = 0xFFFFu;
+
+#ifdef HK_DIMMER
+    if (hk_dimmer_active() && cluster->dimmer_idx < HK_DIMMER_CHANNELS) {
+        dpid = (uint8_t)(HK_DP_TIME_BASE + cluster->dimmer_idx);
+        max  = HK_TIME_MAX_MS;
+    } else
+#endif
     if (!dimmer_od_from(cluster, OPEN_DIMMER_TRANSITION_BUILD))
         return;
 
@@ -324,7 +378,7 @@ static void dimmer_send_time(zigbee_dimmer_cluster *cluster, uint32_t ms) {
 
         ms = 0;                        /* take an earlier time back */
     }
-    dimmer_write_tuya_value(cluster->own_transition_dpid, ms > 0xFFFFu ? 0xFFFFu : ms);
+    dimmer_write_tuya_value(dpid, ms > max ? max : ms);
     cluster->transition_at = ms ? (now | 1u) : 0;
 }
 
@@ -341,27 +395,45 @@ static void dimmer_send_transition(zigbee_dimmer_cluster *cluster, const uint8_t
 
 /* Where the light is (MCU value): during the last timed lit-to-lit move sent, the even point of
  * it for the time gone (the MCU moves evenly from where it was); else the value the module
- * knows (the last written or reported). No overflow: d <= 1000, t < 65536. */
+ * knows (the last written or reported). No overflow: d <= 1000, t < 65536.
+ * The virtual MCU's channels: where its fade is, whatever started it (it runs in this module,
+ * hk_dimmer_fading()); none of them has a timed move of the module's (fade_ms stays 0). */
 static uint32_t dimmer_fade_position(const zigbee_dimmer_cluster *cluster, uint32_t now) {
-    if (cluster->fade_ms) {
-        uint32_t t = now - cluster->fade_at;
-        if (t < cluster->fade_ms) {
-            uint32_t a = cluster->fade_from, b = cluster->fade_to;
-            uint32_t m = (b > a ? b - a : a - b) * t / cluster->fade_ms;
-            return b > a ? a + m : a - m;
-        }
+#ifdef HK_DIMMER
+    uint16_t at;
+
+    if (dimmer_hk(cluster) && hk_dimmer_fading(cluster->dimmer_idx, &at))
+        return at;
+#endif
+    uint32_t t = now - cluster->fade_at;
+
+    if (t < cluster->fade_ms) { /* (none running: fade_ms 0) */
+        uint32_t a = cluster->fade_from, b = cluster->fade_to;
+        uint32_t m = (b > a ? b - a : a - b) * t / cluster->fade_ms;
+        return b > a ? a + m : a - m;
     }
     return cluster->level_value ? cluster->level_value
                                 : dimmer_level_to_value(cluster, cluster->current_level);
 }
 
-/* During a timed move (see above; Open Dimmer only) CurrentLevel is the move's end from its
- * start. A Stop, Move or Step in it acts on where the light is: CurrentLevel becomes that
- * level. Returns 1 while such a move runs. */
+/* During a timed move (see above; Open Dimmer) CurrentLevel is the move's end from its start. A
+ * Stop, Move or Step in it acts on where the light is: CurrentLevel becomes that level. Returns
+ * 1 while such a move runs. The virtual MCU: during any of its fades (a hold's is none). */
 static uint8_t dimmer_fade_settle(zigbee_dimmer_cluster *cluster) {
     uint32_t now = hal_millis();
 
-    if (!cluster->fade_ms || now - cluster->fade_at >= cluster->fade_ms)
+#ifdef HK_DIMMER
+    uint16_t at;
+
+    if (dimmer_hk(cluster)) {
+        if (!hk_dimmer_fading(cluster->dimmer_idx, &at))
+            return 0;
+
+        dimmer_set_current_level(cluster, dimmer_value_to_level(cluster, at));
+        return 1;
+    }
+#endif
+    if (now - cluster->fade_at >= cluster->fade_ms)
         return 0;
 
     dimmer_set_current_level(cluster,
@@ -407,15 +479,21 @@ static void dimmer_send_level_transition(zigbee_dimmer_cluster *cluster, const u
         ms = dimmer_fade_time_ms(cluster, from, to);
     dimmer_send_time(cluster, ms);
 
-    /* Keep the move for the next change's "from" (a timed one to Open Dimmer only). */
+    /* Keep the move for the next change's "from" (a timed one to Open Dimmer only; the virtual
+     * MCU is asked instead, dimmer_fade_position()). The same end again while it runs (a scene
+     * or an automation that fires twice): Open Dimmer keeps that move as it goes (open-dimmer
+     * dim_fader_set_timed(), "the same move going on"), so does the module. */
     cluster->fade_pending = 0;
-    if (lit && ms != DIMMER_TIME_NONE && from != to &&
+    if (lit && ms != DIMMER_TIME_NONE && from != to && !dimmer_hk(cluster) &&
         dimmer_od_from(cluster, OPEN_DIMMER_TRANSITION_BUILD)) {
-        cluster->fade_from    = (uint16_t)from;
-        cluster->fade_to      = (uint16_t)to;
-        cluster->fade_ms      = (uint16_t)(ms > 0xFFFFu ? 0xFFFFu : ms);
-        cluster->fade_at      = now;
         cluster->fade_pending = 1;
+        if (to == cluster->fade_to && now - cluster->fade_at < cluster->fade_ms)
+            return;
+
+        cluster->fade_from = (uint16_t)from;
+        cluster->fade_to   = (uint16_t)to;
+        cluster->fade_ms   = (uint16_t)(ms > 0xFFFFu ? 0xFFFFu : ms);
+        cluster->fade_at   = now;
     }
 }
 
@@ -449,7 +527,7 @@ typedef char dimmer_custom_curve_takes_any_octet_string[
 #define DIMMER_IDENTIFY_MAX      255       /* s */
 #define DIMMER_BOOST_MAX         750       /* ms */
 
-#ifdef SECONDARY_MCU_IMAGE
+#ifdef DIMMER_OD_PATHS
 static uint8_t dimmer_od_dp(const zigbee_dimmer_cluster *cluster, uint8_t k) {
     return (uint8_t)(cluster->own_transition_dpid + 2 + 2 * k);
 }
@@ -511,7 +589,7 @@ static void dimmer_update_startup_level(zigbee_dimmer_cluster *cluster) {
     }
 }
 
-#ifdef SECONDARY_MCU_IMAGE
+#ifdef DIMMER_OD_PATHS
 /* IdentifyTime counts down by the second; the MCU blinks as long by itself. */
 static void dimmer_identify_tick(void *arg) {
     zigbee_dimmer_cluster *cluster = (zigbee_dimmer_cluster *)arg;
@@ -661,9 +739,10 @@ static void dimmer_turn_on_default(zigbee_dimmer_cluster *cluster) {
 }
 
 /* The level a wall switch on goes to (0: where the MCU goes by itself): the
- * wall switch's OnLevel (Open Dimmer from OPEN_DIMMER_FEATURES_BUILD only: any
- * other MCU gets exactly what it got before), else OnLevel, else a level set
- * while off for a stock MCU (pending: as it was before the on). */
+ * wall switch's OnLevel (Open Dimmer from OPEN_DIMMER_FEATURES_BUILD and the HK
+ * builds' virtual MCU only: any other MCU gets exactly what it got before), else
+ * OnLevel, else a level set while off for a stock MCU (pending: as it was before
+ * the on). */
 /* A wall switch on this soon after the MCU's own off (tapped off and on again) brings the light
  * back as it was, with no OnLevel: e.g. a night level an automation keeps in OnLevel does not
  * replace a level set by hand a moment before. After an off of ours the OnLevel as before. */
@@ -671,7 +750,9 @@ static void dimmer_turn_on_default(zigbee_dimmer_cluster *cluster) {
 
 static uint8_t dimmer_local_on_level(const zigbee_dimmer_cluster *cluster, uint8_t pending) {
     if (!cluster->off_at || hal_millis() - cluster->off_at >= DIMMER_QUICK_REON_MS) {
-        if (dimmer_od_features(cluster) && dimmer_level_set(cluster->on_level_local))
+        /* (the virtual MCU: no network time can apply to it, dimmer_send_time() goes first) */
+        if ((dimmer_od_features(cluster) || dimmer_hk(cluster)) &&
+            dimmer_level_set(cluster->on_level_local))
             return cluster->on_level_local;
 
         if (dimmer_on_level_set(cluster))
@@ -706,7 +787,8 @@ static uint8_t dimmer_execute_if_off(const zigbee_dimmer_cluster *cluster, const
 
 /* Every Open Dimmer app keeps a level written while off for its next on: it
  * did from its first Tuya protocol code (open-dimmer 26e5126), in every tag
- * from v2.1.9 (no build, 0) to v2.1.14 (build 400). */
+ * from v2.1.9 (no build, 0) to v2.1.14 (build 400). So does the HK builds'
+ * virtual MCU (in its NV: the level survives a restart of the module). */
 #define OPEN_DIMMER_KEEPS_OFF_LEVEL_BUILD    0
 
 /* While off (ExecuteIfOff): the level the light comes on at, the light stays
@@ -773,6 +855,12 @@ static void dimmer_cluster_ramp_step(void *arg) {
     int      step = (int)(acc / 1000u);
 
     cluster->move_acc = (uint16_t)(acc % 1000u);
+#ifdef HK_DIMMER
+    /* The virtual MCU's fade of the ramp's own step is a little behind at the next one (its
+     * clock started with the write): only before the first write (move_active 2 after it), as
+     * the ramp's writes end a timed move of Open Dimmer's. */
+    if (!dimmer_hk(cluster) || cluster->move_active == 1)
+#endif
     dimmer_fade_settle(cluster); /* a Move during a timed move sets out from where the light is */
 
     int     next     = cluster->current_level + (cluster->move_direction ? step : -step);
@@ -784,6 +872,9 @@ static void dimmer_cluster_ramp_step(void *arg) {
         if (cluster->on)
             dimmer_send_transition(cluster, dimmer_ramp_time);
         dimmer_change_level(cluster, level, 1); /* off: a Move with ExecuteIfOff */
+#ifdef HK_DIMMER
+        cluster->move_active = 2;
+#endif
     }
 
     if (at_limit) {
@@ -1075,16 +1166,23 @@ static void dimmer_on_custom_part(zigbee_dimmer_cluster *cluster, uint8_t dpid,
  * dump): the module's multi-press reset count, written whenever its dump or ack says another. */
 #define DIMMER_RESET_PRESSES_DP    181
 static uint8_t g_od_reset_presses;   /* the MCU has it (seen in its dump since its start) */
+#endif
 
+#ifdef DIMMER_OD_PATHS
+
+/* A value DP of Open Dimmer (or the virtual MCU, which has those of 2.2.0): this channel's
+ * countdown or one of its settings from 162 on. */
 static void dimmer_on_od_value(zigbee_dimmer_cluster *cluster, uint8_t dpid, uint32_t number) {
     uint16_t v = (uint16_t)(number > 0xFFFF ? 0xFFFF : number);
 
+#ifdef SECONDARY_MCU_IMAGE
     if (dpid == DIMMER_RESET_PRESSES_DP) {
         g_od_reset_presses = 1;
         if (cluster->dimmer_idx == 0 && number != g_multi_press_reset_count)
             dimmer_write_tuya_value(DIMMER_RESET_PRESSES_DP, g_multi_press_reset_count);
         return;
     }
+#endif
 
     if (dpid == DIMMER_SWITCH_OPTS_DP) {
         if (number <= 0x0F) {
@@ -1117,6 +1215,19 @@ static void dimmer_on_od_value(zigbee_dimmer_cluster *cluster, uint8_t dpid, uin
                 dimmer_turn_off(cluster);
             return;
         }
+#ifdef HK_DIMMER
+        /* The virtual MCU's answer to a write of ours: the end stays the one from the latest
+         * write (the virtual MCU timed it from its receipt, a write queued behind another one
+         * after that one's answer, and its answer comes a main loop later or more): at its end
+         * none is left, so that off is the countdown's, not the wall switch's (bindings); the
+         * answer to an older write (or to one an off has ended since) brings back no countdown.
+         * Only a 0 (written while it was off) is taken. */
+        if (dimmer_hk(cluster) && tuya_secondary_mcu_report_acks_write()) {
+            if (!number && cluster->countdown)
+                dimmer_countdown_set(cluster, 0);
+            return;
+        }
+#endif
         /* 0 also when it ran out; a bogus huge one is the MCU's longest. */
         dimmer_countdown_set(cluster,
                              number > DIMMER_COUNTDOWN_MAX ? DIMMER_COUNTDOWN_MAX : number);
@@ -1175,6 +1286,12 @@ static void dimmer_on_od_value(zigbee_dimmer_cluster *cluster, uint8_t dpid, uin
 
 /* Our own PY32 firmware with its per-channel DPs on this dimmer. */
 static uint8_t dimmer_own_mcu(const zigbee_dimmer_cluster *cluster) {
+#ifdef HK_DIMMER
+    /* The virtual MCU's channels: Open Dimmer's per-channel DPs (power-on 103 / 104, the
+     * settings), without its identity (tuya_mcu_app_mcu_is_own() stays 0). */
+    if (dimmer_hk(cluster))
+        return 1;
+#endif
 #ifdef SECONDARY_MCU_IMAGE
     return cluster->own_power_on_dpid && tuya_mcu_app_mcu_is_own();
 #else
@@ -1416,6 +1533,79 @@ __attribute__((noinline)) static void dimmer_bind_gesture(zigbee_dimmer_cluster 
     }
 }
 
+/* ---- following another channel's wall switch (DIMMER_BINDINGS) -------------------------------
+ *
+ * A channel set to follow another one (genOnOffSwitchCfg 0xff17: that channel's index + 1) goes
+ * along with that channel's wall switch inside the module, with no round trip through the
+ * network: at its on to the follow on level (0xff18, default 254), at its off to the follow off
+ * level (0xff19; 0, the default: off), each with the channel's own fade settings. An off
+ * level above 0 also switches a follower on that was off (a night light: e.g. dim while
+ * another light is lit, set by a hub by the state of the house). Only the leader's on and off of the
+ * MCU's own: its wall switch (a hold from dark too: the on at its start sends the follower to
+ * the on level, the hold itself is not followed) and the end of its countdown; not our
+ * commands, their answers, a query's answer or the first report after a boot. The follower's
+ * change is a command of ours, so it never goes on to others (no loop, also when two channels
+ * follow each other). */
+#define DIMMER_FOLLOW_ON_DEFAULT    254
+static const uint8_t dimmer_follow_default[3] = { 0, DIMMER_FOLLOW_ON_DEFAULT, 0 };
+
+static void dimmer_follow_cfg_check(zigbee_dimmer_cluster *cluster) {
+    uint8_t *f = cluster->follow_cfg;
+
+    if (f[0] > NV_LAYOUT_DIMMERS || f[0] == cluster->dimmer_idx + 1)
+        f[0] = 0;
+    if (f[1] < 1 || f[1] > ZCL_LEVEL_MAX)
+        f[1] = DIMMER_FOLLOW_ON_DEFAULT;
+    if (f[2] > ZCL_LEVEL_MAX)
+        f[2] = 0;
+}
+
+/* An automation may write the same level again and again: only a change reaches the flash. */
+static void dimmer_follow_cfg_store(zigbee_dimmer_cluster *cluster) {
+    dimmer_follow_cfg_check(cluster);
+    if (cluster->dimmer_idx >= NV_LAYOUT_DIMMERS ||
+        memcmp(cluster->follow_saved, cluster->follow_cfg, 3) == 0)
+        return;
+
+    hal_nvm_write(NV_ITEM_DIMMER_FOLLOW(cluster->dimmer_idx), 3, cluster->follow_cfg);
+    memcpy(cluster->follow_saved, cluster->follow_cfg, 3);
+}
+
+__attribute__((noinline)) static void dimmer_follow_setup(zigbee_dimmer_cluster *cluster,
+                                                          uint8_t base) {
+    if (cluster->dimmer_idx >= NV_LAYOUT_DIMMERS ||
+        hal_nvm_read(NV_ITEM_DIMMER_FOLLOW(cluster->dimmer_idx), 3, cluster->follow_cfg) !=
+        HAL_NVM_SUCCESS) {
+        for (uint8_t i = 0; i < 3; i++)
+            cluster->follow_cfg[i] = dimmer_follow_default[i];
+    }
+    dimmer_follow_cfg_check(cluster);
+    memcpy(cluster->follow_saved, cluster->follow_cfg, 3);
+    SETUP_ATTR_FOR_TABLE(cluster->switch_type_attr_infos, base,
+                         ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_FOLLOW, ZCL_DATA_TYPE_ENUM8,
+                         ATTR_WRITABLE, cluster->follow_cfg[0]);
+    SETUP_ATTR_FOR_TABLE(cluster->switch_type_attr_infos, base + 1,
+                         ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_FOLLOW_ON, ZCL_DATA_TYPE_UINT8,
+                         ATTR_WRITABLE, cluster->follow_cfg[1]);
+    SETUP_ATTR_FOR_TABLE(cluster->switch_type_attr_infos, base + 2,
+                         ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_FOLLOW_OFF, ZCL_DATA_TYPE_UINT8,
+                         ATTR_WRITABLE, cluster->follow_cfg[2]);
+}
+
+/* The leader's wall switch switched it on / off: its followers go along. */
+__attribute__((noinline)) static void dimmer_follow_leader(const zigbee_dimmer_cluster *leader,
+                                                           uint8_t on) {
+    for (uint8_t i = 0; i < DIMMER_MAX_ENDPOINTS; i++) {
+        zigbee_dimmer_cluster *f = dimmer_cluster_by_endpoint[i];
+
+        if (f == NULL || f == leader || f->follow_cfg[0] != leader->dimmer_idx + 1)
+            continue;
+        uint8_t cmd[3] = { on ? f->follow_cfg[1] : f->follow_cfg[2], 0xFF, 0xFF };
+        DIMMER_SCENE_CHANGED(f->endpoint);
+        dimmer_cluster_level_callback(f, ZCL_CMD_LEVEL_MOVE_TO_LEVEL_WITH_ON_OFF, cmd, 3);
+    }
+}
+
 void dimmer_cluster_add_switch_endpoint(zigbee_dimmer_cluster *cluster,
                                         hal_zigbee_endpoint *endpoint) {
     endpoint->device_id        = ZCL_HA_DEVICE_ID_DIMMER_SWITCH;
@@ -1480,6 +1670,13 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
             if ((switched_on || switched_off) && dimmer_bind_mirrors(cluster))
                 dimmer_bind_send(cluster, ZCL_CLUSTER_ON_OFF,
                                  switched_on ? ZCL_CMD_ONOFF_ON : ZCL_CMD_ONOFF_OFF, NULL, 0);
+
+            /* Its followers go along with any on / off of the MCU's own (also the countdown's
+             * end: the follower goes off with it), after its own writes below. */
+            uint8_t follow = switched_on ||
+                             (!value[0] && cluster->state_known && cluster->on &&
+                              !tuya_secondary_mcu_report_is_passive() &&
+                              !tuya_secondary_mcu_report_acks_write());
             if (!value[0])
                 cluster->bind_dir = cluster->bind_reports = 0;  /* off ends a hold: no Stop */
             if (switched_on)
@@ -1508,6 +1705,11 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
             * no round trip through the network: the MCU is fading in to
             * the level it remembers and turns towards this one instead. */
             uint8_t on_at = switched_on ? dimmer_local_on_level(cluster, pending) : 0;
+#ifdef HK_DIMMER
+            /* The virtual MCU's hold from dark: the finger has the level from the minimum. */
+            if (dimmer_hk(cluster) && hk_dimmer_holding(cluster->dimmer_idx))
+                on_at = 0;
+#endif
             if (on_at) {
                 /* Not in the time of a command just before: Open Dimmer would take it for
                  * this level (up to 2.2.6 for the wall switch's own on as well). */
@@ -1515,6 +1717,12 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
                 dimmer_set_current_level(cluster, on_at);
                 dimmer_write_level(cluster, on_at);
             }
+#ifdef DIMMER_BINDINGS
+            /* After the leader's own writes (its OnLevel above): one frame is in flight at a
+             * time, and a factory MCU answers a level write only after its fade. */
+            if (follow)
+                dimmer_follow_leader(cluster, value[0]);
+#endif
         } else if (dp_type == TUYA_DP_TYPE_VALUE && dpid == cluster->level_dpid) {
             if (!dimmer_holding(cluster, 1) && (cluster->move_active || cluster->level_holdoff)) {
                 /* Our own ramp or fade in progress: the MCU reports where
@@ -1525,7 +1733,8 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
             } else {
                 cluster->level_value = number;
                 cluster->fade_ms     = 0; /* the MCU's word now */
-                dimmer_set_current_level(cluster, dimmer_value_to_level(cluster, number));
+                if (!dimmer_hk_echo(cluster, number))
+                    dimmer_set_current_level(cluster, dimmer_value_to_level(cluster, number));
 #ifdef DIMMER_BINDINGS
                 /* The wall switch dimming (the same tests as its on above). */
                 if (cluster->current_level != was_level && cluster->on && cluster->state_known &&
@@ -1564,15 +1773,20 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
             hal_zigbee_notify_attribute_changed(cluster->endpoint, ZCL_CLUSTER_ON_OFF,
                                                 ZCL_ATTR_START_UP_ONOFF);
         }
-#ifdef SECONDARY_MCU_IMAGE
+#ifdef DIMMER_OD_PATHS
         else if (dp_type == TUYA_DP_TYPE_ENUM && dimmer_own_mcu(cluster) &&
                  dpid == cluster->own_power_on_dpid) {
             cluster->startup_mode = tuya_mcu_startup_from_power_on(value[0]);
             hal_zigbee_notify_attribute_changed(cluster->endpoint, ZCL_CLUSTER_ON_OFF,
                                                 ZCL_ATTR_START_UP_ONOFF);
-        } else if (dp_type == TUYA_DP_TYPE_ENUM && cluster->action_dpid &&
-                   tuya_mcu_app_mcu_is_own() && dpid == cluster->action_dpid &&
-                   value[0] >= 1 && value[0] <= DIMMER_GESTURE_MAX) {
+        }
+#endif
+#ifdef DIMMER_OD_PATHS
+        /* (the virtual MCU's gestures too: a momentary wall switch's, as Open Dimmer's) */
+        else if (dp_type == TUYA_DP_TYPE_ENUM && cluster->action_dpid &&
+                 (tuya_mcu_app_mcu_is_own() || dimmer_hk(cluster)) &&
+                 dpid == cluster->action_dpid &&
+                 value[0] >= 1 && value[0] <= DIMMER_GESTURE_MAX) {
             /* A hold (normal mode): the finger is in control until its release
              * (dimmer_holding()). A ramp of ours stops, and a holdoff of ours (e.g. the wall
              * switch's OnLevel write before a hold from dark) ends now: the hold's level
@@ -1603,11 +1817,17 @@ static void dimmer_cluster_on_dp_report(uint8_t dpid, uint8_t dp_type,
 #ifdef DIMMER_BINDINGS
             dimmer_bind_gesture(cluster, value[0]);
 #endif
-        } else if (dp_type == TUYA_DP_TYPE_VALUE && dimmer_own_mcu(cluster) &&
-                   cluster->dimmer_idx < OPEN_DIMMER_CHANNELS) {
+        }
+#endif
+#ifdef DIMMER_OD_PATHS
+        else if (dp_type == TUYA_DP_TYPE_VALUE && dimmer_own_mcu(cluster) &&
+                 cluster->dimmer_idx < OPEN_DIMMER_CHANNELS) {
             dimmer_on_od_value(cluster, dpid, number);
-        } else if (dp_type == TUYA_DP_TYPE_RAW && dimmer_own_mcu(cluster) &&
-                   cluster->dimmer_idx < OPEN_DIMMER_CHANNELS) {
+        }
+#endif
+#ifdef SECONDARY_MCU_IMAGE
+        else if (dp_type == TUYA_DP_TYPE_RAW && dimmer_own_mcu(cluster) &&
+                 cluster->dimmer_idx < OPEN_DIMMER_CHANNELS) {
             dimmer_on_custom_part(cluster, dpid, value, value_len);
         }
 #endif
@@ -1676,7 +1896,7 @@ void dimmer_cluster_scene_recall(uint8_t endpoint, uint8_t flags, uint8_t level,
 
 #endif
 
-#ifdef SECONDARY_MCU_IMAGE
+#ifdef DIMMER_OD_PATHS
 static hal_zigbee_cmd_result_t dimmer_cluster_identify_callback_trampoline(
     uint8_t endpoint, uint16_t cluster_id, uint8_t command_id,
     void *cmd_payload, uint16_t cmd_payload_len) {
@@ -1693,12 +1913,29 @@ static hal_zigbee_cmd_result_t dimmer_cluster_identify_callback_trampoline(
     return HAL_ZIGBEE_CMD_PROCESSED;
 }
 
-#define DIMMER_OD_ATTRS       1 /* each Open Dimmer setting is one more attribute of its cluster */
+#define DIMMER_OD_ATTRS    1    /* each Open Dimmer setting is one more attribute of its cluster */
 #else
-#define DIMMER_OD_ATTRS       0
+#define DIMMER_OD_ATTRS    0
 #endif
-#define DIMMER_ONOFF_ATTRS    (2 + DIMMER_OD_ATTRS)
-#define DIMMER_LEVEL_ATTRS    (6 + DIMMER_OD_ATTRS)
+
+/* Open Dimmer 2.2.8's: the lamp compensation, the long press from off and the double tap (on
+ * the Open Dimmer paths: the virtual MCU has them too), and the custom curve of
+ * lightingBallastCfg (the builds with its image only: the virtual MCU's custom curves are Basic
+ * attributes of its own, hk_dimmer.c). */
+#ifdef DIMMER_OD_PATHS
+#define DIMMER_OD228_ATTRS      1
+#else
+#define DIMMER_OD228_ATTRS      0
+#endif
+#ifdef SECONDARY_MCU_IMAGE
+#define DIMMER_CUSTOM_ATTRS     1
+#else
+#define DIMMER_CUSTOM_ATTRS     0
+#endif
+#define DIMMER_ONOFF_ATTRS      (2 + DIMMER_OD_ATTRS)
+#define DIMMER_LEVEL_ATTRS      (6 + DIMMER_OD_ATTRS)
+#define DIMMER_BALLAST_ATTRS    (2 + DIMMER_OD_ATTRS + DIMMER_OD228_ATTRS + DIMMER_CUSTOM_ATTRS)
+#define DIMMER_SWITCH_ATTRS     (1 + 2 * DIMMER_OD_ATTRS + 2 * DIMMER_OD228_ATTRS)
 
 static void dimmer_add_cluster(hal_zigbee_endpoint *endpoint, uint16_t cluster_id,
                                uint8_t attribute_count, hal_zigbee_attribute *attributes,
@@ -1779,7 +2016,7 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
     cluster->dark_hold_mcu   = DIMMER_DARK_HOLD_NONE;
     cluster->double_full     = DIMMER_DARK_HOLD_NONE;
     cluster->double_full_mcu = DIMMER_DARK_HOLD_NONE;
-#ifdef SECONDARY_MCU_IMAGE
+#ifdef DIMMER_OD_PATHS
     cluster->identify_task.handler = dimmer_identify_tick;
     cluster->identify_task.arg     = cluster;
     hal_tasks_init(&cluster->identify_task);
@@ -1816,7 +2053,7 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
                          ZCL_ATTR_ONOFF_CONFIGURATION_SWITCH_TYPE,
                          ZCL_DATA_TYPE_ENUM8, ATTR_WRITABLE, cluster->switch_type);
 
-#ifdef SECONDARY_MCU_IMAGE
+#ifdef DIMMER_OD_PATHS
     /* Open Dimmer's settings (from OPEN_DIMMER_FEATURES_BUILD), next to the standard ones. */
     SETUP_ATTR(2, ZCL_ATTR_ONOFF_COUNTDOWN, ZCL_DATA_TYPE_UINT32, ATTR_WRITABLE,
                cluster->countdown);
@@ -1826,9 +2063,11 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
                          ZCL_DATA_TYPE_UINT16, ATTR_WRITABLE, cluster->start_boost);
     SETUP_ATTR_FOR_TABLE(cluster->ballast_attr_infos, 3, ZCL_ATTR_BALLAST_LAMP_COMP,
                          ZCL_DATA_TYPE_UINT8, ATTR_WRITABLE, cluster->lamp_comp);
+#ifdef SECONDARY_MCU_IMAGE
     SETUP_ATTR_FOR_TABLE(cluster->ballast_attr_infos, 4, ZCL_ATTR_BALLAST_CUSTOM_CURVE,
                          ZCL_DATA_TYPE_OCTET_STR, ATTR_WRITABLE, cluster->custom_curve);
     cluster->ballast_attr_infos[4].size = 0xFFu;   /* the field's most (uint8_t); the buffer has 256 */
+#endif
     SETUP_ATTR_FOR_TABLE(cluster->switch_type_attr_infos, 1,
                          ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_INPUT_MODE,
                          ZCL_DATA_TYPE_ENUM8, ATTR_WRITABLE, cluster->input_mode);
@@ -1849,24 +2088,26 @@ void dimmer_cluster_add_to_endpoint(zigbee_dimmer_cluster *cluster,
                        dimmer_cluster_callback_trampoline);
     dimmer_add_cluster(endpoint, ZCL_CLUSTER_LEVEL_CONTROL, DIMMER_LEVEL_ATTRS, level_attrs,
                        dimmer_cluster_level_callback_trampoline);
-    dimmer_add_cluster(endpoint, ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG, 2 + 3 * DIMMER_OD_ATTRS,
+    dimmer_add_cluster(endpoint, ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG, DIMMER_BALLAST_ATTRS,
                        cluster->ballast_attr_infos, NULL);
 #ifdef DIMMER_BINDINGS
-    dimmer_bind_setup(cluster, 1 + 4 * DIMMER_OD_ATTRS);
-#define DIMMER_BIND_ATTRS    3
+    dimmer_bind_setup(cluster, DIMMER_SWITCH_ATTRS);
+    dimmer_follow_setup(cluster, DIMMER_SWITCH_ATTRS + 3);
+#define DIMMER_BIND_ATTRS    6
 #else
 #define DIMMER_BIND_ATTRS    0
 #endif
     dimmer_add_cluster(endpoint, ZCL_CLUSTER_ON_OFF_SWITCH_CONFIG,
-                       1 + 4 * DIMMER_OD_ATTRS + DIMMER_BIND_ATTRS,
+                       DIMMER_SWITCH_ATTRS + DIMMER_BIND_ATTRS,
                        cluster->switch_type_attr_infos, NULL);
 
-#ifdef SECONDARY_MCU_IMAGE
+#ifdef DIMMER_OD_PATHS
     /* Identify: the channel blinks (Open Dimmer from OPEN_DIMMER_FEATURES_BUILD). */
     dimmer_add_cluster(endpoint, ZCL_CLUSTER_IDENTIFY, 1, cluster->identify_attr_infos,
                        dimmer_cluster_identify_callback_trampoline);
 
-    /* Wall switch gestures of the own PY32 firmware (silent with another MCU). */
+    /* Wall switch gestures of the own PY32 firmware and of the virtual MCU (silent with another
+     * MCU). */
     cluster->action_seq   = 0;
     cluster->action_state = 0;
     SETUP_ATTR_FOR_TABLE(cluster->multistate_attr_infos, 0,
@@ -1918,7 +2159,7 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
                                                                 : cluster->power_on_behavior_dpid,
                                         TUYA_DP_TYPE_ENUM, &value, sizeof(value));
         }
-#ifdef SECONDARY_MCU_IMAGE
+#ifdef DIMMER_OD_PATHS
         else if (attribute_id == ZCL_ATTR_ONOFF_COUNTDOWN) {
             /* Counts only while on (the MCU keeps 0 when off). */
             if (!cluster->on || !dimmer_od_features(cluster)) {
@@ -1950,7 +2191,7 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
             hal_zigbee_notify_attribute_changed(cluster->endpoint, ZCL_CLUSTER_LEVEL_CONTROL,
                                                 ZCL_ATTR_LEVEL_BRIGHTNESS_FADE_TIME);
         }
-#ifdef SECONDARY_MCU_IMAGE
+#ifdef DIMMER_OD_PATHS
         else if (attribute_id == ZCL_ATTR_LEVEL_START_UP_CURRENT_LEVEL) {
             /* 0xFF previous: 0, the last level; 0x00 minimum: the lowest value, which the MCU
              * takes as the channel's min at every start (also after a later change of it). */
@@ -1980,7 +2221,7 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
             dimmer_write_tuya_value(cluster->max_level_dpid,
                                     dimmer_zcl_level_to_tuya_value(cluster->max_level));
         }
-#ifdef SECONDARY_MCU_IMAGE
+#ifdef DIMMER_OD_PATHS
         else if (attribute_id == ZCL_ATTR_BALLAST_START_BOOST) {
             if (!dimmer_od_features(cluster)) {
                 cluster->start_boost = 0;
@@ -2000,7 +2241,10 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
             dimmer_write_tuya_value(dimmer_od_dp(cluster, DIMMER_OD_LAMP_COMP),
                                     ((uint32_t)cluster->lamp_comp * TUYA_BRIGHTNESS_MAX +
                                      ZCL_LEVEL_MAX / 2) / ZCL_LEVEL_MAX);
-        } else if (attribute_id == ZCL_ATTR_BALLAST_CUSTOM_CURVE) {
+        }
+#endif
+#ifdef SECONDARY_MCU_IMAGE
+        else if (attribute_id == ZCL_ATTR_BALLAST_CUSTOM_CURVE) {
             /* a whole valid table, or length 0 (none), to an MCU that has it (2.2.8: it told its
              * lamp compensation); anything else: shown again as the MCU has it */
             if ((cluster->custom_curve.len && !dimmer_custom_valid(cluster)) ||
@@ -2018,7 +2262,7 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
             tuya_secondary_mcu_write_dp(cluster->switch_type_dpid, TUYA_DP_TYPE_ENUM,
                                         &cluster->switch_type, sizeof(cluster->switch_type));
         }
-#ifdef SECONDARY_MCU_IMAGE
+#ifdef DIMMER_OD_PATHS
         else if (attribute_id == ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_INPUT_MODE) {
             if (!dimmer_od_features(cluster) || cluster->input_mode > DIMMER_INPUT_MODE_MAX) {
                 cluster->input_mode = cluster->input_mode_mcu;
@@ -2051,11 +2295,14 @@ void dimmer_cluster_on_write_attr(zigbee_dimmer_cluster *cluster,
         else if (attribute_id >= ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_BIND_MODE &&
                  attribute_id <= ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_TRIPLE_ACTION) {
             dimmer_bind_cfg_store(cluster);
+        } else if (attribute_id >= ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_FOLLOW &&
+                   attribute_id <= ZCL_ATTR_ONOFF_CONFIGURATION_DIMMER_FOLLOW_OFF) {
+            dimmer_follow_cfg_store(cluster);
         }
 #endif
         break;
 
-#ifdef SECONDARY_MCU_IMAGE
+#ifdef DIMMER_OD_PATHS
     case ZCL_CLUSTER_IDENTIFY:
         if (attribute_id == ZCL_ATTR_IDENTIFY_TIME)
             dimmer_identify(cluster, cluster->identify_time);
@@ -2095,6 +2342,8 @@ void dimmer_cluster_mcu_restarted(void) {
                                                 ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG,
                                                 ZCL_ATTR_BALLAST_CUSTOM_CURVE);
         }
+#endif
+#ifdef DIMMER_OD_PATHS
         if (cluster->dark_hold != DIMMER_DARK_HOLD_NONE) {
             cluster->dark_hold   = cluster->dark_hold_mcu = DIMMER_DARK_HOLD_NONE;
             cluster->double_full = cluster->double_full_mcu = DIMMER_DARK_HOLD_NONE;
@@ -2111,6 +2360,8 @@ void dimmer_cluster_mcu_restarted(void) {
                                                 ZCL_CLUSTER_LIGHTING_BALLAST_CONFIG,
                                                 ZCL_ATTR_BALLAST_LAMP_COMP);
         }
+#endif
+#ifdef DIMMER_OD_PATHS
         hal_tasks_unschedule(&cluster->identify_task);
         if (cluster->identify_time) {
             cluster->identify_time = 0;

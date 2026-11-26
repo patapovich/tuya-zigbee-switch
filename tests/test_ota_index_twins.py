@@ -40,3 +40,10 @@ def test_a_board_without_a_twin_keeps_its_own_names(tmp_path):
                   "C:\n  config_str: a;X;\n  stock_manufacturer_name: _TZ_a\n")
     assert index_names(tmp_path, "A", db) == ["_TZ_a", "a"]
     assert index_names(tmp_path, "B", db) == ["_TZ_b", "b"]
+
+
+def test_the_ts110e_conversion_is_offered_to_its_stock_name_only(tmp_path):
+    """The TS110E's image (stock image type 54179, like the ZDMS16-2's: the names keep them
+    apart) goes to _TZ3210_3mpwqzuu and its own firmware's name, no other TS110E."""
+    assert index_names(tmp_path, "MODULE_TUYA_TS110E_3MPWQZUU", ROOT / "device_db.yaml") == \
+        ["_TZ3210_3mpwqzuu", "3mpwqzuu"]

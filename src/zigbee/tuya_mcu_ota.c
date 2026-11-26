@@ -352,6 +352,11 @@ static void on_ident(const uint8_t *data, uint16_t len) {
     printf("Own MCU firmware 0x%02x build %u, bootloader %u\r\n", running, build, boot);
     tuya_mcu_app_set_mcu_own();             /* shows "x.y.z own" */
 
+    /* Its build (Basic 0xff5f), after the version that tells the converter it is Open Dimmer:
+     * two builds of one version (a test build and the release) differ only in it. */
+    hal_zigbee_send_report_attr(endpoints[0].endpoint, ZCL_CLUSTER_BASIC, ZCL_ATTR_BASIC_MCU_BUILD,
+                                ZCL_DATA_TYPE_UINT16, &g_own_build, (uint8_t)sizeof(g_own_build));
+
     if (!g_own_offerable) {
         printf("Own MCU firmware with update protocol %u: not offered\r\n", data[6]);
         return;
@@ -562,7 +567,12 @@ static void health_round_done(void) {
     if (hal_zigbee_get_network_status() != HAL_ZIGBEE_NETWORK_JOINED) {
         return;     /* nobody to tell: not counted, the first round on the network is sent */
     }
-    if (g_health_rounds++ % HEALTH_REPORT_EVERY == 0) {
+
+    /* The first round of a run, and the second too: the first follows a restart within seconds,
+     * while the hub may still be interviewing or configuring the module after it (an OTA
+     * update's restart), and a report it drops then would wait 10 min for the next one. */
+    uint8_t round = g_health_rounds++;
+    if (round == 1 || round % HEALTH_REPORT_EVERY == 0) {
         hal_zigbee_send_report_attr(endpoints[0].endpoint, ZCL_CLUSTER_BASIC,
                                     ZCL_ATTR_BASIC_MCU_HEALTH, ZCL_DATA_TYPE_OCTET_STR,
                                     &g_health, (uint8_t)sizeof(g_health));
@@ -660,7 +670,13 @@ uint8_t tuya_mcu_ota_register_attrs(hal_zigbee_attribute *table, uint8_t start_i
     attr->flag         = ATTR_READONLY;
     attr->size         = (uint8_t)sizeof(g_health);
     attr->value        = (uint8_t *)&g_health;
-    return 1;
+    attr++;
+    attr->attribute_id = ZCL_ATTR_BASIC_MCU_BUILD;
+    attr->data_type_id = ZCL_DATA_TYPE_UINT16;
+    attr->flag         = ATTR_READONLY;
+    attr->size         = (uint8_t)sizeof(g_own_build);
+    attr->value        = (uint8_t *)&g_own_build;
+    return 2;
 }
 
 uint8_t tuya_mcu_ota_on_command(uint8_t cmd, uint16_t seq, const uint8_t *data,

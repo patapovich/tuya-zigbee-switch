@@ -14,7 +14,9 @@ from test_converter_own_mcu import CONFIGURE, ZDMS
 NEW_PER_CHANNEL = ["countdown", "switch_mode", "fast_press", "current_level_startup",
                    "start_boost", "execute_if_off", "on_level_local",
                    # the wall switch's bindings (dimmer-only builds)
-                   "bind_mode", "double_press_action", "triple_press_action"]
+                   "bind_mode", "double_press_action", "triple_press_action",
+                   # following another channel's wall switch (dimmer-only builds)
+                   "follow", "follow_on_level", "follow_off_level"]
 NEW_DEVICE = ["identify", "mcu_uptime", "mcu_reset_cause", "mcu_zero_cross_losses",
               "mcu_uart_rx_losses", "mcu_temperature", "mcu_settings_ring_moved"]
 NEW = [f"{n}_{ch}" for ch in ("l1", "l2") for n in NEW_PER_CHANNEL] + NEW_DEVICE
@@ -28,13 +30,15 @@ const all = (dev, options = {}) => [
 """
 
 # The 2.1.x exposes before this change (test_converter_own_mcu: 15 Open Dimmer ones and
-# mcu_firmware) and a stock MCU's (the shared power_on_behavior and mcu_firmware).
+# mcu_firmware) and a stock MCU's (the shared power_on_behavior and mcu_firmware); both with the
+# module's nwk_command_security (any MCU). Any Open Dimmer also shows its build (mcu_build).
 OWN_2_1 = ["dimming_curve_l1", "power_on_behavior_l1", "fade_on_time_l1",
            "fade_off_time_l1", "fade_off_slow_zone_l1", "hold_time_l1",
            "hold_slow_zone_l1", "dimming_curve_l2", "power_on_behavior_l2",
            "fade_on_time_l2", "fade_off_time_l2", "fade_off_slow_zone_l2",
-           "hold_time_l2", "hold_slow_zone_l2", "action", "mcu_firmware"]
-STOCK = ["power_on_behavior", "mcu_firmware"]
+           "hold_time_l2", "hold_slow_zone_l2", "action", "mcu_firmware", "nwk_command_security",
+           "mcu_build"]
+STOCK = ["power_on_behavior", "mcu_firmware", "nwk_command_security"]
 FADE = ["brightness_fade_time_l1", "brightness_fade_time_l2"]   # from 2.1.14
 LAMP = ["lamp_compensation_l1", "lamp_compensation_l2",         # from 2.2.8
         "custom_curve_l1", "custom_curve_l2", "long_press_from_off_l1", "long_press_from_off_l2",
@@ -263,9 +267,10 @@ def test_configure_binds_basic_for_open_dimmer_and_reads_the_new_settings_of_2_2
     new_reads = [f"{ep}:{cluster}" for ep in (1, 2) for cluster in
                  ("genOnOff:65296", "genOnOffSwitchCfg:65296+65297+65301+65302",
                   "genLevelCtrl:startUpCurrentLevel+options+65297", "lightingBallastCfg:65296+65297+65298",
-                  "genOnOffSwitchCfg:65298+65299+65300")]       # the binding settings
+                  "genOnOffSwitchCfg:65298+65299+65300",        # the binding settings
+                  "genOnOffSwitchCfg:65303+65304+65305")]       # the follow settings
     assert [r for r in own["dimmerReads"] if r in new_reads] == new_reads
-    assert len(own["dimmerReads"]) == 8 + 10 + 2
+    assert len(own["dimmerReads"]) == 8 + 12 + 2
     assert "1:genBasic" in out["2.1.14 own"]["binds"]     # any Open Dimmer: its version reports
     for v in ("1.0.7", "2.2.0"):                            # stock, not identified: no bind
         assert "1:genBasic" not in out[v]["binds"], v
@@ -513,3 +518,47 @@ const stock = h.device(); stock.getEndpoint(1).clusters.genBasic.attributes[0xff
     assert out["reports"] == [[{"bind_mode_l1": "mirror"}], [{"double_press_action_l2": "scene_2"}],
                               [{"triple_press_action_l1": "none"}]]
     assert "Open Dimmer" in out["stock"]                  # a stock MCU: not shown, not written
+
+
+def test_the_follow_settings():
+    """follow (enum: none or another channel, the module keeps its index + 1), follow_on_level,
+    follow_off_level: genOnOffSwitchCfg 0xff17..0xff19 of the follower, kept by the module."""
+    out = json.loads(run_node(SET + """
+const fzc = (ep, data) => def.extend.filter((x) => !x.fake).flatMap((x) => x.fromZigbee ?? [])
+    .filter((f) => f.cluster === "genOnOffSwitchCfg")
+    .map((f) => f.convert(model, {device: dev, endpoint: {ID: ep}, data}, () => {}, {}, {device: dev}))
+    .filter((r) => r !== undefined);
+// Z2M picks a per-channel converter by key and endpoint: the follower's own (l2 = endpoint 2).
+const set2 = async (key, value) => {
+    h.log.length = 0;
+    try {
+        const t = def.extend.filter((x) => !x.fake).flatMap((x) => x.toZigbee ?? [])
+            .find((t) => t.key.includes(key) && t.endpoints?.includes("l2"));
+        const r = await t.convertSet(dev.getEndpoint(2), key, value, {device: dev, mapped: model, options: {}});
+        return [h.log.filter((l) => l[0] === "write" || l[0] === "command"), r?.state ?? null];
+    } catch (error) {
+        return error.message;
+    }
+};
+const ex = def.extend.filter((x) => !x.fake).flatMap((x) => x.exposes ?? [])
+    .flatMap((x) => (typeof x === "function" ? x(dev, {}) : [x]));
+(async () => console.log(JSON.stringify({
+    follow: await set2("follow", "l1"),
+    self: await set2("follow", "l2"),
+    none: await set2("follow", "none"),
+    off: await set2("follow_off_level", 40),
+    offBad: await set2("follow_off_level", 255),
+    onBad: await set2("follow_on_level", 0),
+    reports: [fzc(2, {[0xff17]: 1}), fzc(1, {[0xff17]: 2}), fzc(2, {[0xff17]: 0}), fzc(2, {[0xff19]: 30})],
+    values: ["l1", "l2"].map((ep) => ex.find((x) => x.name === "follow" && x.endpoint === ep)?.values),
+})))();
+"""))
+    assert out["follow"] == [[["write", 2, "genOnOffSwitchCfg", {str(0xff17): {"value": 1, "type": 0x30}}]],
+                             {"follow": "l1"}]
+    assert "none, l1" in out["self"]                     # not the channel itself
+    assert out["none"][0] == [["write", 2, "genOnOffSwitchCfg", {str(0xff17): {"value": 0, "type": 0x30}}]]
+    assert out["off"][0] == [["write", 2, "genOnOffSwitchCfg", {str(0xff19): {"value": 40, "type": 0x20}}]]
+    assert "0..254" in out["offBad"] and "1..254" in out["onBad"]
+    assert out["reports"] == [[{"follow_l2": "l1"}], [{"follow_l1": "l2"}], [{"follow_l2": "none"}],
+                              [{"follow_off_level_l2": 30}]]
+    assert out["values"] == [["none", "l2"], ["none", "l1"]]

@@ -1697,7 +1697,9 @@ def test_the_first_health_report_sent_holds_the_calibration():
         proc.stop()
 
 
-def test_the_health_report_goes_out_at_the_first_round_and_every_fifth():
+def test_the_health_report_goes_out_at_the_first_and_second_round_and_every_fifth():
+    """The second round too (~2 min after the first): the first follows a restart within seconds,
+    while the hub may still be configuring the module and drop it."""
     proc, device = start()
     try:
         contact_as_own(proc, device, VERSION, build=500, boot=2)
@@ -1707,7 +1709,7 @@ def test_the_health_report_goes_out_at_the_first_round_and_every_fifth():
             proc.exec(temperature_frame(30))
             cmds_after(proc, device, 100)
             sent.append(reports_sent(device))
-        assert sent == [1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3]
+        assert sent == [1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 4]
     finally:
         proc.stop()
 
@@ -1722,7 +1724,7 @@ def test_the_first_health_report_after_an_mcu_restart_goes_out_at_once():
             proc.exec(health_frame(RING_HIGH | RING_MOVED, uptime=61 + 2 * k))
             proc.exec(temperature_frame(30))
             cmds_after(proc, device, 100)
-        assert reports_sent(device) == 1
+        assert reports_sent(device) == 2
         proc.exec(f"uart_rx {tuya_frame(TUYA_CMD_QUERY_NETWORK, seq=0)}")   # it restarts
         cmds_after(proc, device, 200)
         contact_as_own(proc, device, VERSION, build=500, boot=2, off_wait=False)
@@ -1732,7 +1734,7 @@ def test_the_first_health_report_after_an_mcu_restart_goes_out_at_once():
             proc.exec(temperature_frame(30))
             cmds_after(proc, device, 100)
             sent.append(reports_sent(device))
-        assert sent == [2, 2, 2, 2, 2, 3]
+        assert sent == [3, 4, 4, 4, 4, 5]
     finally:
         proc.stop()
 
@@ -1756,7 +1758,7 @@ def test_a_health_round_off_the_network_is_not_counted():
             proc.exec(temperature_frame(30))
             cmds_after(proc, device, 100)
             sent.append(reports_sent(device))
-        assert sent == [1, 1, 1, 1, 1, 2]
+        assert sent == [1, 2, 2, 2, 2, 3]
     finally:
         proc.stop()
 
@@ -1795,5 +1797,133 @@ def test_the_temperature_frame_with_and_without_dp_139_does_no_harm():
                  for c, a in ((0x0006, 0xFF10), (0x0007, 0xFF10), (0x0008, 0x4000), (0x0301, 0xFF10))}
         assert after == before
         assert TUYA_CMD_QUERY_NETWORK in mcu_query(proc, device)       # the link goes on
+    finally:
+        proc.stop()
+
+
+# -- the build decides, with the same version too; the build as Basic 0xff5f ------------------
+#
+# Two builds of one version report the same version byte: a test build of 2.2.8 (1213) and the
+# 2.2.8 release (1300) both show "2.2.8". The module offers the carried image by the build that
+# the app's identity answer said, never by the version alone, and never to the same or a newer
+# build. The app takes an 11-byte offer by the build only, and its bootloader's power-on probe
+# takes a newer build only (open-dimmer src/tuya.c, boot/boot.c pick()). These tests use the
+# carried image itself. Basic 0xff5f shows the build (the converter's mcu_build).
+
+ATTR_MCU_BUILD = 0xFF5F
+
+
+def mcu_build(device) -> int:
+    return int(device.read_zigbee_attr(1, 0x0000, ATTR_MCU_BUILD))
+
+
+def version_build_reports(device) -> list[int]:
+    """The version (0xff12) and build (0xff5f) reports sent to the Basic bindings, in order."""
+    attrs = [int(e.payload["attr"], 16) for e in device._events if e.kind == "zcl_report_send"]
+    return [a for a in attrs if a in (ATTR_MCU_VERSION, ATTR_MCU_BUILD)]
+
+
+def own_with_build(proc, device, running: int, build: int) -> list[tuple[int, bytes]]:
+    """An Open Dimmer with that version byte and build (bootloader v3) says who it is with the
+    light off (and its wait over), then its health report says its settings ring moved: the ring
+    gate is open, so only the version and build rules decide. Returns the frames after its
+    identity answer."""
+    _, frames = contact_as_own(proc, device, running, build=build, boot=3)
+    return frames + ring_report(proc, device)
+
+
+def same_version_older_builds() -> list[int]:
+    """Builds below the carried one that pass the ring gate (the ring mover's or later), with
+    the 2.2.8 test build among them."""
+    return sorted({IMAGE_BUILD - 1, RING_MOVER_BUILD} | ({1213} if 1213 < IMAGE_BUILD else set()))
+
+
+@pytest.mark.parametrize("build", same_version_older_builds())
+def test_an_older_build_of_the_carried_version_is_offered_the_carried_image(build):
+    """Same version byte, older build (the 2.2.8 release, 1300, over the 2.2.8 test build 1213
+    at this writing): offered, with the build in the offer, which the app compares."""
+    assert RING_MOVER_BUILD <= build < IMAGE_BUILD
+    proc, device = start()
+    try:
+        frames = own_with_build(proc, device, VERSION, build)
+        assert offers_in(frames) == [offer()]
+        assert offer()[0] == VERSION and offer()[9:] == IMAGE_BUILD.to_bytes(2, "big")
+        assert mcu_build(device) == build
+    finally:
+        proc.stop()
+
+
+@pytest.mark.parametrize("version, build", [
+    ("same", IMAGE_BUILD),              # the carried build itself
+    ("same", IMAGE_BUILD + 1),          # a newer build of the same version (a bench build)
+    ("older", IMAGE_BUILD + 1),         # a newer build with an older version byte
+    ("older", IMAGE_BUILD),
+    ("newer", IMAGE_BUILD + 1),
+])
+def test_the_carried_image_never_goes_to_the_same_or_a_newer_build(version, build):
+    """Never a downgrade, whatever the version bytes say: an app with the carried build or a
+    newer one keeps it, also with its ring gate open and after a day of waiting."""
+    running = VERSION if version == "same" else older_version() if version == "older" else newer_version()
+    proc, device = start()
+    try:
+        frames = own_with_build(proc, device, running, build)
+        frames += cmds_after(proc, device, 86_400_000 + 60_000)
+        assert offers_in(frames) == []
+        assert mcu_build(device) == build
+    finally:
+        proc.stop()
+
+
+def test_an_older_build_takes_the_carried_one_and_then_shows_the_new_build():
+    """The whole way, with the same version byte before and after: offered, accepted, fetched by
+    its bootloader (an asked run), OK. The new app's first query is a first contact, it says who
+    it is with the carried build, Basic 0xff5f shows that (each time reported right after the
+    version, which is the same text as before), and nothing is offered again."""
+    old = 1213 if 1213 < IMAGE_BUILD else IMAGE_BUILD - 1     # the 2.2.8 test build under its release
+    proc, device = start()
+    try:
+        frames = own_with_build(proc, device, VERSION, old)
+        shown = shown_version(device)
+        assert offers_in(frames) == [offer()] and mcu_build(device) == old
+        assert version_build_reports(device) == [ATTR_MCU_VERSION, ATTR_MCU_BUILD]
+        proc.exec(f"uart_rx {tuya_frame(OTA_NOTIFY, bytes([0]))}")      # accepted: it restarts
+        cmds_after(proc, device)
+        installed = (IMAGE[0xC8:0xCD] + bytes([APP_FLAG_CONFIRMS | APP_FLAG_RING_HIGH])
+                     + old.to_bytes(2, "little"))
+        assert answers(proc, device, block_request(0xC0, 16, MODE_ASKED, installed, 3)) == [header_answer()]
+        first = answers(proc, device, block_request(0, 64, MODE_ASKED, installed, 3))
+        assert len(first) == 1 and first[0][13:] == IMAGE[:64]
+        proc.exec(f"uart_rx {tuya_frame(OTA_RESULT, bytes([0, VERSION]) + IMAGE_BUILD.to_bytes(2, 'big'))}")
+        cmds_after(proc, device)
+        assert TUYA_CMD_MCU_VERSION in mcu_query_seq(proc, device, 0)     # the new app's first query
+        assert OTA_IDENT in version_then_ident(proc, device)
+        proc.exec(ident_answer(VERSION, IMAGE_BUILD, 3))
+        lights_off(proc)
+        frames = cmds_after(proc, device, 200) + ring_report(proc, device)
+        frames += cmds_after(proc, device, OFF_WAIT_MS + 1_000)
+        assert offers_in(frames) == []
+        assert mcu_build(device) == IMAGE_BUILD
+        assert shown_version(device) == shown
+        assert version_build_reports(device) == [ATTR_MCU_VERSION, ATTR_MCU_BUILD] * 2
+    finally:
+        proc.stop()
+
+
+def test_the_mcu_build_is_0_until_open_dimmer_says_one():
+    """Not known yet, a stock MCU (never asked who it is) and a 2.1.x app (an identity without a
+    build): 0, which the converter shows as no value. A stock MCU's module sends no build."""
+    proc, device = start()
+    try:
+        assert mcu_build(device) == 0
+        answer_version(proc, device, 0x47)                   # the factory 1.0.7
+        assert mcu_build(device) == 0
+        assert ATTR_MCU_BUILD not in version_build_reports(device)
+    finally:
+        proc.stop()
+    proc, device = start()
+    try:
+        contact_as_own(proc, device, VERSION)                # 7 bytes: a 2.1.x app
+        assert mcu_build(device) == 0
+        assert shown_version(device).endswith(" own")
     finally:
         proc.stop()

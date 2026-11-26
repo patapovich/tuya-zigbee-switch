@@ -272,6 +272,8 @@ if __name__ == "__main__":
                 # power-on and wall switch gestures (shown per the device option
                 # open_dimmer_settings) and mcu_firmware.
                 "secondary_mcu_image": bool(device.get("secondary_mcu_image")),
+                # The ZH-Z06 dimmers' virtual MCU (hk_dimmer.c): its custom curve attributes.
+                "hk_dimmer": bool(device.get("hk_dimmer")),
                 # A dimmer-only build: the wall switches' own endpoints and their binding
                 # settings (DIMMER_BINDINGS).
                 "dimmer_only": bool(device.get("dimmer_only")),
@@ -281,12 +283,15 @@ if __name__ == "__main__":
     if errors:
         raise SystemExit("device_db.yaml:\n  " + "\n  ".join(errors))
 
-    # Stock modules of the boards that carry an MCU image (the AVATTO ZDMS16-2): their
-    # zigbee-herdsman-converters definition gets OTA for these boards' stock manufacturer
-    # names only, so the conversion (the -from_tuya image) is offered with this one file.
+    # Stock modules of the dimmer boards converted from stock (the AVATTO ZDMS16-2, which
+    # carries an MCU image, and the TS110E of the virtual MCU): their zigbee-herdsman-converters
+    # definition gets OTA for these boards' stock manufacturer names only, so the conversion
+    # (the -from_tuya image) is offered with this one file.
     stock_ota = {}
     for device in db.values():
-        if not device.get("build", True) or not device.get("secondary_mcu_image"):
+        if not device.get("build", True):
+            continue
+        if not (device.get("secondary_mcu_image") or device.get("hk_dimmer")):
             continue
         if not (device.get("stock_converter_model") and device.get("stock_manufacturer_name")):
             continue
